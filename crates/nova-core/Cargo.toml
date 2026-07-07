@@ -1,0 +1,31 @@
+[package]
+name = "nova-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nova-proto = { path = "../nova-proto" }
+
+# hudsucker re-exports hyper/rustls; keeping matching caret ranges lets Cargo
+# unify to a single version so the CA/handler types line up.
+hudsucker = "0.24"
+rcgen = "0.14"
+http-body-util = "0.1"
+
+tokio = { workspace = true }
+bytes = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+rquickjs = "0.12"
+futures = "0.3"
+flate2 = "1"
+brotli = "6"
+base64 = "0.22"
+sha2 = "0.10"
+time = { version = "0.3", features = ["formatting", "macros"] }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

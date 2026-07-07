@@ -1,0 +1,23 @@
+[workspace]
+members = ["src-tauri", "crates/nova-core", "crates/nova-proto"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["NovaProxy contributors"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+bytes = "1"
+ts-rs = "10"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.dev]
+# hudsucker/rustls/aws-lc are heavy; a little optimization keeps dev usable.
+opt-level = 1
