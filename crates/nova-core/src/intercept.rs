@@ -424,25 +424,11 @@ fn tee(
 
     // Consumer: accumulate up to the cap, then finalize when the sender drops.
     tokio::spawn(async move {
-        let cap = shared.body_cap;
-        let mut buf: Vec<u8> = Vec::new();
-        let mut total: u64 = 0;
-        let mut truncated = false;
-
+        let mut acc = BodyAccum::new(shared.body_cap);
         while let Some(chunk) = rx.recv().await {
-            total += chunk.len() as u64;
-            if buf.len() < cap {
-                let room = cap - buf.len();
-                if chunk.len() <= room {
-                    buf.extend_from_slice(&chunk);
-                } else {
-                    buf.extend_from_slice(&chunk[..room]);
-                    truncated = true;
-                }
-            } else {
-                truncated = true;
-            }
+            acc.push(&chunk);
         }
+        let (buf, total, truncated) = acc.finish();
 
         let preview = build_preview(buf, total, truncated, media_type, content_encoding);
         let started = shared
@@ -499,4 +485,164 @@ fn tee(
     });
 
     Body::from_stream(stream)
+}
+
+/// Accumulates a capped copy of a streamed body for the inspector, tracking the
+/// true wire size and whether the preview was cut off. Forwarding is unaffected:
+/// this only bounds what we *retain*.
+struct BodyAccum {
+    buf: Vec<u8>,
+    total: u64,
+    truncated: bool,
+    cap: usize,
+}
+
+impl BodyAccum {
+    fn new(cap: usize) -> Self {
+        Self { buf: Vec::new(), total: 0, truncated: false, cap }
+    }
+
+    fn push(&mut self, chunk: &[u8]) {
+        self.total += chunk.len() as u64;
+        if self.buf.len() < self.cap {
+            let room = self.cap - self.buf.len();
+            if chunk.len() <= room {
+                self.buf.extend_from_slice(chunk);
+            } else {
+                self.buf.extend_from_slice(&chunk[..room]);
+                self.truncated = true;
+            }
+        } else {
+            self.truncated = true;
+        }
+    }
+
+    fn finish(self) -> (Vec<u8>, u64, bool) {
+        (self.buf, self.total, self.truncated)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hudsucker::hyper::{HeaderMap, Request};
+
+    fn parts(uri: &str, host: Option<&str>) -> Parts {
+        let mut b = Request::builder().uri(uri);
+        if let Some(h) = host {
+            b = b.header("host", h);
+        }
+        b.body(()).unwrap().into_parts().0
+    }
+
+    #[test]
+    fn describe_absolute_uri() {
+        let (scheme, host, path, url) = describe(&parts("http://api.example.com/v1?x=1", None));
+        assert_eq!(scheme, "http");
+        assert_eq!(host, "api.example.com");
+        assert_eq!(path, "/v1?x=1");
+        assert_eq!(url, "http://api.example.com/v1?x=1");
+    }
+
+    #[test]
+    fn describe_origin_form_defaults_to_https() {
+        // Path-only URI + Host header: what we get after a CONNECT tunnel.
+        let (scheme, host, path, url) = describe(&parts("/path?y=2", Some("example.com")));
+        assert_eq!(scheme, "https");
+        assert_eq!(host, "example.com");
+        assert_eq!(path, "/path?y=2");
+        assert_eq!(url, "https://example.com/path?y=2");
+    }
+
+    #[test]
+    fn describe_missing_host_is_empty_with_root_path() {
+        let (scheme, host, path, _url) = describe(&parts("/", None));
+        assert_eq!(scheme, "https");
+        assert_eq!(host, "");
+        assert_eq!(path, "/");
+    }
+
+    #[test]
+    fn apply_headers_replaces_whole_set() {
+        let mut map = HeaderMap::new();
+        map.insert("x-old", "1".parse().unwrap());
+        map.insert("x-keep", "2".parse().unwrap());
+        // The new set fully replaces the old one (deletes x-old, x-keep).
+        apply_headers(&mut map, &[("x-new".into(), "9".into())]);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("x-new").unwrap(), "9");
+        assert!(map.get("x-old").is_none());
+    }
+
+    #[test]
+    fn apply_headers_skips_invalid_names() {
+        let mut map = HeaderMap::new();
+        apply_headers(
+            &mut map,
+            &[("bad name".into(), "x".into()), ("good".into(), "y".into())],
+        );
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("good").unwrap(), "y");
+    }
+
+    #[test]
+    fn header_pairs_flattens_map() {
+        let mut map = HeaderMap::new();
+        map.insert("content-type", "application/json".parse().unwrap());
+        let pairs = header_pairs(&map);
+        assert!(pairs.contains(&("content-type".into(), "application/json".into())));
+    }
+
+    #[test]
+    fn body_accum_under_cap_keeps_everything() {
+        let mut a = BodyAccum::new(1024);
+        a.push(b"hello ");
+        a.push(b"world");
+        let (buf, total, truncated) = a.finish();
+        assert_eq!(buf, b"hello world");
+        assert_eq!(total, 11);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn body_accum_truncates_at_cap_boundary() {
+        let mut a = BodyAccum::new(8);
+        a.push(b"1234"); // fills 4
+        a.push(b"5678ABCD"); // only 4 more fit; rest dropped
+        let (buf, total, truncated) = a.finish();
+        assert_eq!(buf, b"12345678"); // exactly cap bytes retained
+        assert_eq!(total, 12); // true wire size still counted in full
+        assert!(truncated);
+    }
+
+    #[test]
+    fn body_accum_exact_fit_is_not_truncated() {
+        let mut a = BodyAccum::new(5);
+        a.push(b"12345");
+        let (buf, total, truncated) = a.finish();
+        assert_eq!(buf, b"12345");
+        assert_eq!(total, 5);
+        assert!(!truncated, "a chunk that exactly fills the cap is not a truncation");
+    }
+
+    #[test]
+    fn body_accum_chunks_after_cap_only_bump_total() {
+        let mut a = BodyAccum::new(4);
+        a.push(b"1234");
+        a.push(b"5"); // buf already full
+        let (buf, total, truncated) = a.finish();
+        assert_eq!(buf, b"1234");
+        assert_eq!(total, 5);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn body_accum_zero_cap_keeps_nothing() {
+        let mut a = BodyAccum::new(0);
+        a.push(b"anything");
+        let (buf, total, truncated) = a.finish();
+        assert!(buf.is_empty());
+        assert_eq!(total, 8);
+        assert!(truncated);
+    }
 }

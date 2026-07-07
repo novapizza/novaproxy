@@ -248,3 +248,257 @@ pub fn new_flow(
         mapped_from: None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hudsucker::hyper::HeaderMap;
+    use std::io::Write;
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    fn deflate(data: &[u8]) -> Vec<u8> {
+        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(data).unwrap();
+        e.finish().unwrap()
+    }
+
+    #[test]
+    fn preview_text_body_is_utf8() {
+        let raw = b"hello world".to_vec();
+        let p = build_preview(raw.clone(), raw.len() as u64, false, Some("text/plain".into()), None);
+        assert_eq!(p.text.as_deref(), Some("hello world"));
+        assert!(p.base64.is_none());
+        assert_eq!(p.size, 11);
+        assert!(!p.truncated);
+        assert!(p.decoded_from.is_none());
+    }
+
+    #[test]
+    fn preview_json_is_text() {
+        let raw = br#"{"ok":true}"#.to_vec();
+        let p = build_preview(raw.clone(), raw.len() as u64, false, Some("application/json".into()), None);
+        assert_eq!(p.text.as_deref(), Some(r#"{"ok":true}"#));
+        assert!(p.base64.is_none());
+    }
+
+    #[test]
+    fn preview_binary_body_is_base64() {
+        // PNG magic + a NUL byte: declared image/* => binary.
+        let raw = vec![0x89, b'P', b'N', b'G', 0x00, 0x01];
+        let p = build_preview(raw.clone(), raw.len() as u64, false, Some("image/png".into()), None);
+        assert!(p.text.is_none());
+        assert!(p.base64.is_some());
+    }
+
+    #[test]
+    fn preview_empty_body_has_neither() {
+        let p = build_preview(Vec::new(), 0, false, Some("text/plain".into()), None);
+        assert!(p.text.is_none());
+        assert!(p.base64.is_none());
+    }
+
+    #[test]
+    fn preview_decodes_gzip() {
+        let plain = "the quick brown fox";
+        let raw = gzip(plain.as_bytes());
+        let p = build_preview(raw, plain.len() as u64, false, Some("text/plain".into()), Some("gzip".into()));
+        assert_eq!(p.text.as_deref(), Some(plain));
+        assert_eq!(p.decoded_from.as_deref(), Some("gzip"));
+    }
+
+    #[test]
+    fn preview_decodes_deflate() {
+        let plain = "deflate me please";
+        let raw = deflate(plain.as_bytes());
+        let p = build_preview(raw, plain.len() as u64, false, Some("text/plain".into()), Some("deflate".into()));
+        assert_eq!(p.text.as_deref(), Some(plain));
+        assert_eq!(p.decoded_from.as_deref(), Some("deflate"));
+    }
+
+    #[test]
+    fn preview_identity_encoding_is_not_reported() {
+        let raw = b"plain".to_vec();
+        let p = build_preview(raw, 5, false, Some("text/plain".into()), Some("identity".into()));
+        assert_eq!(p.text.as_deref(), Some("plain"));
+        assert!(p.decoded_from.is_none(), "identity should be filtered out");
+    }
+
+    #[test]
+    fn preview_bad_gzip_falls_back_to_raw_bytes() {
+        // Claims gzip but isn't: decode returns the original bytes unchanged.
+        let raw = b"not actually gzip".to_vec();
+        let p = build_preview(raw.clone(), raw.len() as u64, false, Some("text/plain".into()), Some("gzip".into()));
+        assert_eq!(p.text.as_deref(), Some("not actually gzip"));
+    }
+
+    #[test]
+    fn preview_unknown_type_sniffs_for_nul() {
+        // No media type, no NUL bytes => treated as text.
+        let text = build_preview(b"looks like text".to_vec(), 15, false, None, None);
+        assert!(text.text.is_some());
+        // No media type but contains a NUL => treated as binary.
+        let bin = build_preview(vec![b'a', 0x00, b'b'], 3, false, None, None);
+        assert!(bin.base64.is_some());
+        assert!(bin.text.is_none());
+    }
+
+    #[test]
+    fn collect_headers_preserves_order_and_duplicates() {
+        let mut map = HeaderMap::new();
+        map.append("x-a", "1".parse().unwrap());
+        map.append("x-b", "2".parse().unwrap());
+        map.append("x-a", "3".parse().unwrap());
+        let headers = collect_headers(&map);
+        // HeaderMap groups by name; both x-a values must survive.
+        let x_a: Vec<&str> = headers
+            .iter()
+            .filter(|h| h.name == "x-a")
+            .map(|h| h.value.as_str())
+            .collect();
+        assert_eq!(x_a, vec!["1", "3"]);
+        assert_eq!(headers.iter().filter(|h| h.name == "x-b").count(), 1);
+    }
+
+    #[test]
+    fn header_value_lookup() {
+        let mut map = HeaderMap::new();
+        map.insert("content-type", "application/json".parse().unwrap());
+        assert_eq!(header_value(&map, "content-type").as_deref(), Some("application/json"));
+        assert!(header_value(&map, "missing").is_none());
+    }
+
+    fn brotli(data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut w = ::brotli::CompressorWriter::new(&mut out, 4096, 5, 22);
+            w.write_all(data).unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn preview_decodes_brotli() {
+        let plain = "brotli compressed payload";
+        let raw = brotli(plain.as_bytes());
+        let p = build_preview(raw, plain.len() as u64, false, Some("text/plain".into()), Some("br".into()));
+        assert_eq!(p.text.as_deref(), Some(plain));
+        assert_eq!(p.decoded_from.as_deref(), Some("br"));
+    }
+
+    #[test]
+    fn preview_truncated_flag_passes_through() {
+        let p = build_preview(b"partial".to_vec(), 9_999, true, Some("text/plain".into()), None);
+        assert!(p.truncated);
+        assert_eq!(p.size, 9_999); // true size, not the retained slice length
+    }
+
+    #[test]
+    fn now_ms_is_positive() {
+        assert!(now_ms() > 0.0);
+    }
+
+    // ---- Shared store: insert/update semantics ----
+
+    struct CountingSink(Mutex<Vec<Flow>>);
+    impl FlowSink for CountingSink {
+        fn emit(&self, flow: Flow) {
+            self.0.lock().unwrap().push(flow);
+        }
+    }
+
+    fn shared_with(sink: Arc<CountingSink>) -> Shared {
+        Shared::new(
+            sink,
+            1024,
+            Arc::new(RwLock::new(Vec::new())),
+            Arc::new(crate::breakpoint::Breakpoints::new(Arc::new(
+                crate::breakpoint::NoopBreakpointSink,
+            ))),
+            crate::scripting::ScriptEngine::new(),
+            Arc::new(RwLock::new(NetworkConditions::default())),
+        )
+    }
+
+    fn sample_flow(id: &str) -> Flow {
+        new_flow(
+            id.into(),
+            0,
+            "GET".into(),
+            "https".into(),
+            "example.com".into(),
+            "/".into(),
+            "https://example.com/".into(),
+            "127.0.0.1:1".into(),
+            "HTTP/1.1".into(),
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn insert_counts_stores_and_emits() {
+        let sink = Arc::new(CountingSink(Mutex::new(Vec::new())));
+        let shared = shared_with(sink.clone());
+
+        shared.insert(sample_flow("f0"));
+        assert_eq!(shared.total_captured.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert!(shared.flows.lock().unwrap().contains_key("f0"));
+        assert_eq!(sink.0.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn update_mutates_existing_and_emits_snapshot() {
+        let sink = Arc::new(CountingSink(Mutex::new(Vec::new())));
+        let shared = shared_with(sink.clone());
+        shared.insert(sample_flow("f0"));
+
+        shared.update("f0", |f| {
+            f.state = FlowState::Completed;
+            f.status = Some(200);
+        });
+
+        let stored = shared.flows.lock().unwrap().get("f0").cloned().unwrap();
+        assert_eq!(stored.state, FlowState::Completed);
+        assert_eq!(stored.status, Some(200));
+        // insert emitted once, update emitted the new snapshot once more.
+        let emitted = sink.0.lock().unwrap();
+        assert_eq!(emitted.len(), 2);
+        assert_eq!(emitted[1].status, Some(200));
+    }
+
+    #[test]
+    fn update_missing_id_is_a_noop() {
+        let sink = Arc::new(CountingSink(Mutex::new(Vec::new())));
+        let shared = shared_with(sink.clone());
+
+        shared.update("ghost", |f| f.status = Some(500));
+        // No stored flow, and nothing emitted.
+        assert!(shared.flows.lock().unwrap().is_empty());
+        assert!(sink.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn new_flow_starts_in_started_state() {
+        let f = new_flow(
+            "id1".into(),
+            7,
+            "GET".into(),
+            "https".into(),
+            "example.com".into(),
+            "/a".into(),
+            "https://example.com/a".into(),
+            "127.0.0.1:5000".into(),
+            "HTTP/1.1".into(),
+            vec![Header { name: "host".into(), value: "example.com".into() }],
+        );
+        assert_eq!(f.state, FlowState::Started);
+        assert_eq!(f.seq, 7);
+        assert!(f.status.is_none());
+        assert!(f.response_headers.is_empty());
+        assert!(!f.resent);
+    }
+}

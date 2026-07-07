@@ -93,3 +93,113 @@ pub struct NoopBreakpointSink;
 impl BreakpointSink for NoopBreakpointSink {
     fn paused(&self, _interception: Interception) {}
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn breakpoints() -> Arc<Breakpoints> {
+        Arc::new(Breakpoints::new(Arc::new(NoopBreakpointSink)))
+    }
+
+    fn interception(id: &str) -> Interception {
+        Interception {
+            id: id.into(),
+            method: "GET".into(),
+            url: "http://example.com/a".into(),
+            request_headers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn starts_disarmed() {
+        let bp = breakpoints();
+        assert!(!bp.is_armed());
+        assert!(!bp.should_break("http://anything/"));
+    }
+
+    #[test]
+    fn arm_sets_pattern_and_matches() {
+        let bp = breakpoints();
+        bp.arm("https://*.example.com/*".into());
+        assert!(bp.is_armed());
+        assert!(bp.should_break("https://api.example.com/v1"));
+        assert!(!bp.should_break("https://other.com/v1"));
+    }
+
+    #[test]
+    fn empty_pattern_defaults_to_wildcard() {
+        let bp = breakpoints();
+        bp.arm("   ".into());
+        assert!(bp.should_break("http://whatever/x"));
+    }
+
+    #[test]
+    fn disarm_stops_matching() {
+        let bp = breakpoints();
+        bp.arm("*".into());
+        bp.disarm();
+        assert!(!bp.is_armed());
+        assert!(!bp.should_break("http://x/"));
+    }
+
+    #[tokio::test]
+    async fn resume_continue_delivers_edited_headers() {
+        let bp = breakpoints();
+        bp.arm("*".into());
+        let waiter = bp.clone();
+        let handle = tokio::spawn(async move { waiter.wait(interception("abc")).await });
+
+        // Let wait() register the pending oneshot before resuming.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        bp.resume(
+            "abc",
+            Resume::Continue(vec![Header { name: "x-edit".into(), value: "1".into() }]),
+        );
+
+        match handle.await.unwrap() {
+            Resume::Continue(headers) => {
+                assert_eq!(headers.len(), 1);
+                assert_eq!(headers[0].name, "x-edit");
+            }
+            Resume::Abort => panic!("expected Continue"),
+        }
+        // wait() is one-shot: arming is cleared once a request is caught.
+        assert!(!bp.is_armed());
+    }
+
+    #[tokio::test]
+    async fn resume_abort_is_delivered() {
+        let bp = breakpoints();
+        bp.arm("*".into());
+        let waiter = bp.clone();
+        let handle = tokio::spawn(async move { waiter.wait(interception("xyz")).await });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        bp.resume("xyz", Resume::Abort);
+
+        assert!(matches!(handle.await.unwrap(), Resume::Abort));
+    }
+
+    #[tokio::test]
+    async fn disarm_releases_paused_requests() {
+        let bp = breakpoints();
+        bp.arm("*".into());
+        let waiter = bp.clone();
+        let handle = tokio::spawn(async move { waiter.wait(interception("held")).await });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Disarming must not leave the paused request hanging forever.
+        bp.disarm();
+
+        assert!(matches!(handle.await.unwrap(), Resume::Continue(_)));
+    }
+
+    #[tokio::test]
+    async fn resume_unknown_id_is_a_noop() {
+        let bp = breakpoints();
+        // No pending entry for this id; must not panic.
+        bp.resume("nope", Resume::Abort);
+    }
+}
