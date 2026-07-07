@@ -114,3 +114,81 @@ fn pem_to_der(pem: &str) -> Option<Vec<u8>> {
         .collect();
     base64::engine::general_purpose::STANDARD.decode(body.trim()).ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Unique temp dir for a test, cleaned up on drop.
+    struct TmpDir(PathBuf);
+    impl TmpDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("novaproxy-catest-{}-{}", std::process::id(), tag));
+            let _ = fs::remove_dir_all(&dir);
+            Self(dir)
+        }
+    }
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn fingerprint_is_stable_and_formatted() {
+        let (cert_pem, _key) = generate().unwrap();
+        let fp = fingerprint_pem(&cert_pem).expect("fingerprint");
+        // Same input => same fingerprint.
+        assert_eq!(Some(fp.clone()), fingerprint_pem(&cert_pem));
+        // SHA-256 => 32 bytes => 32 colon-separated uppercase hex groups.
+        let groups: Vec<&str> = fp.split(':').collect();
+        assert_eq!(groups.len(), 32);
+        for g in groups {
+            assert_eq!(g.len(), 2);
+            assert!(g.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase()));
+        }
+    }
+
+    #[test]
+    fn distinct_certs_have_distinct_fingerprints() {
+        let (a, _) = generate().unwrap();
+        let (b, _) = generate().unwrap();
+        assert_ne!(fingerprint_pem(&a), fingerprint_pem(&b));
+    }
+
+    #[test]
+    fn load_or_create_generates_then_reloads() {
+        let tmp = TmpDir::new("gen");
+        let first = CaMaterial::load_or_create(&tmp.0).expect("create");
+        assert!(tmp.0.join("ca.pem").exists());
+        assert!(tmp.0.join("ca.key").exists());
+        assert!(first.cert_pem.contains("-----BEGIN CERTIFICATE-----"));
+
+        // A second call must reuse the persisted material, not regenerate.
+        let second = CaMaterial::load_or_create(&tmp.0).expect("reload");
+        assert_eq!(first.cert_pem, second.cert_pem);
+        assert_eq!(first.key_pem, second.key_pem);
+        assert_eq!(first.fingerprint(), second.fingerprint());
+    }
+
+    #[test]
+    fn key_file_is_owner_only_on_unix() {
+        let tmp = TmpDir::new("perms");
+        CaMaterial::load_or_create(&tmp.0).expect("create");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(tmp.0.join("ca.key")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn generated_material_builds_a_usable_authority_and_subject() {
+        let tmp = TmpDir::new("auth");
+        let ca = CaMaterial::load_or_create(&tmp.0).expect("create");
+        assert!(ca.authority().is_ok(), "authority should build from generated CA");
+        assert_eq!(ca.subject(), "NovaProxy Root CA");
+        assert!(!ca.fingerprint().is_empty());
+    }
+}

@@ -195,3 +195,107 @@ fn run_hook(ctx: &Ctx<'_>, hook: Hook, flow: ScriptFlow) -> Option<ScriptResult>
         abort: aborted,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flow(status: Option<u16>) -> ScriptFlow {
+        ScriptFlow {
+            method: "GET".into(),
+            host: "example.com".into(),
+            path: "/a".into(),
+            url: "http://example.com/a".into(),
+            status,
+            headers: vec![("x-orig".into(), "keep".into())],
+        }
+    }
+
+    #[tokio::test]
+    async fn on_request_mutates_headers() {
+        let engine = ScriptEngine::new();
+        engine.set_script("export function onRequest(f){ f.headers['x-test'] = 'hi'; }".into());
+
+        let result = engine.run(Hook::Request, flow(None)).await.expect("result");
+        assert!(!result.abort);
+        let map: std::collections::HashMap<_, _> = result.headers.into_iter().collect();
+        assert_eq!(map.get("x-test").map(String::as_str), Some("hi"));
+        // Original headers survive.
+        assert_eq!(map.get("x-orig").map(String::as_str), Some("keep"));
+    }
+
+    #[tokio::test]
+    async fn abort_is_reported() {
+        let engine = ScriptEngine::new();
+        engine.set_script("export function onRequest(f){ f.abort(); }".into());
+        let result = engine.run(Hook::Request, flow(None)).await.expect("result");
+        assert!(result.abort);
+    }
+
+    #[tokio::test]
+    async fn missing_hook_returns_none() {
+        let engine = ScriptEngine::new();
+        // Only onRequest is defined; asking for the response hook yields None.
+        engine.set_script("export function onRequest(f){}".into());
+        assert!(engine.run(Hook::Response, flow(Some(200))).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn throwing_hook_leaves_flow_unchanged() {
+        let engine = ScriptEngine::new();
+        engine.set_script("export function onRequest(f){ throw new Error('boom'); }".into());
+        // A throwing hook must not wedge traffic: it resolves to None.
+        assert!(engine.run(Hook::Request, flow(None)).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn response_hook_sees_status() {
+        let engine = ScriptEngine::new();
+        engine.set_script(
+            "export function onResponse(f){ f.headers['x-status'] = String(f.status); }".into(),
+        );
+        let result = engine.run(Hook::Response, flow(Some(404))).await.expect("result");
+        let map: std::collections::HashMap<_, _> = result.headers.into_iter().collect();
+        assert_eq!(map.get("x-status").map(String::as_str), Some("404"));
+    }
+
+    #[tokio::test]
+    async fn flags_track_defined_hooks() {
+        let engine = ScriptEngine::new();
+        engine.set_script("export function onRequest(f){}".into());
+        // A completed run() is FIFO-ordered after set_script, so the flags are
+        // guaranteed settled by the time it returns.
+        let _ = engine.run(Hook::Request, flow(None)).await;
+        engine.set_enabled(true);
+
+        assert!(engine.is_enabled());
+        assert!(engine.wants_request());
+        assert!(!engine.wants_response());
+
+        engine.set_enabled(false);
+        assert!(!engine.is_enabled());
+        assert!(!engine.wants_request());
+    }
+
+    #[tokio::test]
+    async fn syntax_error_disables_engine() {
+        let engine = ScriptEngine::new();
+        engine.set_script("this is not valid javascript ^^^".into());
+        // Force the SetScript job to complete before reading flags.
+        let _ = engine.run(Hook::Request, flow(None)).await;
+        engine.set_enabled(true);
+        // Even though enabled was requested, a failed eval keeps is_enabled false.
+        assert!(!engine.is_enabled());
+    }
+
+    #[tokio::test]
+    async fn replacing_a_script_drops_old_hooks() {
+        let engine = ScriptEngine::new();
+        engine.set_script("export function onRequest(f){ f.headers['a']='1'; }".into());
+        let _ = engine.run(Hook::Request, flow(None)).await;
+
+        // New script defines only onResponse; the old onRequest must be gone.
+        engine.set_script("export function onResponse(f){}".into());
+        assert!(engine.run(Hook::Request, flow(None)).await.is_none());
+    }
+}
