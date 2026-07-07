@@ -7,7 +7,9 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nova_proto::{BodyPreview, Flow, FlowState, Header, NetworkConditions, Rule};
+use nova_proto::{
+    BodyPreview, Flow, FlowState, Header, NetworkConditions, Rule, TlsScope, WsMessage,
+};
 
 use crate::breakpoint::Breakpoints;
 use crate::scripting::ScriptEngine;
@@ -24,10 +26,37 @@ pub trait FlowSink: Send + Sync + 'static {
     fn emit(&self, flow: Flow);
 }
 
+/// Anything that wants to observe WebSocket frames (the Tauri layer implements
+/// it). Kept separate from [`FlowSink`] so frames stream on their own channel.
+pub trait WsSink: Send + Sync + 'static {
+    fn emit(&self, msg: WsMessage);
+}
+
+/// A no-op [`WsSink`] for contexts that don't inspect WebSocket traffic
+/// (examples, tests).
+pub struct NoopWsSink;
+impl WsSink for NoopWsSink {
+    fn emit(&self, _msg: WsMessage) {}
+}
+
+/// Correlation record for one upgraded WebSocket: the flow it belongs to and a
+/// monotonic frame counter shared across both directions of the socket.
+pub struct WsRoute {
+    pub flow_id: String,
+    pub seq: AtomicU64,
+}
+
 /// State shared across every per-connection handler clone.
 pub struct Shared {
     pub seq: AtomicU64,
     pub sink: Arc<dyn FlowSink>,
+    /// Sink for captured WebSocket frames.
+    pub ws_sink: Arc<dyn WsSink>,
+    /// Active WebSocket routes keyed by `host + path_and_query`, mapping the
+    /// handshake URL to the flow its frames belong to. Best-effort correlation:
+    /// concurrent sockets to an identical URL fold into the latest flow (same
+    /// documented approximation as the HTTP/2 request↔response FIFO).
+    pub ws_routes: Mutex<HashMap<String, Arc<WsRoute>>>,
     pub flows: Mutex<HashMap<String, Flow>>,
     pub body_cap: usize,
     pub total_captured: AtomicU64,
@@ -40,20 +69,27 @@ pub struct Shared {
     pub scripts: Arc<ScriptEngine>,
     /// Simulated network conditions (latency / throttle).
     pub net: Arc<RwLock<NetworkConditions>>,
+    /// Per-host SSL-proxying scope (decrypt vs tunnel).
+    pub tls_scope: Arc<RwLock<TlsScope>>,
 }
 
 impl Shared {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sink: Arc<dyn FlowSink>,
+        ws_sink: Arc<dyn WsSink>,
         body_cap: usize,
         rules: Arc<RwLock<Vec<Rule>>>,
         breakpoints: Arc<Breakpoints>,
         scripts: Arc<ScriptEngine>,
         net: Arc<RwLock<NetworkConditions>>,
+        tls_scope: Arc<RwLock<TlsScope>>,
     ) -> Self {
         Self {
             seq: AtomicU64::new(0),
             sink,
+            ws_sink,
+            ws_routes: Mutex::new(HashMap::new()),
             flows: Mutex::new(HashMap::new()),
             body_cap,
             total_captured: AtomicU64::new(0),
@@ -61,6 +97,7 @@ impl Shared {
             breakpoints,
             scripts,
             net,
+            tls_scope,
         }
     }
 
@@ -246,6 +283,8 @@ pub fn new_flow(
         error: None,
         resent: false,
         mapped_from: None,
+        is_websocket: false,
+        tunneled: false,
     }
 }
 
@@ -414,6 +453,7 @@ mod tests {
     fn shared_with(sink: Arc<CountingSink>) -> Shared {
         Shared::new(
             sink,
+            Arc::new(crate::flow::NoopWsSink),
             1024,
             Arc::new(RwLock::new(Vec::new())),
             Arc::new(crate::breakpoint::Breakpoints::new(Arc::new(
@@ -421,6 +461,7 @@ mod tests {
             ))),
             crate::scripting::ScriptEngine::new(),
             Arc::new(RwLock::new(NetworkConditions::default())),
+            Arc::new(RwLock::new(TlsScope::default())),
         )
     }
 

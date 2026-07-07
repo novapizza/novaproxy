@@ -9,6 +9,7 @@ pub mod intercept;
 pub mod rules;
 pub mod scripting;
 pub mod sysproxy;
+pub mod tlsscope;
 pub mod trust;
 
 use std::net::SocketAddr;
@@ -18,10 +19,10 @@ use std::sync::{Arc, RwLock};
 use anyhow::Result;
 use hudsucker::rustls::crypto::aws_lc_rs;
 use hudsucker::Proxy;
-use nova_proto::{NetworkConditions, Rule};
+use nova_proto::{NetworkConditions, Rule, TlsScope};
 use tokio::sync::oneshot;
 
-pub use flow::{FlowSink, Shared};
+pub use flow::{FlowSink, NoopWsSink, Shared, WsSink};
 
 use crate::breakpoint::Breakpoints;
 use crate::ca::CaMaterial;
@@ -37,6 +38,7 @@ pub struct EngineHooks {
     pub breakpoints: Arc<Breakpoints>,
     pub scripts: Arc<ScriptEngine>,
     pub net: Arc<RwLock<NetworkConditions>>,
+    pub tls_scope: Arc<RwLock<TlsScope>>,
 }
 
 /// Default cap on how many body bytes we retain per message for the inspector.
@@ -90,6 +92,7 @@ pub fn start(
     config: EngineConfig,
     ca: &CaMaterial,
     sink: Arc<dyn FlowSink>,
+    ws_sink: Arc<dyn WsSink>,
     hooks: EngineHooks,
 ) -> Result<EngineHandle> {
     // rustls 0.23 wants a process-default provider; explicit providers are also
@@ -99,13 +102,16 @@ pub fn start(
     let authority = ca.authority()?;
     let shared = Arc::new(Shared::new(
         sink,
+        ws_sink,
         config.body_cap,
         hooks.rules,
         hooks.breakpoints,
         hooks.scripts,
         hooks.net,
+        hooks.tls_scope,
     ));
     let handler = NovaHandler::new(shared.clone());
+    let ws_handler = NovaWsHandler::new(shared.clone());
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
 
     let proxy = Proxy::builder()
@@ -113,7 +119,7 @@ pub fn start(
         .with_ca(authority)
         .with_rustls_connector(aws_lc_rs::default_provider())
         .with_http_handler(handler)
-        .with_websocket_handler(NovaWsHandler)
+        .with_websocket_handler(ws_handler)
         .with_graceful_shutdown(async move {
             let _ = stop_rx.await;
         })

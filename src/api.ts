@@ -7,11 +7,15 @@ import type { RuleKind } from "./bindings/RuleKind";
 import type { Interception } from "./bindings/Interception";
 import type { Header } from "./bindings/Header";
 import type { NetworkConditions } from "./bindings/NetworkConditions";
+import type { WsMessage } from "./bindings/WsMessage";
+import type { TlsScope } from "./bindings/TlsScope";
 
 /** Thin typed wrappers over the Tauri command surface. */
 export const api = {
   /** Register the streaming channel that receives flow snapshots. */
   subscribeFlows: (channel: Channel<Flow>) => invoke<void>("subscribe_flows", { channel }),
+  /** Register the streaming channel that receives captured WebSocket frames. */
+  subscribeWs: (channel: Channel<WsMessage>) => invoke<void>("subscribe_ws", { channel }),
   proxyStatus: () => invoke<ProxyStatus>("proxy_status"),
   startProxy: (port?: number) => invoke<ProxyStatus>("start_proxy", { port }),
   stopProxy: () => invoke<ProxyStatus>("stop_proxy"),
@@ -25,6 +29,9 @@ export const api = {
   getNetworkConditions: () => invoke<NetworkConditions>("get_network_conditions"),
   setNetworkConditions: (net: NetworkConditions) =>
     invoke<void>("set_network_conditions", { net }),
+
+  getTlsScope: () => invoke<TlsScope>("get_tls_scope"),
+  setTlsScope: (scope: TlsScope) => invoke<void>("set_tls_scope", { scope }),
 
   writeFile: (path: string, contents: string) => invoke<void>("write_file", { path, contents }),
   readFile: (path: string) => invoke<string>("read_file", { path }),
@@ -55,4 +62,6 @@ export type {
   Interception,
   Header,
   NetworkConditions,
+  WsMessage,
+  TlsScope,
 };

@@ -46,4 +46,14 @@ resent: boolean,
 /**
  * Original host if a Map Remote rule rewrote this request's destination.
  */
-mapped_from: string | null, };
+mapped_from: string | null, 
+/**
+ * True when this flow is a WebSocket upgrade; its frames stream on the
+ * dedicated WS channel keyed by [`Flow::id`].
+ */
+is_websocket: boolean, 
+/**
+ * True when this CONNECT was tunneled without decryption (per the TLS
+ * scope): only the host is known, no request/response bodies are captured.
+ */
+tunneled: boolean, };

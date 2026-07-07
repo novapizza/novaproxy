@@ -10,7 +10,7 @@
 //!   approximation under heavy HTTP/2 multiplexing (see doc).
 
 use std::collections::VecDeque;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,15 +20,19 @@ use http_body_util::BodyStream;
 use hudsucker::hyper::header::{HeaderName, HeaderValue};
 use hudsucker::hyper::http::request::Parts;
 use hudsucker::hyper::{Request, Response};
-use hudsucker::{Body, HttpContext, HttpHandler, RequestOrResponse, WebSocketHandler};
-use nova_proto::{FlowState, Interception};
+use hudsucker::tokio_tungstenite::tungstenite::Message;
+use hudsucker::{
+    Body, HttpContext, HttpHandler, RequestOrResponse, WebSocketContext, WebSocketHandler,
+};
+use nova_proto::{FlowState, Interception, WsDirection, WsMessage, WsOpcode};
 
 use crate::breakpoint::Resume;
 use crate::flow::{
-    build_preview, collect_headers, header_value, new_flow, now_ms, Shared, Side,
+    build_preview, collect_headers, header_value, new_flow, now_ms, Shared, Side, WsRoute,
 };
 use crate::rules::{apply_request, guess_media_type, Outcome};
 use crate::scripting::{self, ScriptFlow};
+use crate::tlsscope::should_intercept_host;
 
 /// Flatten a header map into owned name/value pairs for scripts.
 fn header_pairs(map: &hudsucker::hyper::HeaderMap) -> Vec<(String, String)> {
@@ -201,6 +205,26 @@ impl HttpHandler for NovaHandler {
             }
             Outcome::Forward { mapped_from } => {
                 flow.mapped_from = mapped_from;
+
+                // WebSocket upgrade: record the flow and register a route so the
+                // WS handler can attach frames, then forward untouched. hudsucker
+                // never calls `handle_response` for an upgrade, so we must NOT
+                // push onto the response FIFO or tee the body (doing so would
+                // desync correlation for later requests on the connection).
+                if is_ws_upgrade(&parts.headers) {
+                    let key = ws_route_key(&flow.host, &flow.path);
+                    flow.is_websocket = true;
+                    self.shared.insert(flow);
+                    self.shared.ws_routes.lock().unwrap().insert(
+                        key,
+                        Arc::new(WsRoute {
+                            flow_id: id.clone(),
+                            seq: AtomicU64::new(0),
+                        }),
+                    );
+                    return RequestOrResponse::Request(Request::from_parts(parts, body));
+                }
+
                 let bp_url = flow.url.clone();
                 let bp_method = flow.method.clone();
                 let bp_host = flow.host.clone();
@@ -375,6 +399,42 @@ impl HttpHandler for NovaHandler {
         Response::from_parts(parts, teed)
     }
 
+    /// Decide, per CONNECT, whether to MITM (decrypt) or tunnel raw. hudsucker
+    /// only calls this for CONNECT requests; returning `false` makes it splice
+    /// the bytes through untouched (no leaf cert presented — the fix for hosts
+    /// that pin certs or require mTLS).
+    async fn should_intercept(&mut self, ctx: &HttpContext, req: &Request<Body>) -> bool {
+        let Some(host) = req.uri().host().map(|h| h.to_string()) else {
+            return true;
+        };
+        let scope = self.shared.tls_scope.read().unwrap().clone();
+        if should_intercept_host(&scope, &host) {
+            return true;
+        }
+
+        // Tunneled: no decryption, so we never see the inner requests. Record a
+        // single lightweight flow so the host is at least visible in the list.
+        let seq = self.shared.seq.fetch_add(1, Ordering::Relaxed);
+        let id = format!("f{seq}");
+        let port = req.uri().port_u16().unwrap_or(443);
+        let mut flow = new_flow(
+            id,
+            seq,
+            "CONNECT".into(),
+            "https".into(),
+            host.clone(),
+            String::new(),
+            format!("{host}:{port}"),
+            ctx.client_addr.to_string(),
+            format!("{:?}", req.version()),
+            Vec::new(),
+        );
+        flow.tunneled = true;
+        flow.state = FlowState::Completed;
+        self.shared.insert(flow);
+        false
+    }
+
     async fn handle_error(
         &mut self,
         _ctx: &HttpContext,
@@ -402,12 +462,168 @@ impl HttpHandler for NovaHandler {
     }
 }
 
-/// Pass-through WebSocket handler (messages forwarded untouched). WS message
-/// inspection is a Phase 3 item; this keeps sockets working today.
-#[derive(Clone)]
-pub struct NovaWsHandler;
+/// True when request headers carry a WebSocket upgrade handshake
+/// (`Connection: Upgrade` + `Upgrade: websocket`).
+fn is_ws_upgrade(headers: &hudsucker::hyper::HeaderMap) -> bool {
+    let upgrade_ws = headers
+        .get(hudsucker::hyper::header::UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("websocket"))
+        .unwrap_or(false);
+    let connection_upgrade = headers
+        .get(hudsucker::hyper::header::CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case("upgrade")))
+        .unwrap_or(false);
+    upgrade_ws && connection_upgrade
+}
 
-impl WebSocketHandler for NovaWsHandler {}
+/// Correlation key shared between the HTTP handshake (`handle_request`) and the
+/// upgraded socket's frames (`handle_message`): host + path (+ query).
+///
+/// The handshake host may carry a `:port` (from a Host header after a CONNECT
+/// tunnel) while the WS context's `uri.host()` never does, so a numeric port
+/// suffix is stripped to keep both sides agreeing on the key.
+fn ws_route_key(host: &str, path: &str) -> String {
+    let host = match host.rsplit_once(':') {
+        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
+        _ => host,
+    };
+    format!("{host}{path}")
+}
+
+/// Decode a tungstenite [`Message`] into the fields of a [`WsMessage`],
+/// retaining at most `cap` bytes of payload for the preview.
+fn classify_message(
+    msg: &Message,
+    cap: usize,
+) -> (WsOpcode, Option<String>, Option<String>, u64, bool) {
+    use base64::Engine;
+    let b64 = |bytes: &[u8]| {
+        let keep = bytes.len().min(cap);
+        (
+            Some(base64::engine::general_purpose::STANDARD.encode(&bytes[..keep])),
+            bytes.len() > cap,
+        )
+    };
+    match msg {
+        Message::Text(t) => {
+            let s = t.as_str();
+            if s.len() <= cap {
+                (WsOpcode::Text, Some(s.to_string()), None, s.len() as u64, false)
+            } else {
+                let mut end = cap;
+                while end > 0 && !s.is_char_boundary(end) {
+                    end -= 1;
+                }
+                (WsOpcode::Text, Some(s[..end].to_string()), None, s.len() as u64, true)
+            }
+        }
+        Message::Binary(b) => {
+            let (b64s, truncated) = if b.is_empty() { (None, false) } else { b64(b) };
+            (WsOpcode::Binary, None, b64s, b.len() as u64, truncated)
+        }
+        Message::Ping(b) => {
+            let (b64s, truncated) = if b.is_empty() { (None, false) } else { b64(b) };
+            (WsOpcode::Ping, None, b64s, b.len() as u64, truncated)
+        }
+        Message::Pong(b) => {
+            let (b64s, truncated) = if b.is_empty() { (None, false) } else { b64(b) };
+            (WsOpcode::Pong, None, b64s, b.len() as u64, truncated)
+        }
+        Message::Close(frame) => {
+            let reason = frame
+                .as_ref()
+                .map(|f| format!("{} {}", u16::from(f.code), f.reason))
+                .unwrap_or_default();
+            let size = reason.len() as u64;
+            let text = if reason.is_empty() { None } else { Some(reason) };
+            (WsOpcode::Close, text, None, size, false)
+        }
+        // Raw frames are never surfaced while reading a stream.
+        Message::Frame(_) => (WsOpcode::Binary, None, None, 0, false),
+    }
+}
+
+/// Record one WebSocket frame against the flow its socket was opened on, and
+/// stream it to the UI. Derives the correlation key and direction from the
+/// hudsucker context, then delegates to [`record_ws_frame`].
+fn capture_ws_message(shared: &Arc<Shared>, ctx: &WebSocketContext, msg: &Message) {
+    let (direction, uri) = match ctx {
+        WebSocketContext::ClientToServer { dst, .. } => (WsDirection::Sent, dst),
+        WebSocketContext::ServerToClient { src, .. } => (WsDirection::Received, src),
+    };
+    let key = ws_route_key(
+        uri.host().unwrap_or_default(),
+        uri.path_and_query().map(|p| p.as_str()).unwrap_or("/"),
+    );
+    record_ws_frame(shared, &key, direction, msg);
+}
+
+/// Attach a frame to the route registered under `key` and stream it to the UI.
+/// Frames whose route is unknown (no matching handshake) are dropped rather
+/// than guessed. A close frame finalizes the flow and retires the route.
+fn record_ws_frame(shared: &Arc<Shared>, key: &str, direction: WsDirection, msg: &Message) {
+    let route = shared.ws_routes.lock().unwrap().get(key).cloned();
+    let Some(route) = route else { return };
+
+    let (opcode, text, base64, size, truncated) = classify_message(msg, shared.body_cap);
+    let seq = route.seq.fetch_add(1, Ordering::Relaxed);
+
+    shared.ws_sink.emit(WsMessage {
+        flow_id: route.flow_id.clone(),
+        seq,
+        direction,
+        opcode,
+        size,
+        truncated,
+        text,
+        base64,
+        at: now_ms(),
+    });
+
+    // A close frame ends the socket: finalize the flow and retire the route.
+    if matches!(opcode, WsOpcode::Close) {
+        let started = shared
+            .flows
+            .lock()
+            .unwrap()
+            .get(&route.flow_id)
+            .map(|f| f.started_at)
+            .unwrap_or_else(now_ms);
+        shared.update(&route.flow_id, |f| {
+            if f.state != FlowState::Error {
+                f.state = FlowState::Completed;
+                f.duration_ms = Some(now_ms() - started);
+            }
+        });
+        shared.ws_routes.lock().unwrap().remove(key);
+    }
+}
+
+/// WebSocket handler that captures each frame (teed like bodies) while
+/// forwarding it untouched.
+#[derive(Clone)]
+pub struct NovaWsHandler {
+    shared: Arc<Shared>,
+}
+
+impl NovaWsHandler {
+    pub fn new(shared: Arc<Shared>) -> Self {
+        Self { shared }
+    }
+}
+
+impl WebSocketHandler for NovaWsHandler {
+    async fn handle_message(
+        &mut self,
+        ctx: &WebSocketContext,
+        msg: Message,
+    ) -> Option<Message> {
+        capture_ws_message(&self.shared, ctx, &msg);
+        Some(msg)
+    }
+}
 
 /// Wrap `body` so every data frame is forwarded immediately while a capped copy
 /// is accumulated off to the side and, on completion, folded into the flow.
@@ -644,5 +860,188 @@ mod tests {
         assert!(buf.is_empty());
         assert_eq!(total, 8);
         assert!(truncated);
+    }
+
+    // ---- WebSocket helpers ----
+
+    #[test]
+    fn ws_upgrade_detected_from_headers() {
+        let mut m = HeaderMap::new();
+        m.insert("upgrade", "websocket".parse().unwrap());
+        m.insert("connection", "Upgrade".parse().unwrap());
+        assert!(is_ws_upgrade(&m));
+    }
+
+    #[test]
+    fn ws_upgrade_matches_connection_token_list() {
+        // Browsers send "keep-alive, Upgrade"; the token must still match.
+        let mut m = HeaderMap::new();
+        m.insert("upgrade", "websocket".parse().unwrap());
+        m.insert("connection", "keep-alive, Upgrade".parse().unwrap());
+        assert!(is_ws_upgrade(&m));
+    }
+
+    #[test]
+    fn ws_upgrade_rejects_plain_request_and_partial_headers() {
+        assert!(!is_ws_upgrade(&HeaderMap::new()));
+        let mut only_upgrade = HeaderMap::new();
+        only_upgrade.insert("upgrade", "websocket".parse().unwrap());
+        assert!(!is_ws_upgrade(&only_upgrade), "Upgrade without Connection is not a handshake");
+        let mut wrong_proto = HeaderMap::new();
+        wrong_proto.insert("upgrade", "h2c".parse().unwrap());
+        wrong_proto.insert("connection", "Upgrade".parse().unwrap());
+        assert!(!is_ws_upgrade(&wrong_proto));
+    }
+
+    #[test]
+    fn ws_route_key_is_host_plus_path() {
+        assert_eq!(ws_route_key("echo.example.com", "/ws?token=1"), "echo.example.com/ws?token=1");
+    }
+
+    #[test]
+    fn ws_route_key_strips_numeric_port() {
+        // Host header "host:443" (handshake) must key the same as uri.host()
+        // "host" (the WS context), so frames correlate after a CONNECT tunnel.
+        assert_eq!(ws_route_key("host:443", "/ws"), ws_route_key("host", "/ws"));
+        // A non-numeric suffix after ':' is not a port and must be preserved.
+        assert_eq!(ws_route_key("weird:name", "/x"), "weird:name/x");
+    }
+
+    #[test]
+    fn classify_text_frame() {
+        let (op, text, b64, size, trunc) = classify_message(&Message::text("hi there"), 1024);
+        assert_eq!(op, WsOpcode::Text);
+        assert_eq!(text.as_deref(), Some("hi there"));
+        assert!(b64.is_none());
+        assert_eq!(size, 8);
+        assert!(!trunc);
+    }
+
+    #[test]
+    fn classify_text_frame_truncates_on_char_boundary() {
+        // "héllo": 'é' is two bytes, so a cap of 2 must back off to 1 byte.
+        let (_op, text, _b64, size, trunc) = classify_message(&Message::text("héllo"), 2);
+        assert_eq!(text.as_deref(), Some("h"), "must not split a multibyte char");
+        assert_eq!(size, 6); // true byte length: h + é(2) + l + l + o
+        assert!(trunc);
+    }
+
+    #[test]
+    fn classify_binary_frame_is_base64_and_tracks_truncation() {
+        let (op, text, b64, size, trunc) =
+            classify_message(&Message::binary(vec![1u8, 2, 3, 4, 5]), 3);
+        assert_eq!(op, WsOpcode::Binary);
+        assert!(text.is_none());
+        assert!(b64.is_some(), "binary payload is previewed as base64");
+        assert_eq!(size, 5); // full wire size
+        assert!(trunc); // only 3 of 5 bytes retained
+    }
+
+    #[test]
+    fn classify_close_frame_carries_no_payload_when_empty() {
+        let (op, text, b64, size, trunc) = classify_message(&Message::Close(None), 1024);
+        assert_eq!(op, WsOpcode::Close);
+        assert!(text.is_none());
+        assert!(b64.is_none());
+        assert_eq!(size, 0);
+        assert!(!trunc);
+    }
+
+    // ---- WS frame capture: route → sink → finalize ----
+
+    use std::sync::Mutex;
+
+    struct VecWsSink(Mutex<Vec<WsMessage>>);
+    impl crate::flow::WsSink for VecWsSink {
+        fn emit(&self, msg: WsMessage) {
+            self.0.lock().unwrap().push(msg);
+        }
+    }
+
+    struct NoopFlowSink;
+    impl crate::flow::FlowSink for NoopFlowSink {
+        fn emit(&self, _flow: nova_proto::Flow) {}
+    }
+
+    fn shared_for_ws(ws_sink: Arc<VecWsSink>) -> Arc<Shared> {
+        use std::sync::RwLock;
+        Arc::new(Shared::new(
+            Arc::new(NoopFlowSink),
+            ws_sink,
+            1024,
+            Arc::new(RwLock::new(Vec::new())),
+            Arc::new(crate::breakpoint::Breakpoints::new(Arc::new(
+                crate::breakpoint::NoopBreakpointSink,
+            ))),
+            crate::scripting::ScriptEngine::new(),
+            Arc::new(RwLock::new(Default::default())),
+            Arc::new(RwLock::new(Default::default())),
+        ))
+    }
+
+    fn register_route(shared: &Arc<Shared>, key: &str, flow_id: &str) {
+        shared.ws_routes.lock().unwrap().insert(
+            key.to_string(),
+            Arc::new(WsRoute {
+                flow_id: flow_id.to_string(),
+                seq: AtomicU64::new(0),
+            }),
+        );
+    }
+
+    #[test]
+    fn record_ws_frame_emits_with_flow_id_and_incrementing_seq() {
+        let ws_sink = Arc::new(VecWsSink(Mutex::new(Vec::new())));
+        let shared = shared_for_ws(ws_sink.clone());
+        register_route(&shared, "host/ws", "f7");
+
+        record_ws_frame(&shared, "host/ws", WsDirection::Sent, &Message::text("first"));
+        record_ws_frame(&shared, "host/ws", WsDirection::Received, &Message::text("second"));
+
+        let msgs = ws_sink.0.lock().unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].flow_id, "f7");
+        assert_eq!(msgs[0].seq, 0);
+        assert_eq!(msgs[0].direction, WsDirection::Sent);
+        assert_eq!(msgs[0].text.as_deref(), Some("first"));
+        assert_eq!(msgs[1].seq, 1, "seq is monotonic across both directions");
+        assert_eq!(msgs[1].direction, WsDirection::Received);
+    }
+
+    #[test]
+    fn record_ws_frame_without_route_is_dropped() {
+        let ws_sink = Arc::new(VecWsSink(Mutex::new(Vec::new())));
+        let shared = shared_for_ws(ws_sink.clone());
+        // No route registered for this key.
+        record_ws_frame(&shared, "unknown/ws", WsDirection::Sent, &Message::text("x"));
+        assert!(ws_sink.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn close_frame_finalizes_flow_and_retires_route() {
+        let ws_sink = Arc::new(VecWsSink(Mutex::new(Vec::new())));
+        let shared = shared_for_ws(ws_sink.clone());
+        register_route(&shared, "host/ws", "f9");
+        // The flow must exist for finalization to update its state.
+        let mut flow = new_flow(
+            "f9".into(), 0, "GET".into(), "https".into(), "host".into(),
+            "/ws".into(), "https://host/ws".into(), "127.0.0.1:1".into(),
+            "HTTP/1.1".into(), Vec::new(),
+        );
+        flow.is_websocket = true;
+        shared.insert(flow);
+
+        record_ws_frame(&shared, "host/ws", WsDirection::Received, &Message::Close(None));
+
+        let stored = shared.flows.lock().unwrap().get("f9").cloned().unwrap();
+        assert_eq!(stored.state, FlowState::Completed);
+        assert!(stored.duration_ms.is_some());
+        assert!(
+            shared.ws_routes.lock().unwrap().get("host/ws").is_none(),
+            "route is retired after close"
+        );
+        // A frame arriving after close finds no route and is dropped.
+        record_ws_frame(&shared, "host/ws", WsDirection::Sent, &Message::text("late"));
+        assert_eq!(ws_sink.0.lock().unwrap().len(), 1, "only the close frame was recorded");
     }
 }

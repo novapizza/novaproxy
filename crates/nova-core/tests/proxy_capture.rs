@@ -65,6 +65,7 @@ async fn captures_http_flow_end_to_end() {
         },
         &ca,
         sink,
+        Arc::new(nova_core::NoopWsSink),
         nova_core::EngineHooks {
             rules: Arc::new(RwLock::new(Vec::new())),
             breakpoints: Arc::new(nova_core::breakpoint::Breakpoints::new(Arc::new(
@@ -72,6 +73,7 @@ async fn captures_http_flow_end_to_end() {
             ))),
             scripts: nova_core::scripting::ScriptEngine::new(),
             net: Arc::new(RwLock::new(Default::default())),
+            tls_scope: Arc::new(RwLock::new(Default::default())),
         },
     )
     .unwrap();

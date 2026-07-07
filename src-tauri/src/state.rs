@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use nova_core::breakpoint::{BreakpointSink, Breakpoints};
 use nova_core::scripting::ScriptEngine;
-use nova_core::{ca::CaMaterial, EngineHandle, FlowSink};
-use nova_proto::{Flow, Interception, NetworkConditions, Rule};
+use nova_core::{ca::CaMaterial, EngineHandle, FlowSink, WsSink};
+use nova_proto::{Flow, Interception, NetworkConditions, Rule, TlsScope, WsMessage};
 use tauri::ipc::Channel;
 
 /// Forwards engine [`Flow`] updates to whichever frontend channel is currently
@@ -27,6 +27,26 @@ impl FlowSink for ChannelSink {
     fn emit(&self, flow: Flow) {
         if let Some(channel) = self.channel.lock().unwrap().as_ref() {
             let _ = channel.send(flow);
+        }
+    }
+}
+
+/// Forwards captured WebSocket frames onto the frontend WS channel.
+#[derive(Default)]
+pub struct WsChannelSink {
+    channel: Mutex<Option<Channel<WsMessage>>>,
+}
+
+impl WsChannelSink {
+    pub fn set_channel(&self, channel: Channel<WsMessage>) {
+        *self.channel.lock().unwrap() = Some(channel);
+    }
+}
+
+impl WsSink for WsChannelSink {
+    fn emit(&self, msg: WsMessage) {
+        if let Some(channel) = self.channel.lock().unwrap().as_ref() {
+            let _ = channel.send(msg);
         }
     }
 }
@@ -56,6 +76,8 @@ pub struct AppState {
     pub ca: Mutex<Option<CaMaterial>>,
     pub engine: Mutex<Option<EngineHandle>>,
     pub sink: Arc<ChannelSink>,
+    /// Sink that bridges WebSocket frames onto the frontend WS channel.
+    pub ws_sink: Arc<WsChannelSink>,
     /// Shared with the engine so rule edits apply live, without a restart.
     pub rules: Arc<RwLock<Vec<Rule>>>,
     /// Whether we currently own the OS system-proxy setting.
@@ -67,6 +89,8 @@ pub struct AppState {
     pub scripts: Arc<ScriptEngine>,
     /// Simulated network conditions (latency / throttle).
     pub net: Arc<RwLock<NetworkConditions>>,
+    /// Per-host SSL-proxying scope (decrypt vs tunnel).
+    pub tls_scope: Arc<RwLock<TlsScope>>,
 }
 
 impl AppState {
@@ -78,12 +102,14 @@ impl AppState {
             ca: Mutex::new(None),
             engine: Mutex::new(None),
             sink: Arc::new(ChannelSink::default()),
+            ws_sink: Arc::new(WsChannelSink::default()),
             rules: Arc::new(RwLock::new(Vec::new())),
             system_proxy: Mutex::new(false),
             bp_sink,
             breakpoints,
             scripts: ScriptEngine::new(),
             net: Arc::new(RwLock::new(NetworkConditions::default())),
+            tls_scope: Arc::new(RwLock::new(TlsScope::default())),
         }
     }
 
@@ -93,6 +119,10 @@ impl AppState {
 
     pub fn net_path(&self) -> PathBuf {
         self.data_dir.join("network.json")
+    }
+
+    pub fn tls_scope_path(&self) -> PathBuf {
+        self.data_dir.join("tls_scope.json")
     }
 
     pub fn rules_path(&self) -> PathBuf {

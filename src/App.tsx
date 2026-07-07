@@ -9,6 +9,8 @@ import {
   type Interception,
   type Header,
   type NetworkConditions,
+  type WsMessage,
+  type TlsScope,
 } from "./api";
 import { useStore } from "./store";
 import { exportSession, exportHar, importSession } from "./session";
@@ -66,7 +68,7 @@ function bodyToText(body: Flow["request_body"]): string | null {
 }
 
 type Section = "flows" | "rules" | "break" | "scripts" | "certs";
-type DetailTab = "overview" | "request" | "response" | "timing" | "curl";
+type DetailTab = "overview" | "request" | "response" | "timing" | "curl" | "ws";
 
 const RAIL: { id: Section; icon: string; label: string }[] = [
   { id: "flows", icon: "≋", label: "Flows" },
@@ -176,6 +178,10 @@ export function App() {
       setBpArmed(false); // one-shot: the backend disarmed on this hit
     };
     api.subscribeBreakpoints(bpChannel);
+
+    const wsChannel = new Channel<WsMessage>();
+    wsChannel.onmessage = (m) => useStore.getState().addWsMessage(m);
+    api.subscribeWs(wsChannel);
 
     api.proxyStatus().then((p) => useStore.getState().setProxy(p));
     api.caStatus().then((c) => useStore.getState().setCa(c)).catch(() => {});
@@ -574,6 +580,10 @@ function Detail({
   onResend: () => void;
   onCopyCurl: () => void;
 }) {
+  const wsMessages = useStore((s) => s.wsMessages[flow.id]);
+  const tabs = flow.is_websocket
+    ? [...DETAIL_TABS, { id: "ws" as DetailTab, label: `WebSocket${wsMessages ? ` (${wsMessages.length})` : ""}` }]
+    : DETAIL_TABS;
   const totalSize = num(flow.request_size) + num(flow.response_size);
   const facts = [
     { k: "Method", v: flow.method },
@@ -596,7 +606,7 @@ function Detail({
           <div className="resend" onClick={onResend}>↻ Resend</div>
         </div>
         <div className="detail-tabs">
-          {DETAIL_TABS.map((t) => (
+          {tabs.map((t) => (
             <div key={t.id} className={`dtab ${tab === t.id ? "active" : ""}`} onClick={() => setTab(t.id)}>{t.label}</div>
           ))}
         </div>
@@ -620,6 +630,8 @@ function Detail({
                 <span className="chip blue">plaintext</span>
               )}
               <span className="chip blue">{flow.http_version}</span>
+              {flow.is_websocket && <span className="chip cyan">≋ WebSocket</span>}
+              {flow.tunneled && <span className="chip amber">⇅ tunneled · not decrypted</span>}
               {flow.mapped_from && <span className="chip violet">⤳ mapped from {flow.mapped_from}</span>}
               {flow.resent && <span className="chip cyan">↻ resent</span>}
               {flow.error && <span className="chip red">⚠ {flow.error}</span>}
@@ -687,8 +699,40 @@ function Detail({
             <pre className="code curl">{buildCurl(flow)}</pre>
           </>
         )}
+
+        {tab === "ws" && <WsPanel messages={wsMessages} />}
       </div>
     </>
+  );
+}
+
+function WsPanel({ messages }: { messages: WsMessage[] | undefined }) {
+  if (!messages || messages.length === 0) {
+    return <pre className="code res">— no WebSocket frames captured yet —</pre>;
+  }
+  return (
+    <div className="ws-log">
+      {messages.map((m) => {
+        const sent = m.direction === "Sent";
+        const label = m.opcode.toLowerCase();
+        const payload =
+          m.text != null
+            ? m.text
+            : m.base64 != null
+            ? `[binary ${formatBytes(m.size)}]`
+            : m.opcode === "Close"
+            ? "(closed)"
+            : "";
+        return (
+          <div className={`ws-frame ${sent ? "sent" : "recv"}`} key={m.flow_id + "-" + String(m.seq)}>
+            <span className={`ws-dir ${sent ? "sent" : "recv"}`}>{sent ? "▲ sent" : "▼ recv"}</span>
+            <span className="ws-op">{label}</span>
+            <span className="ws-payload">{payload}{m.truncated ? " …(truncated)" : ""}</span>
+            <span className="ws-meta">{formatBytes(m.size)} · {formatAgo(m.at)}</span>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -997,7 +1041,81 @@ function CertsSection({ ca, showToast }: { ca: CaStatus | null; showToast: (t: s
             </>
           )}
         </div>
+
+        <TlsScopeCard showToast={showToast} />
       </div>
+    </div>
+  );
+}
+
+function TlsScopeCard({ showToast }: { showToast: (t: string) => void }) {
+  const [scope, setScope] = useState<TlsScope | null>(null);
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    api.getTlsScope().then(setScope).catch(() => {});
+  }, []);
+
+  if (!scope) return null;
+
+  const update = (patch: Partial<TlsScope>) => {
+    setScope({ ...scope, ...patch });
+    setDirty(true);
+  };
+
+  const save = () => {
+    // One host glob per line while editing; trim + drop blanks on save.
+    const clean = (lines: string[]) => lines.map((s) => s.trim()).filter(Boolean);
+    const cleaned: TlsScope = {
+      ...scope,
+      include: clean(scope.include),
+      exclude: clean(scope.exclude),
+    };
+    setScope(cleaned);
+    api.setTlsScope(cleaned).then(() => { setDirty(false); showToast("SSL proxying scope saved"); }).catch((e) => showToast(String(e)));
+  };
+
+  return (
+    <div className="cert-card" style={{ marginTop: 16 }}>
+      <div className="sec-label meta" style={{ margin: "2px 0 10px" }}>
+        SSL Proxying scope
+        {dirty && <span className="copy" onClick={save}>Save</span>}
+      </div>
+      <p className="page-sub" style={{ margin: "0 0 12px" }}>
+        Hosts that pin certificates or require client certs can't be decrypted — tunnel them so the app keeps working.
+      </p>
+      <div className="scope-toggle" onClick={() => update({ intercept_all: !scope.intercept_all })}>
+        <span className={`switch sm ${scope.intercept_all ? "on" : ""}`}><span className="knob" /></span>
+        <span>{scope.intercept_all ? "Decrypt all HTTPS, except the hosts below" : "Decrypt only the hosts below"}</span>
+      </div>
+      {scope.intercept_all ? (
+        <>
+          <div className="sec-label">Tunnel (don't decrypt) — one host glob per line</div>
+          <textarea
+            className="intercept-headers"
+            value={scope.exclude.join("\n")}
+            onChange={(e) => update({ exclude: e.target.value.split("\n") })}
+            placeholder={"*.apple.com\npinned.example.com"}
+            spellCheck={false}
+          />
+        </>
+      ) : (
+        <>
+          <div className="sec-label">Decrypt only these — one host glob per line</div>
+          <textarea
+            className="intercept-headers"
+            value={scope.include.join("\n")}
+            onChange={(e) => update({ include: e.target.value.split("\n") })}
+            placeholder={"api.example.com\n*.mysite.dev"}
+            spellCheck={false}
+          />
+        </>
+      )}
+      {dirty && (
+        <div className="cert-actions">
+          <div className="btn-primary" onClick={save}>Save scope</div>
+        </div>
+      )}
     </div>
   );
 }

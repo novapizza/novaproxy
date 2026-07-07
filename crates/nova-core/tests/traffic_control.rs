@@ -39,6 +39,7 @@ fn start_engine(
         EngineConfig { addr: ([127, 0, 0, 1], port).into(), body_cap },
         &ca,
         sink,
+        Arc::new(nova_core::NoopWsSink),
         EngineHooks {
             rules: Arc::new(RwLock::new(rules)),
             breakpoints: Arc::new(nova_core::breakpoint::Breakpoints::new(Arc::new(
@@ -46,6 +47,7 @@ fn start_engine(
             ))),
             scripts: nova_core::scripting::ScriptEngine::new(),
             net: Arc::new(RwLock::new(Default::default())),
+            tls_scope: Arc::new(RwLock::new(Default::default())),
         },
     )
     .unwrap();

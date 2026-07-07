@@ -62,6 +62,33 @@ pub struct NetworkConditions {
     pub down_kbps: u32,
 }
 
+/// Which hosts NovaProxy decrypts (MITM) versus tunnels through untouched.
+///
+/// A host that pins its certificate or requires mTLS will abort NovaProxy's
+/// leaf cert; tunneling it raw keeps the app working at the cost of visibility.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub struct TlsScope {
+    /// When true, decrypt everything except hosts matching `exclude`. When
+    /// false, decrypt only hosts matching `include` (tunnel everything else).
+    pub intercept_all: bool,
+    /// Host globs to decrypt (used when `intercept_all` is false).
+    pub include: Vec<String>,
+    /// Host globs to tunnel without decrypting (used when `intercept_all`).
+    pub exclude: Vec<String>,
+}
+
+impl Default for TlsScope {
+    /// Decrypt everything, exclude nothing — the least-surprising default.
+    fn default() -> Self {
+        Self {
+            intercept_all: true,
+            include: Vec::new(),
+            exclude: Vec::new(),
+        }
+    }
+}
+
 /// A request held at a breakpoint, streamed to the UI so it can be edited and
 /// then continued or aborted.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -110,6 +137,58 @@ pub struct Flow {
     pub resent: bool,
     /// Original host if a Map Remote rule rewrote this request's destination.
     pub mapped_from: Option<String>,
+    /// True when this flow is a WebSocket upgrade; its frames stream on the
+    /// dedicated WS channel keyed by [`Flow::id`].
+    pub is_websocket: bool,
+    /// True when this CONNECT was tunneled without decryption (per the TLS
+    /// scope): only the host is known, no request/response bodies are captured.
+    pub tunneled: bool,
+}
+
+/// Direction of a captured WebSocket frame, from the client's point of view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub enum WsDirection {
+    /// Client → server (a frame the app under test sent).
+    Sent,
+    /// Server → client (a frame the app under test received).
+    Received,
+}
+
+/// The kind of a captured WebSocket frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub enum WsOpcode {
+    Text,
+    Binary,
+    Ping,
+    Pong,
+    Close,
+}
+
+/// A single WebSocket frame captured on an upgraded [`Flow`]. Frames are
+/// streamed to the UI on their own channel (keyed by [`WsMessage::flow_id`])
+/// rather than folded into the flow snapshot, so a chatty socket doesn't
+/// re-emit the whole flow per message.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub struct WsMessage {
+    /// Id of the upgrade [`Flow`] this frame belongs to.
+    pub flow_id: String,
+    /// Monotonic per-flow sequence for stable ordering.
+    pub seq: u64,
+    pub direction: WsDirection,
+    pub opcode: WsOpcode,
+    /// Full payload size in bytes (may exceed the retained preview).
+    pub size: u64,
+    /// True when the preview was cut off at the memory cap.
+    pub truncated: bool,
+    /// UTF-8 preview for text frames.
+    pub text: Option<String>,
+    /// Base64 preview for binary/control payloads.
+    pub base64: Option<String>,
+    /// Epoch milliseconds when the frame was seen.
+    pub at: f64,
 }
 
 /// Current state of the proxy engine, returned by the `proxy_status` command.
