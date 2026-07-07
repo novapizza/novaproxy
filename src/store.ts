@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Flow, ProxyStatus, CaStatus } from "./api";
+import type { Flow, ProxyStatus, CaStatus, WsMessage } from "./api";
 
 interface Store {
   flows: Flow[];
@@ -7,8 +7,11 @@ interface Store {
   selectedId: string | null;
   proxy: ProxyStatus;
   ca: CaStatus | null;
+  /** Captured WebSocket frames, keyed by the upgrade flow's id. */
+  wsMessages: Record<string, WsMessage[]>;
 
   upsertFlow: (f: Flow) => void;
+  addWsMessage: (m: WsMessage) => void;
   loadFlows: (flows: Flow[]) => void;
   clear: () => void;
   setRecording: (v: boolean) => void;
@@ -31,6 +34,7 @@ export const useStore = create<Store>((set) => ({
   selectedId: null,
   proxy: emptyProxy,
   ca: null,
+  wsMessages: {},
 
   // Snapshots arrive multiple times per flow (started → response → completed).
   // Replace in place if we've seen the id; otherwise prepend (newest first).
@@ -45,9 +49,15 @@ export const useStore = create<Store>((set) => ({
       if (!s.recording) return {};
       return { flows: [f, ...s.flows] };
     }),
+  // Append a captured WS frame to its flow's list (ordered by arrival).
+  addWsMessage: (m) =>
+    set((s) => {
+      const prev = s.wsMessages[m.flow_id] ?? [];
+      return { wsMessages: { ...s.wsMessages, [m.flow_id]: [...prev, m] } };
+    }),
   // Replace the flow list (used when importing a saved .nova session).
-  loadFlows: (flows) => set({ flows, selectedId: null }),
-  clear: () => set({ flows: [], selectedId: null }),
+  loadFlows: (flows) => set({ flows, selectedId: null, wsMessages: {} }),
+  clear: () => set({ flows: [], selectedId: null, wsMessages: {} }),
   setRecording: (v) => set({ recording: v }),
   select: (id) => set({ selectedId: id }),
   setProxy: (p) => set({ proxy: p }),

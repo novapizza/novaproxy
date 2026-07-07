@@ -60,6 +60,16 @@ async fn main() {
         down_kbps,
     }));
 
+    // Optional TLS passthrough for testing: NOVA_TLS_EXCLUDE=host1,*.host2
+    let tls_scope = Arc::new(RwLock::new(nova_proto::TlsScope {
+        intercept_all: true,
+        include: Vec::new(),
+        exclude: std::env::var("NOVA_TLS_EXCLUDE")
+            .ok()
+            .map(|v| v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default(),
+    }));
+
     let handle = nova_core::start(
         EngineConfig {
             addr: ([127, 0, 0, 1], 39_190).into(),
@@ -67,6 +77,7 @@ async fn main() {
         },
         &ca,
         Arc::new(Printer),
+        Arc::new(nova_core::NoopWsSink),
         nova_core::EngineHooks {
             rules,
             breakpoints: Arc::new(nova_core::breakpoint::Breakpoints::new(Arc::new(
@@ -74,6 +85,7 @@ async fn main() {
             ))),
             scripts,
             net,
+            tls_scope,
         },
     )
     .unwrap();

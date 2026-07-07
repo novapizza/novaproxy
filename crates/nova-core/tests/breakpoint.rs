@@ -71,11 +71,13 @@ async fn breakpoint_pause_edit_resume() {
         },
         &ca,
         sink,
+        Arc::new(nova_core::NoopWsSink),
         nova_core::EngineHooks {
             rules: Arc::new(RwLock::new(Vec::new())),
             breakpoints: breakpoints.clone(),
             scripts: nova_core::scripting::ScriptEngine::new(),
             net: Arc::new(RwLock::new(Default::default())),
+            tls_scope: Arc::new(RwLock::new(Default::default())),
         },
     )
     .unwrap();

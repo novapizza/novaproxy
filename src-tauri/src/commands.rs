@@ -4,7 +4,9 @@ use std::net::SocketAddr;
 
 use nova_core::breakpoint::Resume;
 use nova_core::{ca::CaMaterial, sysproxy, trust, EngineConfig};
-use nova_proto::{CaStatus, Flow, Header, Interception, NetworkConditions, ProxyStatus, Rule};
+use nova_proto::{
+    CaStatus, Flow, Header, Interception, NetworkConditions, ProxyStatus, Rule, TlsScope, WsMessage,
+};
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -14,6 +16,12 @@ use crate::state::AppState;
 #[tauri::command]
 pub fn subscribe_flows(state: State<'_, AppState>, channel: Channel<Flow>) {
     state.sink.set_channel(channel);
+}
+
+/// Register the frontend channel that receives captured WebSocket frames.
+#[tauri::command]
+pub fn subscribe_ws(state: State<'_, AppState>, channel: Channel<WsMessage>) {
+    state.ws_sink.set_channel(channel);
 }
 
 #[tauri::command]
@@ -104,6 +112,21 @@ pub fn set_network_conditions(
     *state.net.write().unwrap() = net;
     let json = serde_json::to_string_pretty(&net).map_err(|e| e.to_string())?;
     std::fs::write(state.net_path(), json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/* ------------------------------ TLS scope ------------------------------ */
+
+#[tauri::command]
+pub fn get_tls_scope(state: State<'_, AppState>) -> TlsScope {
+    state.tls_scope.read().unwrap().clone()
+}
+
+#[tauri::command]
+pub fn set_tls_scope(state: State<'_, AppState>, scope: TlsScope) -> Result<(), String> {
+    *state.tls_scope.write().unwrap() = scope.clone();
+    let json = serde_json::to_string_pretty(&scope).map_err(|e| e.to_string())?;
+    std::fs::write(state.tls_scope_path(), json).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -238,8 +261,8 @@ pub fn ca_status(state: State<'_, AppState>) -> Result<CaStatus, String> {
 
 #[tauri::command]
 pub async fn install_ca(state: State<'_, AppState>) -> Result<CaStatus, String> {
-    let cert_path = ca_cert_path(&state)?;
-    tauri::async_runtime::spawn_blocking(move || trust::install(&cert_path))
+    let (cert_path, fingerprint) = ca_path_and_fingerprint(&state)?;
+    tauri::async_runtime::spawn_blocking(move || trust::install(&cert_path, &fingerprint))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
@@ -248,8 +271,8 @@ pub async fn install_ca(state: State<'_, AppState>) -> Result<CaStatus, String> 
 
 #[tauri::command]
 pub async fn uninstall_ca(state: State<'_, AppState>) -> Result<CaStatus, String> {
-    let cert_path = ca_cert_path(&state)?;
-    tauri::async_runtime::spawn_blocking(move || trust::uninstall(&cert_path))
+    let (cert_path, fingerprint) = ca_path_and_fingerprint(&state)?;
+    tauri::async_runtime::spawn_blocking(move || trust::uninstall(&cert_path, &fingerprint))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
@@ -258,12 +281,16 @@ pub async fn uninstall_ca(state: State<'_, AppState>) -> Result<CaStatus, String
 
 #[tauri::command]
 pub async fn regenerate_ca(state: State<'_, AppState>) -> Result<CaStatus, String> {
-    let (data_dir, old_path) = {
+    let (data_dir, old) = {
         let guard = state.ca.lock().unwrap();
-        (state.data_dir.clone(), guard.as_ref().map(|c| c.cert_path.clone()))
+        (
+            state.data_dir.clone(),
+            guard.as_ref().map(|c| (c.cert_path.clone(), c.fingerprint())),
+        )
     };
-    if let Some(old) = old_path {
-        let _ = tauri::async_runtime::spawn_blocking(move || trust::uninstall(&old)).await;
+    if let Some((old_path, old_fp)) = old {
+        let _ =
+            tauri::async_runtime::spawn_blocking(move || trust::uninstall(&old_path, &old_fp)).await;
     }
     let _ = std::fs::remove_file(data_dir.join("ca.pem"));
     let _ = std::fs::remove_file(data_dir.join("ca.key"));
@@ -292,11 +319,13 @@ fn ensure_engine(state: &AppState, port: Option<u16>) -> Result<SocketAddr, Stri
             },
             ca,
             state.sink.clone(),
+            state.ws_sink.clone(),
             nova_core::EngineHooks {
                 rules: state.rules.clone(),
                 breakpoints: state.breakpoints.clone(),
                 scripts: state.scripts.clone(),
                 net: state.net.clone(),
+                tls_scope: state.tls_scope.clone(),
             },
         )
         .map_err(|e| format!("failed to start proxy: {e}"))?
@@ -327,13 +356,13 @@ fn make_status(state: &AppState) -> ProxyStatus {
     }
 }
 
-fn ca_cert_path(state: &AppState) -> Result<std::path::PathBuf, String> {
+fn ca_path_and_fingerprint(state: &AppState) -> Result<(std::path::PathBuf, String), String> {
     state
         .ca
         .lock()
         .unwrap()
         .as_ref()
-        .map(|c| c.cert_path.clone())
+        .map(|c| (c.cert_path.clone(), c.fingerprint()))
         .ok_or_else(|| "Certificate authority not initialized".to_string())
 }
 

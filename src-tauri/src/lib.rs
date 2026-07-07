@@ -59,6 +59,13 @@ pub fn run() {
                 }
             }
 
+            // Load persisted TLS scope.
+            if let Ok(text) = std::fs::read_to_string(st.tls_scope_path()) {
+                if let Ok(scope) = serde_json::from_str(&text) {
+                    *st.tls_scope.write().unwrap() = scope;
+                }
+            }
+
             // System-proxy safety net: a leftover backup means we were mutating
             // the OS proxy when the app last exited (likely a crash). Restore the
             // saved settings in the background so the user isn't stranded.
@@ -79,6 +86,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::subscribe_flows,
+            commands::subscribe_ws,
             commands::proxy_status,
             commands::start_proxy,
             commands::stop_proxy,
@@ -88,6 +96,8 @@ pub fn run() {
             commands::set_script,
             commands::get_network_conditions,
             commands::set_network_conditions,
+            commands::get_tls_scope,
+            commands::set_tls_scope,
             commands::write_file,
             commands::read_file,
             commands::subscribe_breakpoints,
