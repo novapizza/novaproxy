@@ -8,30 +8,59 @@ use std::process::Command;
 
 use anyhow::{bail, Result};
 
-/// Is our CA currently present in the system trust store?
+/// Is our CA actually trusted by the OS as a root?
+///
+/// Presence in the keychain is NOT sufficient: a cert can sit in the System
+/// keychain with no trust settings at all, in which case macOS still rejects
+/// every leaf it signs (the browser shows unstyled pages / missing HTTPS
+/// assets while the app thinks the CA is installed). We therefore require BOTH
+/// that our cert is present (matched by fingerprint, so a stale same-name cert
+/// doesn't fool us) AND that an admin-domain trust setting exists for it.
 pub fn is_trusted(fingerprint: &str) -> bool {
     #[cfg(target_os = "macos")]
     {
-        let target = fingerprint.replace(':', "").to_ascii_uppercase();
-        let out = Command::new("security")
-            .args([
-                "find-certificate",
-                "-a",
-                "-Z",
-                "/Library/Keychains/System.keychain",
-            ])
-            .output();
-        if let Ok(out) = out {
-            let text = String::from_utf8_lossy(&out.stdout).to_ascii_uppercase();
-            return text.contains(&target);
-        }
-        false
+        present_in_system_keychain(fingerprint) && has_admin_trust_setting()
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = fingerprint;
         false
     }
+}
+
+/// Our cert (by SHA-1 fingerprint) is in the System keychain.
+#[cfg(target_os = "macos")]
+fn present_in_system_keychain(fingerprint: &str) -> bool {
+    let target = fingerprint.replace(':', "").to_ascii_uppercase();
+    let out = Command::new("security")
+        .args([
+            "find-certificate",
+            "-a",
+            "-Z",
+            "/Library/Keychains/System.keychain",
+        ])
+        .output();
+    if let Ok(out) = out {
+        let text = String::from_utf8_lossy(&out.stdout).to_ascii_uppercase();
+        return text.contains(&target);
+    }
+    false
+}
+
+/// An admin-domain trust setting exists for our root. This is the domain
+/// `install` writes to (`add-trusted-cert -d`); `dump-trust-settings -d` lists
+/// exactly those, identifying each cert by common name. When the domain has no
+/// trust settings the command prints to stderr and leaves stdout empty, so a
+/// name match on stdout is a reliable "trusted" signal.
+#[cfg(target_os = "macos")]
+fn has_admin_trust_setting() -> bool {
+    let out = Command::new("security")
+        .args(["dump-trust-settings", "-d"])
+        .output();
+    if let Ok(out) = out {
+        return String::from_utf8_lossy(&out.stdout).contains(CA_COMMON_NAME);
+    }
+    false
 }
 
 /// Common name of our root CA, used to delete it from the keychain by name.
