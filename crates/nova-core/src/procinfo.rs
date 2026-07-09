@@ -49,7 +49,7 @@ impl ProcResolver {
     /// Returns `None` if the port can't be parsed, isn't found, or the platform
     /// is unsupported.
     pub fn resolve(&self, client_addr: &str) -> Option<ProcInfo> {
-        let port: u16 = client_addr.rsplit(':').next()?.parse().ok()?;
+        let port = port_of(client_addr)?;
 
         let mut cache = self.cache.lock().unwrap();
         let stale = cache
@@ -63,6 +63,13 @@ impl ProcResolver {
         }
         cache.ports.get(&port).cloned()
     }
+}
+
+/// Extract the port from a socket-address string. Handles both IPv4
+/// (`127.0.0.1:52341`) and bracketed IPv6 (`[::1]:52341`) renderings, since
+/// the port is always the segment after the last `:`.
+fn port_of(client_addr: &str) -> Option<u16> {
+    client_addr.rsplit(':').next()?.parse().ok()
 }
 
 /// Process-global resolver, shared across all in-flight requests.
@@ -133,8 +140,36 @@ fn bundle_app_name(path: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 mod tests {
+    use super::{port_of, ProcResolver};
+
+    #[test]
+    fn port_of_parses_ipv4_and_ipv6_renderings() {
+        assert_eq!(port_of("127.0.0.1:52341"), Some(52341));
+        assert_eq!(port_of("[::1]:52341"), Some(52341));
+        assert_eq!(port_of("[fe80::1%lo0]:80"), Some(80));
+    }
+
+    #[test]
+    fn port_of_rejects_malformed_addresses() {
+        assert_eq!(port_of(""), None);
+        assert_eq!(port_of("127.0.0.1"), None); // no port segment
+        assert_eq!(port_of("127.0.0.1:"), None); // empty port
+        assert_eq!(port_of("127.0.0.1:notaport"), None);
+        assert_eq!(port_of("127.0.0.1:70000"), None); // > u16::MAX
+    }
+
+    #[test]
+    fn resolve_returns_none_for_unparseable_addr() {
+        let r = ProcResolver::new();
+        assert!(r.resolve("garbage").is_none());
+        assert!(r.resolve("127.0.0.1:notaport").is_none());
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests {
     use super::bundle_app_name;
 
     #[test]
