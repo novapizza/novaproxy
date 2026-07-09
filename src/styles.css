@@ -181,6 +181,14 @@ input { font-family: inherit; }
 .search .clear { color: var(--faint); cursor: pointer; font-size: 14px; }
 .search .clear:hover { color: var(--text2); }
 
+.app-filter {
+  background: var(--input); border: 1px solid var(--border2);
+  border-radius: 9px; height: 34px; padding: 0 9px; color: var(--text);
+  font: 500 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  cursor: pointer; max-width: 200px;
+}
+.app-filter:focus { outline: none; border-color: var(--accent); }
+
 .spacer { flex: 1; }
 
 .cmd-btn {

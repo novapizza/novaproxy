@@ -12,11 +12,15 @@ impl FlowSink for Printer {
     fn emit(&self, f: Flow) {
         if matches!(f.state, FlowState::Completed | FlowState::Error) {
             println!(
-                "FLOW {} {} -> {:?} ({} resp bytes){}{}{}",
+                "FLOW {} {} -> {:?} ({} resp bytes) [app {}]{}{}{}",
                 f.method,
                 f.url,
                 f.status,
                 f.response_size,
+                f.process
+                    .as_deref()
+                    .map(|p| format!("{p}:{}", f.pid.unwrap_or(0)))
+                    .unwrap_or_else(|| "?".into()),
                 if f.resent { " [resent]" } else { "" },
                 f.mapped_from
                     .map(|h| format!(" [mapped-from {h}]"))

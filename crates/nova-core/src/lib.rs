@@ -6,6 +6,7 @@ pub mod breakpoint;
 pub mod ca;
 pub mod flow;
 pub mod intercept;
+pub mod procinfo;
 pub mod rules;
 pub mod scripting;
 pub mod sysproxy;

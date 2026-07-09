@@ -18,7 +18,16 @@ seq: bigint, method: string, scheme: string, host: string, path: string, url: st
 /**
  * Remote client socket address (`ip:port`).
  */
-client_addr: string, http_version: string, state: FlowState, status: number | null, request_headers: Array<Header>, response_headers: Array<Header>, request_body: BodyPreview | null, response_body: BodyPreview | null, 
+client_addr: string, 
+/**
+ * PID of the local process that originated this request, if resolved.
+ */
+pid: number | null, 
+/**
+ * Name of the originating process (e.g. "Google Chrome"), if resolved.
+ * Best-effort; `None` when attribution failed or on unsupported platforms.
+ */
+process: string | null, http_version: string, state: FlowState, status: number | null, request_headers: Array<Header>, response_headers: Array<Header>, request_body: BodyPreview | null, response_body: BodyPreview | null, 
 /**
  * Bytes seen on the wire for the request body.
  */

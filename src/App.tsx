@@ -109,6 +109,7 @@ export function App() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [accent, setAccent] = useState(ACCENTS[1]);
   const [query, setQuery] = useState("");
+  const [appFilter, setAppFilter] = useState("");
   const [groupByHost, setGroupByHost] = useState(true);
   const [detailTab, setDetailTab] = useState<DetailTab>("overview");
 
@@ -160,10 +161,13 @@ export function App() {
     api.setBreakpoint(armed, pattern).catch((e) => showToast(String(e)));
   };
 
-  const showToast = (t: string) => {
+  const showToast = (t: string, ms?: number) => {
     setToastState(t);
     window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToastState(""), 2200);
+    // Longer messages (typically errors) need more reading time: scale with
+    // length, clamped to a sane range, unless an explicit duration is given.
+    const dur = ms ?? Math.min(9000, Math.max(2600, 2000 + t.length * 55));
+    toastTimer.current = window.setTimeout(() => setToastState(""), dur);
   };
 
   // Wire the streaming channel + initial status once.
@@ -272,6 +276,13 @@ export function App() {
 
   const hostCount = useMemo(() => new Set(flows.map((f) => f.host)).size, [flows]);
 
+  // Distinct originating apps observed in captured traffic, for the app filter.
+  const apps = useMemo(() => {
+    const set = new Set<string>();
+    for (const f of flows) if (f.process) set.add(f.process);
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [flows]);
+
   return (
     <div className="nova" data-nova-theme={theme} style={{ ["--accent" as string]: accent }}>
       {/* titlebar */}
@@ -325,6 +336,18 @@ export function App() {
               />
               {query && <span className="clear" onClick={() => setQuery("")}>✕</span>}
             </div>
+            {section === "flows" && (
+              <select
+                className="app-filter"
+                value={appFilter}
+                onChange={(e) => setAppFilter(e.target.value)}
+                title="Capture only requests from the selected app"
+              >
+                <option value="">All apps</option>
+                {appFilter && !apps.includes(appFilter) && <option value={appFilter}>{appFilter}</option>}
+                {apps.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+            )}
             <div className="spacer" />
             <div className="cmd-btn" onClick={openPalette}>
               <span>Commands</span>
@@ -340,6 +363,7 @@ export function App() {
             <FlowsSection
               flows={flows}
               query={query}
+              appFilter={appFilter}
               groupByHost={groupByHost}
               toggleGroup={() => setGroupByHost((v) => !v)}
               recording={recording}
@@ -456,12 +480,14 @@ function matchQuery(f: Flow, q: string): boolean {
   if (q.startsWith("method:")) return f.method.toLowerCase() === q.slice(7).trim();
   if (q.startsWith("status:")) return String(f.status ?? "") === q.slice(7).trim();
   if (q.startsWith("host:")) return f.host.toLowerCase().includes(q.slice(5).trim());
-  return `${f.host} ${f.path} ${f.method} ${f.status ?? ""}`.toLowerCase().includes(q);
+  if (q.startsWith("app:")) return (f.process ?? "").toLowerCase().includes(q.slice(4).trim());
+  return `${f.host} ${f.path} ${f.method} ${f.status ?? ""} ${f.process ?? ""}`.toLowerCase().includes(q);
 }
 
 function FlowsSection(props: {
   flows: Flow[];
   query: string;
+  appFilter: string;
   groupByHost: boolean;
   toggleGroup: () => void;
   recording: boolean;
@@ -473,9 +499,12 @@ function FlowsSection(props: {
   onCopyCurl: () => void;
   openPalette: () => void;
 }) {
-  const { flows, query, groupByHost, selected, select } = props;
+  const { flows, query, appFilter, groupByHost, selected, select } = props;
 
-  const filtered = useMemo(() => flows.filter((f) => matchQuery(f, query)), [flows, query]);
+  const filtered = useMemo(
+    () => flows.filter((f) => (!appFilter || f.process === appFilter) && matchQuery(f, query)),
+    [flows, query, appFilter],
+  );
 
   const groups = useMemo(() => {
     if (!groupByHost) {
@@ -591,6 +620,7 @@ function Detail({
     { k: "Protocol", v: flow.http_version },
     { k: "Scheme", v: flow.scheme.toUpperCase() },
     { k: "Remote host", v: flow.host },
+    { k: "App", v: flow.process ? `${flow.process}${flow.pid != null ? ` (${flow.pid})` : ""}` : "—" },
     { k: "Duration", v: flow.duration_ms != null ? `${Math.round(flow.duration_ms)} ms` : "—" },
     { k: "Size", v: formatBytes(totalSize) },
     { k: "Started", v: formatAgo(flow.started_at) },

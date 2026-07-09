@@ -115,6 +115,11 @@ pub struct Flow {
     pub url: String,
     /// Remote client socket address (`ip:port`).
     pub client_addr: String,
+    /// PID of the local process that originated this request, if resolved.
+    pub pid: Option<u32>,
+    /// Name of the originating process (e.g. "Google Chrome"), if resolved.
+    /// Best-effort; `None` when attribution failed or on unsupported platforms.
+    pub process: Option<String>,
     pub http_version: String,
     pub state: FlowState,
     pub status: Option<u16>,

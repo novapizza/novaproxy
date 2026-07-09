@@ -27,5 +27,11 @@ sha2 = "0.10"
 time = { version = "0.3", features = ["formatting", "macros"] }
 serde = { workspace = true }
 
+# Per-process attribution of captured flows (source port → PID → name).
+# macOS-only: netstat2 reads the kernel TCP table, libproc resolves PID→name.
+[target.'cfg(target_os = "macos")'.dependencies]
+netstat2 = "0.11"
+libproc = "0.14"
+
 [dev-dependencies]
 serde_json = { workspace = true }

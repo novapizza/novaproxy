@@ -147,6 +147,10 @@ impl HttpHandler for NovaHandler {
             request_headers,
         );
         flow.resent = resent;
+        if let Some(p) = crate::procinfo::global().resolve(&ctx.client_addr.to_string()) {
+            flow.pid = Some(p.pid);
+            flow.process = Some(p.name);
+        }
 
         match outcome {
             Outcome::Block => {
@@ -431,6 +435,10 @@ impl HttpHandler for NovaHandler {
         );
         flow.tunneled = true;
         flow.state = FlowState::Completed;
+        if let Some(p) = crate::procinfo::global().resolve(&ctx.client_addr.to_string()) {
+            flow.pid = Some(p.pid);
+            flow.process = Some(p.name);
+        }
         self.shared.insert(flow);
         false
     }

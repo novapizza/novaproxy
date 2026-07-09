@@ -268,6 +268,8 @@ pub fn new_flow(
         path,
         url,
         client_addr,
+        pid: None,
+        process: None,
         http_version,
         state: FlowState::Started,
         status: None,
