@@ -28,6 +28,8 @@ function mkFlow(over: Partial<Flow> = {}): Flow {
     path: "/",
     url: "https://example.com/search?q=hello&n=2",
     client_addr: "127.0.0.1:1",
+    pid: null,
+    process: null,
     http_version: "HTTP/1.1",
     state: "Completed",
     status: 200,
