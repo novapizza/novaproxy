@@ -1,7 +1,16 @@
 //! OS trust-store integration. Installing a root CA always crosses one OS auth
-//! gate — on macOS we trigger the native password dialog via `osascript`, never
-//! asking the user to run terminal commands. macOS lands first (per the doc);
-//! Windows/Linux are stubbed with a clear error until their variants ship.
+//! gate — on macOS we trigger the native trust-settings dialog via `osascript`,
+//! never asking the user to run terminal commands. macOS lands first (per the
+//! doc); Windows/Linux are stubbed with a clear error until their variants ship.
+//!
+//! We install into the **per-user** trust store (login keychain), NOT the admin
+//! System keychain. Writing admin trust settings needs a second, interactive
+//! authorization that `do shell script … with administrator privileges` (a
+//! non-interactive root context) can't present — it fails with
+//! "SecTrustSettingsSetTrustSettings: … no user interaction was possible". The
+//! per-user domain only needs the ordinary trust-settings dialog, which shows
+//! fine from our GUI session, and trusting the CA for the current user is the
+//! right scope for a personal proxy anyway.
 
 use std::path::Path;
 use std::process::Command;
@@ -10,16 +19,16 @@ use anyhow::{bail, Result};
 
 /// Is our CA actually trusted by the OS as a root?
 ///
-/// Presence in the keychain is NOT sufficient: a cert can sit in the System
-/// keychain with no trust settings at all, in which case macOS still rejects
-/// every leaf it signs (the browser shows unstyled pages / missing HTTPS
-/// assets while the app thinks the CA is installed). We therefore require BOTH
-/// that our cert is present (matched by fingerprint, so a stale same-name cert
-/// doesn't fool us) AND that an admin-domain trust setting exists for it.
+/// Presence in the keychain is NOT sufficient: a cert can sit in the keychain
+/// with no trust settings at all, in which case macOS still rejects every leaf
+/// it signs (the browser shows unstyled pages / missing HTTPS assets while the
+/// app thinks the CA is installed). We therefore require BOTH that our cert is
+/// present (matched by fingerprint, so a stale same-name cert doesn't fool us)
+/// AND that a user-domain trust setting exists for it.
 pub fn is_trusted(fingerprint: &str) -> bool {
     #[cfg(target_os = "macos")]
     {
-        present_in_system_keychain(fingerprint) && has_admin_trust_setting()
+        present_in_login_keychain(fingerprint) && has_user_trust_setting()
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -28,17 +37,15 @@ pub fn is_trusted(fingerprint: &str) -> bool {
     }
 }
 
-/// Our cert (by SHA-1 fingerprint) is in the System keychain.
+/// Our cert (by SHA-1 fingerprint) is in a user keychain. With no keychain
+/// argument `find-certificate` searches the default list (which includes the
+/// login keychain we install into).
 #[cfg(target_os = "macos")]
-fn present_in_system_keychain(fingerprint: &str) -> bool {
+fn present_in_login_keychain(fingerprint: &str) -> bool {
     let target = fingerprint.replace(':', "").to_ascii_uppercase();
     let out = Command::new("security")
-        .args([
-            "find-certificate",
-            "-a",
-            "-Z",
-            "/Library/Keychains/System.keychain",
-        ])
+        .args(["find-certificate", "-a", "-Z"])
+        .current_dir("/")
         .output();
     if let Ok(out) = out {
         let text = String::from_utf8_lossy(&out.stdout).to_ascii_uppercase();
@@ -47,15 +54,16 @@ fn present_in_system_keychain(fingerprint: &str) -> bool {
     false
 }
 
-/// An admin-domain trust setting exists for our root. This is the domain
-/// `install` writes to (`add-trusted-cert -d`); `dump-trust-settings -d` lists
-/// exactly those, identifying each cert by common name. When the domain has no
-/// trust settings the command prints to stderr and leaves stdout empty, so a
-/// name match on stdout is a reliable "trusted" signal.
+/// A user-domain trust setting exists for our root. This is the domain
+/// `install` writes to (`add-trusted-cert` without `-d`); `dump-trust-settings`
+/// (no `-d`) lists exactly those, identifying each cert by common name. When
+/// the domain has no trust settings the command prints to stderr and leaves
+/// stdout empty, so a name match on stdout is a reliable "trusted" signal.
 #[cfg(target_os = "macos")]
-fn has_admin_trust_setting() -> bool {
+fn has_user_trust_setting() -> bool {
     let out = Command::new("security")
-        .args(["dump-trust-settings", "-d"])
+        .args(["dump-trust-settings"])
+        .current_dir("/")
         .output();
     if let Ok(out) = out {
         return String::from_utf8_lossy(&out.stdout).contains(CA_COMMON_NAME);
@@ -67,7 +75,7 @@ fn has_admin_trust_setting() -> bool {
 #[cfg(target_os = "macos")]
 const CA_COMMON_NAME: &str = "NovaProxy Root CA";
 
-/// Install the CA into the system trust store behind one native auth prompt.
+/// Install the CA into the per-user trust store behind one native trust dialog.
 ///
 /// The result is decided by the *end state* (is the cert now in the store?),
 /// not by `osascript`'s exit code — `security add-trusted-cert` can report a
@@ -86,7 +94,7 @@ pub fn install(cert_path: &Path, fingerprint: &str) -> Result<()> {
     }
 }
 
-/// Remove the CA from the system trust store AND the keychain. Confirmed by
+/// Remove the CA from the per-user trust store AND the keychain. Confirmed by
 /// end state: success means the cert is no longer present.
 pub fn uninstall(cert_path: &Path, fingerprint: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
@@ -116,31 +124,42 @@ fn confirm(ran: Result<()>, reached_goal: bool, action: &str) -> Result<()> {
     }
 }
 
+// Per-user trust: no `-d` (that targets the admin domain, which needs a second
+// interactive authorization the osascript-as-root context can't present), no
+// `with administrator privileges`, no System keychain. `add-trusted-cert`
+// defaults to the user domain + login keychain and shows the ordinary
+// trust-settings dialog, which works from our GUI session.
 #[cfg(target_os = "macos")]
 fn install_script(cert_path: &Path) -> String {
     let path = cert_path.to_string_lossy().replace('"', "\\\"");
-    format!(
-        "do shell script \"security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain \\\"{path}\\\"\" with administrator privileges"
-    )
+    format!("do shell script \"security add-trusted-cert -r trustRoot \\\"{path}\\\"\"")
 }
 
 #[cfg(target_os = "macos")]
 fn uninstall_script(cert_path: &Path) -> String {
     let path = cert_path.to_string_lossy().replace('"', "\\\"");
-    // Two steps behind ONE auth prompt: clear the admin trust setting, then
-    // delete the cert from the System keychain. `remove-trusted-cert` only drops
-    // trust settings — the certificate itself lingers in the keychain, so
-    // `is_trusted` (a presence check) would keep reporting it as installed and
-    // the removal would appear to do nothing. `;` (not `&&`) so the delete runs
-    // even when there were no trust settings left to remove.
+    // Two steps behind ONE dialog: clear the user trust setting, then delete the
+    // cert from the login keychain. `remove-trusted-cert` only drops trust
+    // settings — the certificate itself lingers in the keychain, so `is_trusted`
+    // (a presence check) would keep reporting it as installed and the removal
+    // would appear to do nothing. `;` (not `&&`) so the delete runs even when
+    // there were no trust settings left to remove.
     format!(
-        "do shell script \"security remove-trusted-cert -d \\\"{path}\\\" ; security delete-certificate -c \\\"{CA_COMMON_NAME}\\\" /Library/Keychains/System.keychain\" with administrator privileges"
+        "do shell script \"security remove-trusted-cert \\\"{path}\\\" ; security delete-certificate -c \\\"{CA_COMMON_NAME}\\\"\""
     )
 }
 
 #[cfg(target_os = "macos")]
 fn run_osascript(script: &str) -> Result<()> {
-    let status = Command::new("osascript").args(["-e", script]).output()?;
+    // Force an always-accessible cwd. A dev build launched from a TCC-protected
+    // folder (e.g. ~/Documents) runs with a cwd the process can't read; the
+    // child `osascript`/`security` inherit it, `getcwd` fails ("Operation not
+    // permitted"), and the admin auth dialog then can't be presented
+    // ("SecTrustSettingsSetTrustSettings: … no user interaction was possible").
+    let status = Command::new("osascript")
+        .args(["-e", script])
+        .current_dir("/")
+        .output()?;
     if status.status.success() {
         Ok(())
     } else {
@@ -155,13 +174,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn install_script_adds_trusted_root_to_system_keychain() {
+    fn install_script_adds_trusted_root_to_the_user_domain() {
         let s = install_script(Path::new("/tmp/ca.pem"));
         assert!(s.contains("add-trusted-cert"));
         assert!(s.contains("-r trustRoot"));
-        assert!(s.contains("/Library/Keychains/System.keychain"));
         assert!(s.contains("\\\"/tmp/ca.pem\\\""), "cert path is quoted for the shell");
-        assert!(s.contains("with administrator privileges"));
+        // Per-user, NOT admin: no `-d`, no System keychain, no elevation — that
+        // path fails with "no user interaction was possible" (the bug we fixed).
+        assert!(!s.contains("-d "), "must not target the admin domain");
+        assert!(!s.contains("System.keychain"), "must not touch the System keychain");
+        assert!(!s.contains("with administrator privileges"), "must not elevate");
     }
 
     #[test]
@@ -174,8 +196,9 @@ mod tests {
         assert!(s.contains(CA_COMMON_NAME), "deletes by our unique common name");
         // A single '; ' sequences the two so delete runs regardless of the first.
         assert!(s.contains(" ; security delete-certificate"));
-        // One prompt for both.
-        assert_eq!(s.matches("with administrator privileges").count(), 1);
+        // Per-user domain, no elevation.
+        assert!(!s.contains("-d "), "must not target the admin domain");
+        assert!(!s.contains("with administrator privileges"), "must not elevate");
     }
 
     #[test]
