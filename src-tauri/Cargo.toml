@@ -28,3 +28,15 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 
 nova-core = { path = "../crates/nova-core" }
 nova-proto = { path = "../crates/nova-proto" }
+# The MCP endpoint is served over hyper directly (rmcp's transport is a tower
+# service, so no web framework is needed).
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tower-service = "0.3"
+schemars = "1"
+rmcp = { version = "3.0.0", features = ["server", "macros", "transport-streamable-http-server", "transport-streamable-http-server-session", "server-side-http"] }
+
+[dev-dependencies]
+# The MCP e2e test speaks JSON-RPC to the endpoint over HTTP.
+nova-core = { path = "../crates/nova-core" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

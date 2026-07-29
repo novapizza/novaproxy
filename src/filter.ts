@@ -2,8 +2,8 @@ import type { Flow } from "./api";
 
 /**
  * Match a flow against the search query. Supports `method:`, `status:`,
- * `host:` and `app:` prefixes; otherwise free-text over host/path/method/
- * status/process.
+ * `host:`, `app:` and `mcp:` prefixes; otherwise free-text over host/path/
+ * method/status/process, plus the MCP method and tool when present.
  */
 export function matchQuery(f: Flow, q: string): boolean {
   q = q.trim().toLowerCase();
@@ -12,12 +12,51 @@ export function matchQuery(f: Flow, q: string): boolean {
   if (q.startsWith("status:")) return String(f.status ?? "") === q.slice(7).trim();
   if (q.startsWith("host:")) return f.host.toLowerCase().includes(q.slice(5).trim());
   if (q.startsWith("app:")) return (f.process ?? "").toLowerCase().includes(q.slice(4).trim());
-  return `${f.host} ${f.path} ${f.method} ${f.status ?? ""} ${f.process ?? ""}`.toLowerCase().includes(q);
+  // `mcp:` with no term means "any MCP traffic"; with one, match the JSON-RPC
+  // method or the tool being called.
+  if (q.startsWith("mcp:")) {
+    const term = q.slice(4).trim();
+    if (!f.mcp) return false;
+    return !term || mcpLabel(f).toLowerCase().includes(term);
+  }
+  const haystack = `${f.host} ${f.path} ${f.method} ${f.status ?? ""} ${f.process ?? ""} ${
+    f.mcp ? mcpLabel(f) : ""
+  }`;
+  return haystack.toLowerCase().includes(q);
 }
 
-/** Apply the app dropdown filter (exact match) plus the search query. */
-export function filterFlows(flows: Flow[], query: string, appFilter: string): Flow[] {
-  return flows.filter((f) => (!appFilter || f.process === appFilter) && matchQuery(f, query));
+/** `tools/call → read_file` for an MCP flow; empty for anything else. */
+export function mcpLabel(f: Flow): string {
+  if (!f.mcp) return "";
+  const { method, tool } = f.mcp;
+  if (method && tool) return `${method} → ${tool}`;
+  return method ?? "mcp";
+}
+
+/** Which flows the list shows. */
+export interface ViewFilters {
+  /** Exact app/process name from the dropdown; empty means all. */
+  app?: string;
+  /** Show only Model Context Protocol exchanges. */
+  mcpOnly?: boolean;
+  /** Show NovaProxy's own traffic (its MCP endpoint and replays it issued). */
+  includeInternal?: boolean;
+}
+
+/**
+ * Apply the view filters plus the search query.
+ *
+ * NovaProxy's own traffic is dropped unless asked for: with the MCP endpoint
+ * enabled, an agent's tool calls would otherwise dominate the list you are
+ * trying to read.
+ */
+export function filterFlows(flows: Flow[], query: string, filters: ViewFilters = {}): Flow[] {
+  return flows.filter((f) => {
+    if (f.internal && !filters.includeInternal) return false;
+    if (filters.mcpOnly && !f.mcp) return false;
+    if (filters.app && f.process !== filters.app) return false;
+    return matchQuery(f, query);
+  });
 }
 
 /** Distinct originating apps observed in captured traffic, sorted for display. */

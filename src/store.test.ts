@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useStore } from "./store";
+import { MAX_FLOWS, prependWithinCap, useStore } from "./store";
 import type { Flow } from "./api";
 
 // Minimal Flow factory — only the fields the store touches matter here.
@@ -93,5 +93,42 @@ describe("store misc actions", () => {
     useStore.getState().clear();
     expect(useStore.getState().flows).toHaveLength(0);
     expect(useStore.getState().selectedId).toBeNull();
+  });
+});
+
+describe("prependWithinCap (retention window)", () => {
+  const list = (...ids: string[]) => ids.map((id) => mkFlow(id));
+
+  it("prepends while under the cap", () => {
+    const { flows, wsMessages } = prependWithinCap(mkFlow("new"), list("a", "b"), {}, 5);
+    expect(flows.map((f) => f.id)).toEqual(["new", "a", "b"]);
+    expect(wsMessages).toBeUndefined();
+  });
+
+  it("evicts the oldest flows once the cap is reached", () => {
+    // Newest-first, so "c" is the oldest and must be the one dropped.
+    const { flows } = prependWithinCap(mkFlow("new"), list("a", "b", "c"), {}, 3);
+    expect(flows.map((f) => f.id)).toEqual(["new", "a", "b"]);
+    expect(flows).toHaveLength(3);
+  });
+
+  it("drops the WebSocket frames of evicted flows", () => {
+    const ws = {
+      c: [{ flow_id: "c" } as never],
+      a: [{ flow_id: "a" } as never],
+    };
+    const { wsMessages } = prependWithinCap(mkFlow("new"), list("a", "b", "c"), ws, 3);
+    expect(wsMessages).toEqual({ a: ws.a });
+  });
+
+  it("leaves the frame map untouched when no evicted flow had frames", () => {
+    const ws = { a: [{ flow_id: "a" } as never] };
+    const out = prependWithinCap(mkFlow("new"), list("a", "b", "c"), ws, 3);
+    // Same object identity: no needless re-render of every WS panel.
+    expect(out.wsMessages).toBeUndefined();
+  });
+
+  it("is used by the store with a cap matching the engine's retention", () => {
+    expect(MAX_FLOWS).toBe(10_000);
   });
 });

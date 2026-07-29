@@ -74,23 +74,20 @@ async fn main() {
             .unwrap_or_default(),
     }));
 
+    let mut hooks = nova_core::EngineHooks::in_memory(Arc::new(
+        nova_core::breakpoint::Breakpoints::new(Arc::new(nova_core::breakpoint::NoopBreakpointSink)),
+    ));
+    hooks.rules = rules;
+    hooks.scripts = scripts;
+    hooks.net = net;
+    hooks.tls_scope = tls_scope;
+
     let handle = nova_core::start(
-        EngineConfig {
-            addr: ([127, 0, 0, 1], 39_190).into(),
-            body_cap: nova_core::DEFAULT_BODY_CAP,
-        },
+        EngineConfig { addr: ([127, 0, 0, 1], 39_190).into() },
         &ca,
         Arc::new(Printer),
         Arc::new(nova_core::NoopWsSink),
-        nova_core::EngineHooks {
-            rules,
-            breakpoints: Arc::new(nova_core::breakpoint::Breakpoints::new(Arc::new(
-                nova_core::breakpoint::NoopBreakpointSink,
-            ))),
-            scripts,
-            net,
-            tls_scope,
-        },
+        hooks,
     )
     .unwrap();
     println!("LISTENING {}", handle.addr);

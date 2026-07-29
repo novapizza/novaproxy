@@ -20,12 +20,40 @@ interface Store {
   setCa: (c: CaStatus | null) => void;
 }
 
+/**
+ * Retention window for the flow list. The engine keeps the same number of flows
+ * (`DEFAULT_MAX_FLOWS`); without a matching cap here a long session grows the
+ * React store — and its per-row render cost — without bound.
+ */
+export const MAX_FLOWS = 10_000;
+
+/**
+ * Prepend a newly-seen flow (the list is newest-first), evicting from the tail
+ * once `cap` is reached. Captured WebSocket frames of evicted flows go too —
+ * they are the larger allocation, and nothing can reach them again.
+ */
+export function prependWithinCap(
+  flow: Flow,
+  flows: Flow[],
+  wsMessages: Record<string, WsMessage[]>,
+  cap: number,
+): { flows: Flow[]; wsMessages?: Record<string, WsMessage[]> } {
+  if (flows.length < cap) return { flows: [flow, ...flows] };
+  const kept = [flow, ...flows.slice(0, cap - 1)];
+  const dropped = flows.slice(cap - 1);
+  if (!dropped.some((d) => wsMessages[d.id])) return { flows: kept };
+  const next = { ...wsMessages };
+  for (const d of dropped) delete next[d.id];
+  return { flows: kept, wsMessages: next };
+}
+
 const emptyProxy: ProxyStatus = {
   running: false,
   host: null,
   port: null,
   flows_captured: 0n,
   system_proxy: false,
+  pending_restore: false,
 };
 
 export const useStore = create<Store>((set) => ({
@@ -47,7 +75,7 @@ export const useStore = create<Store>((set) => ({
         return { flows: next };
       }
       if (!s.recording) return {};
-      return { flows: [f, ...s.flows] };
+      return prependWithinCap(f, s.flows, s.wsMessages, MAX_FLOWS);
     }),
   // Append a captured WS frame to its flow's list (ordered by arrival).
   addWsMessage: (m) =>

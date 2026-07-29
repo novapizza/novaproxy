@@ -6,12 +6,21 @@ license.workspace = true
 
 [dependencies]
 nova-proto = { path = "../nova-proto" }
+# Command plans, system-proxy control and the privileged-helper client. Its own
+# crate so the root helper links it without the engine; re-exported from `lib.rs`.
+nova-os = { path = "../nova-os" }
 
 # hudsucker re-exports hyper/rustls; keeping matching caret ranges lets Cargo
 # unify to a single version so the CA/handler types line up.
 hudsucker = "0.24"
 rcgen = "0.14"
 http-body-util = "0.1"
+
+# Client-side TLS + connector plumbing. We build hudsucker's upstream connector
+# ourselves (rather than `with_rustls_connector`) so DNS/TCP/TLS phases can be
+# measured — see `timing`. Versions match hudsucker's own so Cargo unifies them.
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "webpki-tokio", "tls12", "logging"] }
+tower-service = "0.3"
 
 tokio = { workspace = true }
 bytes = { workspace = true }
@@ -24,6 +33,10 @@ flate2 = "1"
 brotli = "6"
 base64 = "0.22"
 sha2 = "0.10"
+# Windows certificate stores identify a cert by its SHA-1 thumbprint, so matching
+# ours exactly (rather than by name) needs both digests.
+sha1 = "0.10"
+serde_json = { workspace = true }
 time = { version = "0.3", features = ["formatting", "macros"] }
 serde = { workspace = true }
 
@@ -33,5 +46,3 @@ serde = { workspace = true }
 netstat2 = "0.11"
 libproc = "0.14"
 
-[dev-dependencies]
-serde_json = { workspace = true }

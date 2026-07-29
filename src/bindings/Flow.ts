@@ -2,6 +2,8 @@
 import type { BodyPreview } from "./BodyPreview";
 import type { FlowState } from "./FlowState";
 import type { Header } from "./Header";
+import type { McpInfo } from "./McpInfo";
+import type { Timings } from "./Timings";
 
 /**
  * One request/response exchange captured by the proxy engine.
@@ -47,7 +49,11 @@ started_at: number,
 /**
  * Total wall-clock duration once completed.
  */
-duration_ms: number | null, error: string | null, 
+duration_ms: number | null, 
+/**
+ * Measured per-phase breakdown (DNS/connect/TLS/request/TTFB/download).
+ */
+timings: Timings, error: string | null, 
 /**
  * True when this flow was produced by a Resend/Replay action.
  */
@@ -65,4 +71,16 @@ is_websocket: boolean,
  * True when this CONNECT was tunneled without decryption (per the TLS
  * scope): only the host is known, no request/response bodies are captured.
  */
-tunneled: boolean, };
+tunneled: boolean, 
+/**
+ * Set when this exchange is Model Context Protocol traffic, so MCP work can
+ * be isolated from everything else in the capture.
+ */
+mcp: McpInfo | null, 
+/**
+ * True when NovaProxy itself produced this flow — a call to its own MCP
+ * endpoint, or a request its MCP server replayed. Excluded by default from
+ * the flow list and from MCP tool results, so an agent inspecting traffic
+ * does not mostly see itself.
+ */
+internal: boolean, };

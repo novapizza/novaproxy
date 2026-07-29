@@ -80,23 +80,17 @@ async fn excluded_host_is_tunneled_without_decryption() {
     }));
 
     let proxy_port = 39_260u16;
+    let mut hooks = nova_core::EngineHooks::in_memory(Arc::new(
+        nova_core::breakpoint::Breakpoints::new(Arc::new(nova_core::breakpoint::NoopBreakpointSink)),
+    ));
+    hooks.tls_scope = tls_scope;
+
     let handle = nova_core::start(
-        EngineConfig {
-            addr: ([127, 0, 0, 1], proxy_port).into(),
-            body_cap: nova_core::DEFAULT_BODY_CAP,
-        },
+        EngineConfig { addr: ([127, 0, 0, 1], proxy_port).into() },
         &ca,
         sink,
         Arc::new(nova_core::NoopWsSink),
-        nova_core::EngineHooks {
-            rules: Arc::new(RwLock::new(Vec::new())),
-            breakpoints: Arc::new(nova_core::breakpoint::Breakpoints::new(Arc::new(
-                nova_core::breakpoint::NoopBreakpointSink,
-            ))),
-            scripts: nova_core::scripting::ScriptEngine::new(),
-            net: Arc::new(RwLock::new(Default::default())),
-            tls_scope,
-        },
+        hooks,
     )
     .unwrap();
 

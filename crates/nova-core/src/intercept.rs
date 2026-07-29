@@ -26,6 +26,7 @@ use hudsucker::{
 };
 use nova_proto::{FlowState, Interception, WsDirection, WsMessage, WsOpcode};
 
+use crate::bodystore::BodyCapture;
 use crate::breakpoint::Resume;
 use crate::flow::{
     build_preview, collect_headers, header_value, new_flow, now_ms, Shared, Side, WsRoute,
@@ -122,6 +123,10 @@ impl HttpHandler for NovaHandler {
 
         let (mut parts, body) = req.into_parts();
         let resent = parts.headers.remove("x-nova-resend").is_some();
+        // Requests NovaProxy issued on its own behalf (an MCP replay) say so, and
+        // the marker never reaches the origin.
+        let internal_marker = parts.headers.remove("x-nova-internal").is_some();
+        let target_port = parts.uri.port_u16();
 
         // Match rules against the original destination, then let them mutate the
         // request (header rewrite / remap) before we describe what we forward.
@@ -147,6 +152,12 @@ impl HttpHandler for NovaHandler {
             request_headers,
         );
         flow.resent = resent;
+        flow.internal = internal_marker
+            || crate::mcp::is_internal_endpoint(
+                &flow.host,
+                target_port,
+                self.shared.internal_port.load(Ordering::Relaxed),
+            );
         if let Some(p) = crate::procinfo::global().resolve(&ctx.client_addr.to_string()) {
             flow.pid = Some(p.pid);
             flow.process = Some(p.name);
@@ -248,10 +259,7 @@ impl HttpHandler for NovaHandler {
                         Resume::Abort => {
                             let started = self
                                 .shared
-                                .flows
-                                .lock()
-                                .unwrap()
-                                .get(&id)
+                                .flow(&id)
                                 .map(|f| f.started_at)
                                 .unwrap_or_else(now_ms);
                             self.shared.update(&id, |f| {
@@ -297,10 +305,7 @@ impl HttpHandler for NovaHandler {
                         if res.abort {
                             let started = self
                                 .shared
-                                .flows
-                                .lock()
-                                .unwrap()
-                                .get(&id)
+                                .flow(&id)
                                 .map(|f| f.started_at)
                                 .unwrap_or_else(now_ms);
                             self.shared.update(&id, |f| {
@@ -350,11 +355,35 @@ impl HttpHandler for NovaHandler {
         let content_type = header_value(&parts.headers, "content-type");
         let content_encoding = header_value(&parts.headers, "content-encoding");
 
+        // Time to first byte, stamped *before* any simulated latency below so the
+        // measurement reflects the upstream, not our own throttling.
+        let at_headers = now_ms();
+        // Claim the connection this flow opened, if it opened one. Done here
+        // because the connect happens while the request is in flight upstream.
+        let (host, started_at) = self
+            .shared
+            .flow(&id)
+            .map(|f| (f.host.clone(), f.started_at))
+            .unwrap_or_default();
+        let connect = self.shared.connects.claim(&host, started_at);
+
         self.shared.update(&id, |f| {
             f.status = Some(status);
             f.response_headers = response_headers.clone();
             if f.content_type.is_none() {
                 f.content_type = content_type.clone();
+            }
+            f.timings.ttfb_ms = Some(at_headers - f.started_at);
+            match &connect {
+                Some(c) => {
+                    f.timings.dns_ms = c.dns_ms;
+                    f.timings.connect_ms = c.connect_ms;
+                    f.timings.tls_ms = c.tls_ms;
+                    f.timings.connection_reused = false;
+                }
+                // No new connection was opened for this request: it went out on a
+                // pooled keep-alive/HTTP-2 connection.
+                None => f.timings.connection_reused = true,
             }
         });
 
@@ -362,10 +391,7 @@ impl HttpHandler for NovaHandler {
         if self.shared.scripts.wants_response() {
             let base = self
                 .shared
-                .flows
-                .lock()
-                .unwrap()
-                .get(&id)
+                .flow(&id)
                 .map(|f| (f.method.clone(), f.host.clone(), f.path.clone(), f.url.clone()));
             if let Some((method, host, path, url)) = base {
                 let sf = ScriptFlow {
@@ -451,10 +477,7 @@ impl HttpHandler for NovaHandler {
         if let Some(id) = self.pending.pop_front() {
             let started = self
                 .shared
-                .flows
-                .lock()
-                .unwrap()
-                .get(&id)
+                .flow(&id)
                 .map(|f| f.started_at)
                 .unwrap_or_else(now_ms);
             self.shared.update(&id, |f| {
@@ -575,7 +598,7 @@ fn record_ws_frame(shared: &Arc<Shared>, key: &str, direction: WsDirection, msg:
     let route = shared.ws_routes.lock().unwrap().get(key).cloned();
     let Some(route) = route else { return };
 
-    let (opcode, text, base64, size, truncated) = classify_message(msg, shared.body_cap);
+    let (opcode, text, base64, size, truncated) = classify_message(msg, shared.body_cap());
     let seq = route.seq.fetch_add(1, Ordering::Relaxed);
 
     shared.ws_sink.emit(WsMessage {
@@ -593,10 +616,7 @@ fn record_ws_frame(shared: &Arc<Shared>, key: &str, direction: WsDirection, msg:
     // A close frame ends the socket: finalize the flow and retire the route.
     if matches!(opcode, WsOpcode::Close) {
         let started = shared
-            .flows
-            .lock()
-            .unwrap()
-            .get(&route.flow_id)
+            .flow(&route.flow_id)
             .map(|f| f.started_at)
             .unwrap_or_else(now_ms);
         shared.update(&route.flow_id, |f| {
@@ -646,34 +666,57 @@ fn tee(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
     let throttle_shared = shared.clone();
 
-    // Consumer: accumulate up to the cap, then finalize when the sender drops.
+    // Consumer: retain a capped preview (spilling the rest to the body store),
+    // then finalize when the sender drops.
     tokio::spawn(async move {
-        let mut acc = BodyAccum::new(shared.body_cap);
+        let mut capture = BodyCapture::new(&shared.bodies, &id, side);
         while let Some(chunk) = rx.recv().await {
-            acc.push(&chunk);
+            capture.push(&chunk);
         }
-        let (buf, total, truncated) = acc.finish();
+        let captured = capture.finish();
+        let total = captured.total;
 
-        let preview = build_preview(buf, total, truncated, media_type, content_encoding);
-        let started = shared
-            .flows
-            .lock()
-            .unwrap()
-            .get(&id)
-            .map(|f| f.started_at)
-            .unwrap_or_else(now_ms);
+        let mut preview = build_preview(
+            captured.inline,
+            total,
+            captured.truncated,
+            media_type,
+            content_encoding,
+        );
+        preview.spilled = captured.spilled;
+        let done = now_ms();
+
+        // Is this an MCP exchange? Recognised from the captured body, so it works
+        // for any MCP endpoint on any host — see `crate::mcp`.
+        let mcp = detect_mcp(side, &preview);
 
         shared.update(&id, |f| match side {
             Side::Request => {
                 f.request_size = total;
                 f.request_body = Some(preview);
+                if total > 0 {
+                    f.timings.request_ms = Some((done - f.started_at).max(0.0));
+                }
+                if f.mcp.is_none() {
+                    f.mcp = mcp;
+                }
             }
             Side::Response => {
                 f.response_size = total;
                 f.response_body = Some(preview);
+                // The request half usually names the exchange; an SSE stream the
+                // client opened with GET only shows up on the response.
+                if f.mcp.is_none() {
+                    f.mcp = mcp;
+                }
                 if f.state != FlowState::Error {
                     f.state = FlowState::Completed;
-                    f.duration_ms = Some(now_ms() - started);
+                    let elapsed = (done - f.started_at).max(0.0);
+                    f.duration_ms = Some(elapsed);
+                    // Download is what remains after time-to-first-byte.
+                    if let Some(ttfb) = f.timings.ttfb_ms {
+                        f.timings.download_ms = Some((elapsed - ttfb).max(0.0));
+                    }
                 }
             }
         });
@@ -711,38 +754,17 @@ fn tee(
     Body::from_stream(stream)
 }
 
-/// Accumulates a capped copy of a streamed body for the inspector, tracking the
-/// true wire size and whether the preview was cut off. Forwarding is unaffected:
-/// this only bounds what we *retain*.
-struct BodyAccum {
-    buf: Vec<u8>,
-    total: u64,
-    truncated: bool,
-    cap: usize,
-}
-
-impl BodyAccum {
-    fn new(cap: usize) -> Self {
-        Self { buf: Vec::new(), total: 0, truncated: false, cap }
-    }
-
-    fn push(&mut self, chunk: &[u8]) {
-        self.total += chunk.len() as u64;
-        if self.buf.len() < self.cap {
-            let room = self.cap - self.buf.len();
-            if chunk.len() <= room {
-                self.buf.extend_from_slice(chunk);
-            } else {
-                self.buf.extend_from_slice(&chunk[..room]);
-                self.truncated = true;
-            }
-        } else {
-            self.truncated = true;
-        }
-    }
-
-    fn finish(self) -> (Vec<u8>, u64, bool) {
-        (self.buf, self.total, self.truncated)
+/// Classify a finished body half as MCP traffic, if it is any.
+///
+/// Runs on the *captured preview*, which is already decoded and capped — so a
+/// giant body costs nothing extra here, and a body truncated at the cap simply
+/// fails to parse rather than being mis-tagged.
+fn detect_mcp(side: Side, preview: &nova_proto::BodyPreview) -> Option<nova_proto::McpInfo> {
+    let text = preview.text.as_deref()?;
+    let media = preview.media_type.as_deref();
+    match side {
+        Side::Request => crate::mcp::detect_request(media, text),
+        Side::Response => crate::mcp::detect_sse(media, text),
     }
 }
 
@@ -815,59 +837,6 @@ mod tests {
         map.insert("content-type", "application/json".parse().unwrap());
         let pairs = header_pairs(&map);
         assert!(pairs.contains(&("content-type".into(), "application/json".into())));
-    }
-
-    #[test]
-    fn body_accum_under_cap_keeps_everything() {
-        let mut a = BodyAccum::new(1024);
-        a.push(b"hello ");
-        a.push(b"world");
-        let (buf, total, truncated) = a.finish();
-        assert_eq!(buf, b"hello world");
-        assert_eq!(total, 11);
-        assert!(!truncated);
-    }
-
-    #[test]
-    fn body_accum_truncates_at_cap_boundary() {
-        let mut a = BodyAccum::new(8);
-        a.push(b"1234"); // fills 4
-        a.push(b"5678ABCD"); // only 4 more fit; rest dropped
-        let (buf, total, truncated) = a.finish();
-        assert_eq!(buf, b"12345678"); // exactly cap bytes retained
-        assert_eq!(total, 12); // true wire size still counted in full
-        assert!(truncated);
-    }
-
-    #[test]
-    fn body_accum_exact_fit_is_not_truncated() {
-        let mut a = BodyAccum::new(5);
-        a.push(b"12345");
-        let (buf, total, truncated) = a.finish();
-        assert_eq!(buf, b"12345");
-        assert_eq!(total, 5);
-        assert!(!truncated, "a chunk that exactly fills the cap is not a truncation");
-    }
-
-    #[test]
-    fn body_accum_chunks_after_cap_only_bump_total() {
-        let mut a = BodyAccum::new(4);
-        a.push(b"1234");
-        a.push(b"5"); // buf already full
-        let (buf, total, truncated) = a.finish();
-        assert_eq!(buf, b"1234");
-        assert_eq!(total, 5);
-        assert!(truncated);
-    }
-
-    #[test]
-    fn body_accum_zero_cap_keeps_nothing() {
-        let mut a = BodyAccum::new(0);
-        a.push(b"anything");
-        let (buf, total, truncated) = a.finish();
-        assert!(buf.is_empty());
-        assert_eq!(total, 8);
-        assert!(truncated);
     }
 
     // ---- WebSocket helpers ----
@@ -972,19 +941,11 @@ mod tests {
     }
 
     fn shared_for_ws(ws_sink: Arc<VecWsSink>) -> Arc<Shared> {
-        use std::sync::RwLock;
-        Arc::new(Shared::new(
-            Arc::new(NoopFlowSink),
-            ws_sink,
-            1024,
-            Arc::new(RwLock::new(Vec::new())),
-            Arc::new(crate::breakpoint::Breakpoints::new(Arc::new(
-                crate::breakpoint::NoopBreakpointSink,
-            ))),
-            crate::scripting::ScriptEngine::new(),
-            Arc::new(RwLock::new(Default::default())),
-            Arc::new(RwLock::new(Default::default())),
-        ))
+        let mut hooks = crate::EngineHooks::in_memory(Arc::new(
+            crate::breakpoint::Breakpoints::new(Arc::new(crate::breakpoint::NoopBreakpointSink)),
+        ));
+        hooks.bodies = Arc::new(crate::bodystore::BodyStore::memory_only(1024));
+        Arc::new(Shared::new(Arc::new(NoopFlowSink), ws_sink, hooks))
     }
 
     fn register_route(shared: &Arc<Shared>, key: &str, flow_id: &str) {
@@ -1041,7 +1002,7 @@ mod tests {
 
         record_ws_frame(&shared, "host/ws", WsDirection::Received, &Message::Close(None));
 
-        let stored = shared.flows.lock().unwrap().get("f9").cloned().unwrap();
+        let stored = shared.flow("f9").unwrap();
         assert_eq!(stored.state, FlowState::Completed);
         assert!(stored.duration_ms.is_some());
         assert!(

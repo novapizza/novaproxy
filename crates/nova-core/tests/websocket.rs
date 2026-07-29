@@ -4,7 +4,7 @@
 //! frames the socket with tungstenite. Asserts the engine forwards frames in
 //! both directions AND captures them against a single WebSocket flow.
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hudsucker::futures::{SinkExt, StreamExt};
@@ -87,22 +87,15 @@ async fn captures_websocket_frames_end_to_end() {
 
     let proxy_port = 39_240u16;
     let handle = nova_core::start(
-        EngineConfig {
-            addr: ([127, 0, 0, 1], proxy_port).into(),
-            body_cap: nova_core::DEFAULT_BODY_CAP,
-        },
+        EngineConfig { addr: ([127, 0, 0, 1], proxy_port).into() },
         &ca,
         flow_sink,
         ws_sink,
-        nova_core::EngineHooks {
-            rules: Arc::new(RwLock::new(Vec::new())),
-            breakpoints: Arc::new(nova_core::breakpoint::Breakpoints::new(Arc::new(
+        nova_core::EngineHooks::in_memory(Arc::new(
+            nova_core::breakpoint::Breakpoints::new(Arc::new(
                 nova_core::breakpoint::NoopBreakpointSink,
-            ))),
-            scripts: nova_core::scripting::ScriptEngine::new(),
-            net: Arc::new(RwLock::new(Default::default())),
-            tls_scope: Arc::new(RwLock::new(Default::default())),
-        },
+            )),
+        )),
     )
     .unwrap();
 

@@ -7,4 +7,12 @@ export type ProxyStatus = { running: boolean, host: string | null, port: number 
 /**
  * Whether the OS system proxy is currently pointed at NovaProxy.
  */
-system_proxy: boolean, };
+system_proxy: boolean, 
+/**
+ * A snapshot from a previous session is still waiting to be put back — the
+ * app exited uncleanly while the system proxy was on, and restoring it
+ * needs a privilege the app does not have unattended. The UI offers the
+ * restore instead of the old behaviour, which raised a password dialog
+ * during launch.
+ */
+pending_restore: boolean, };

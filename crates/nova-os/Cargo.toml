@@ -1,0 +1,17 @@
+[package]
+name = "nova-os"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OS plumbing for NovaProxy: command plans, system-proxy control, privileged helper"
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+# `getpeereid` for the helper's peer check. Deliberately the only non-pure-Rust
+# dependency here: this crate is what runs as root.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"

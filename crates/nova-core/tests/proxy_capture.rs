@@ -3,7 +3,7 @@
 //! client. Asserts the engine forwards the exchange AND records a completed flow
 //! with both bodies captured.
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nova_core::{ca::CaMaterial, EngineConfig, FlowSink};
@@ -59,22 +59,15 @@ async fn captures_http_flow_end_to_end() {
 
     let proxy_port = 39_099u16;
     let handle = nova_core::start(
-        EngineConfig {
-            addr: ([127, 0, 0, 1], proxy_port).into(),
-            body_cap: nova_core::DEFAULT_BODY_CAP,
-        },
+        EngineConfig { addr: ([127, 0, 0, 1], proxy_port).into() },
         &ca,
         sink,
         Arc::new(nova_core::NoopWsSink),
-        nova_core::EngineHooks {
-            rules: Arc::new(RwLock::new(Vec::new())),
-            breakpoints: Arc::new(nova_core::breakpoint::Breakpoints::new(Arc::new(
+        nova_core::EngineHooks::in_memory(Arc::new(
+            nova_core::breakpoint::Breakpoints::new(Arc::new(
                 nova_core::breakpoint::NoopBreakpointSink,
-            ))),
-            scripts: nova_core::scripting::ScriptEngine::new(),
-            net: Arc::new(RwLock::new(Default::default())),
-            tls_scope: Arc::new(RwLock::new(Default::default())),
-        },
+            )),
+        )),
     )
     .unwrap();
 

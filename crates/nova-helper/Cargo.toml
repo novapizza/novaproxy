@@ -1,0 +1,18 @@
+[package]
+name = "nova-helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "NovaProxy privileged helper — applies system-proxy changes as root"
+
+[[bin]]
+name = "nova-helper"
+path = "src/main.rs"
+
+[dependencies]
+# Deliberately minimal: this binary runs as root, so it links the OS plumbing
+# and a logger, and nothing else.
+nova-os = { path = "../nova-os" }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
