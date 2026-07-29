@@ -4,9 +4,16 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
+use std::sync::atomic::{AtomicBool, AtomicU16};
+
+use nova_core::bodystore::BodyStore;
 use nova_core::breakpoint::{BreakpointSink, Breakpoints};
+use nova_core::flowstore::FlowStore;
 use nova_core::scripting::ScriptEngine;
+use nova_core::timing::ConnectLog;
 use nova_core::{ca::CaMaterial, EngineHandle, FlowSink, WsSink};
+
+use crate::mcp::McpHandle;
 use nova_proto::{Flow, Interception, NetworkConditions, Rule, TlsScope, WsMessage};
 use tauri::ipc::Channel;
 
@@ -91,12 +98,37 @@ pub struct AppState {
     pub net: Arc<RwLock<NetworkConditions>>,
     /// Per-host SSL-proxying scope (decrypt vs tunnel).
     pub tls_scope: Arc<RwLock<TlsScope>>,
+    /// Body storage. Owned here rather than by the engine so spilled bodies stay
+    /// readable across proxy stop/start within a session.
+    pub bodies: Arc<BodyStore>,
+    /// Captured flows, likewise owned here: the UI, the commands and the MCP
+    /// server all read this one store, and it survives proxy stop/start.
+    pub flows: Arc<FlowStore>,
+    /// Real DNS/connect/TLS measurements published by the instrumented connector.
+    pub connects: Arc<ConnectLog>,
+    /// The running MCP endpoint, when enabled.
+    pub mcp: Mutex<Option<McpHandle>>,
+    /// Port of that endpoint (0 = not running), shared with the engine so traffic
+    /// to it can be marked internal.
+    pub mcp_port: Arc<AtomicU16>,
+    /// A snapshot from a previous session is waiting to be restored, and doing it
+    /// needs a privilege we cannot get without asking. Surfaced in `ProxyStatus`
+    /// so the UI can offer the restore rather than the app raising a password
+    /// dialog by itself during launch.
+    pub pending_restore: AtomicBool,
 }
 
 impl AppState {
     pub fn new(data_dir: PathBuf) -> Self {
         let bp_sink = Arc::new(BreakpointChannelSink::default());
         let breakpoints = Arc::new(Breakpoints::new(bp_sink.clone()));
+        let bodies = Arc::new(BodyStore::new(
+            data_dir.join("bodies"),
+            nova_core::DEFAULT_BODY_CAP,
+            nova_core::bodystore::DEFAULT_PER_BODY_CAP,
+            nova_core::bodystore::DEFAULT_DISK_BUDGET,
+        ));
+        let flows = Arc::new(FlowStore::new(bodies.clone(), nova_core::DEFAULT_MAX_FLOWS));
         Self {
             data_dir,
             ca: Mutex::new(None),
@@ -110,7 +142,34 @@ impl AppState {
             scripts: ScriptEngine::new(),
             net: Arc::new(RwLock::new(NetworkConditions::default())),
             tls_scope: Arc::new(RwLock::new(TlsScope::default())),
+            bodies,
+            flows,
+            connects: Arc::new(ConnectLog::default()),
+            mcp: Mutex::new(None),
+            mcp_port: Arc::new(AtomicU16::new(0)),
+            pending_restore: AtomicBool::new(false),
         }
+    }
+
+    /// The engine hooks assembled from this app state.
+    pub fn hooks(&self) -> nova_core::EngineHooks {
+        nova_core::EngineHooks {
+            rules: self.rules.clone(),
+            breakpoints: self.breakpoints.clone(),
+            scripts: self.scripts.clone(),
+            net: self.net.clone(),
+            tls_scope: self.tls_scope.clone(),
+            bodies: self.bodies.clone(),
+            flows: self.flows.clone(),
+            connects: self.connects.clone(),
+            internal_port: self.mcp_port.clone(),
+        }
+    }
+
+    /// Persist the rule set to the app data dir.
+    pub fn persist_rules(&self, rules: &[Rule]) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(rules).map_err(|e| e.to_string())?;
+        std::fs::write(self.rules_path(), json).map_err(|e| e.to_string())
     }
 
     pub fn script_path(&self) -> PathBuf {
@@ -131,5 +190,9 @@ impl AppState {
 
     pub fn sysproxy_backup_path(&self) -> PathBuf {
         self.data_dir.join("sysproxy_backup.json")
+    }
+
+    pub fn mcp_path(&self) -> PathBuf {
+        self.data_dir.join("mcp.json")
     }
 }

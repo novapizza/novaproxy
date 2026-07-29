@@ -227,15 +227,53 @@ input { font-family: inherit; }
 .switch.on .knob { left: 18px; }
 .switch.sm.on .knob { left: 16px; }
 
+/*
+ * Pending-restore notice: the machine is still pointed at a NovaProxy that may
+ * not be listening. Warning-coloured and not dismissible by default, because
+ * the user's internet is the thing at stake.
+ */
+.restore-bar {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 9px 14px; border-bottom: 1px solid rgba(247,185,85,.3);
+  background: rgba(247,185,85,.1);
+  font: 400 12.5px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: var(--text2);
+}
+.restore-bar .rb-icon { color: var(--c-amber); }
+.restore-bar .spacer { flex: 1; }
+.restore-bar .rb-x { color: var(--faint); cursor: pointer; }
+.restore-bar .rb-x:hover { color: var(--text2); }
+
 /* ------------------------------ flows section ------------------------------ */
 .flows { flex: 1; display: flex; min-height: 0; }
 
 .flow-list {
+  /* Width is set inline from the persisted preference; this is the fallback. */
   width: 412px; flex: none;
-  border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; min-height: 0;
+  display: flex; flex-direction: column; min-height: 0; min-width: 0;
   background: var(--list);
 }
+
+/*
+ * Draggable divider between the list and the inspector. The visible line stays
+ * 1px so the layout is unchanged, while the hit area is widened either side —
+ * a 1px grab target is unusable.
+ */
+.splitter {
+  flex: none; width: 1px; position: relative; cursor: col-resize;
+  background: var(--border); outline: none; touch-action: none;
+}
+.splitter::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: -3px; right: -3px;
+}
+.splitter:hover, .splitter:focus-visible { background: var(--accent); }
+.splitter:focus-visible { box-shadow: 0 0 0 1px var(--accent); }
+/* Grip dots, shown only on hover so the chrome stays quiet. */
+.splitter .grip {
+  position: absolute; top: 50%; left: -1px; width: 3px; height: 28px;
+  transform: translateY(-50%); border-radius: 2px; opacity: 0;
+  background: var(--accent); transition: opacity .12s;
+}
+.splitter:hover .grip, .splitter:focus-visible .grip { opacity: .9; }
 .flow-list-head {
   height: 36px; flex: none;
   display: flex; align-items: center; justify-content: space-between;
@@ -451,7 +489,12 @@ input { font-family: inherit; }
 .timing-row .tl { width: 120px; flex: none; font: 500 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: var(--muted); }
 .timing-bar { flex: 1; height: 16px; background: var(--input); border-radius: 5px; position: relative; overflow: hidden; }
 .timing-bar > span { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 5px; opacity: .85; }
-.timing-row .tv { width: 56px; text-align: right; flex: none; font: 500 12px ui-monospace, "SF Mono", Menlo, Monaco, monospace; color: var(--text2); }
+.timing-row .tv { width: 72px; text-align: right; flex: none; font: 500 12px ui-monospace, "SF Mono", Menlo, Monaco, monospace; color: var(--text2); }
+.timing-note {
+  margin: 2px 0 14px; padding: 8px 10px; border-radius: 6px;
+  background: var(--input); border: 1px solid var(--border);
+  font: 400 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: var(--muted);
+}
 .timing-total {
   margin-top: 6px; padding-top: 14px; border-top: 1px solid var(--border);
   display: flex; justify-content: space-between;
@@ -694,7 +737,31 @@ input { font-family: inherit; }
 .modal-head h2 { flex: 1; font: 700 15px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: var(--text); }
 .modal-x { color: var(--faint); cursor: pointer; font-size: 15px; }
 .modal-x:hover { color: var(--text2); }
+.modal-tabs { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--border); flex: none; }
+.mtab {
+  padding: 9px 11px 8px; cursor: pointer;
+  font: 500 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: var(--muted);
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.mtab:hover { color: var(--text2); }
+.mtab.active { color: var(--text); border-bottom-color: var(--accent); }
+
 .modal-body { padding: 18px 20px; overflow-y: auto; }
+/* label + control on one line, for the single-choice preferences */
+.pref-row { display: flex; align-items: center; gap: 12px; margin: 10px 0; }
+.pref-row .k {
+  flex: none; width: 132px;
+  font: 700 10px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  letter-spacing: .05em; text-transform: uppercase; color: var(--faint);
+}
+.pref-row .rule-input { flex: 1; min-width: 0; }
+.warn-note { color: var(--c-amber) !important; }
+.warn-note code { font: 400 12px ui-monospace, "SF Mono", Menlo, Monaco, monospace; }
+.btn-primary.disabled { opacity: .45; pointer-events: none; }
+/* status pip for the helper card */
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--faint); }
+.dot.ok { background: var(--c-green); }
+.dot.warn { background: var(--c-amber); }
 .modal-body h3 { font: 700 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: var(--text); margin: 14px 0 6px; }
 .modal-body h3:first-child { margin-top: 0; }
 .modal-body p { font: 400 13px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: var(--muted); line-height: 1.55; margin-bottom: 8px; }
@@ -723,3 +790,21 @@ input { font-family: inherit; }
   z-index: 60; display: flex; align-items: center; gap: 9px; animation: novaflow .2s;
 }
 .toast .ok { color: var(--c-cyan); }
+
+/* load-the-rest affordance under a truncated body preview */
+.body-more {
+  margin: 8px 0 2px; padding: 7px 12px; display: inline-block; cursor: pointer;
+  border-radius: 6px; border: 1px solid var(--border); background: var(--input);
+  font: 500 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: var(--text2);
+}
+.body-more:hover { color: var(--text); border-color: var(--accent); }
+
+/* explanation of which trust domain the CA is installed in */
+.cert-hint {
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);
+  font: 400 12px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: var(--muted);
+}
+
+/* MCP-tagged flow rows */
+.fmcp { color: var(--c-violet); font-weight: 600; }
+.fdim { color: var(--muted); }

@@ -1,11 +1,14 @@
 //! Tauri commands: the frontend's entire surface onto the engine.
 
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use nova_core::breakpoint::Resume;
-use nova_core::{ca::CaMaterial, sysproxy, trust, EngineConfig};
+use nova_core::{ca::CaMaterial, helper, sysproxy, trust, EngineConfig};
 use nova_proto::{
-    CaStatus, Flow, Header, Interception, NetworkConditions, ProxyStatus, Rule, TlsScope, WsMessage,
+    CaStatus, Flow, Header, HelperStatus, Interception, McpStatus, NetworkConditions, ProxyStatus,
+    Rule, TlsScope, WsMessage,
 };
 use tauri::ipc::Channel;
 use tauri::State;
@@ -14,24 +17,24 @@ use crate::state::AppState;
 
 /// Register the frontend channel that receives streamed flow updates.
 #[tauri::command]
-pub fn subscribe_flows(state: State<'_, AppState>, channel: Channel<Flow>) {
+pub fn subscribe_flows(state: State<'_, Arc<AppState>>, channel: Channel<Flow>) {
     state.sink.set_channel(channel);
 }
 
 /// Register the frontend channel that receives captured WebSocket frames.
 #[tauri::command]
-pub fn subscribe_ws(state: State<'_, AppState>, channel: Channel<WsMessage>) {
+pub fn subscribe_ws(state: State<'_, Arc<AppState>>, channel: Channel<WsMessage>) {
     state.ws_sink.set_channel(channel);
 }
 
 #[tauri::command]
-pub fn proxy_status(state: State<'_, AppState>) -> ProxyStatus {
+pub fn proxy_status(state: State<'_, Arc<AppState>>) -> ProxyStatus {
     make_status(&state)
 }
 
 #[tauri::command]
 pub async fn start_proxy(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     port: Option<u16>,
 ) -> Result<ProxyStatus, String> {
     ensure_engine(&state, port)?;
@@ -39,7 +42,7 @@ pub async fn start_proxy(
 }
 
 #[tauri::command]
-pub fn stop_proxy(state: State<'_, AppState>) -> ProxyStatus {
+pub fn stop_proxy(state: State<'_, Arc<AppState>>) -> ProxyStatus {
     if let Some(handle) = state.engine.lock().unwrap().take() {
         handle.stop();
     }
@@ -49,17 +52,15 @@ pub fn stop_proxy(state: State<'_, AppState>) -> ProxyStatus {
 /* ------------------------------- rules ------------------------------- */
 
 #[tauri::command]
-pub fn get_rules(state: State<'_, AppState>) -> Vec<Rule> {
+pub fn get_rules(state: State<'_, Arc<AppState>>) -> Vec<Rule> {
     state.rules.read().unwrap().clone()
 }
 
 #[tauri::command]
-pub fn set_rules(state: State<'_, AppState>, rules: Vec<Rule>) -> Result<(), String> {
+pub fn set_rules(state: State<'_, Arc<AppState>>, rules: Vec<Rule>) -> Result<(), String> {
     // Update the live set the engine reads, then persist.
     *state.rules.write().unwrap() = rules.clone();
-    let json = serde_json::to_string_pretty(&rules).map_err(|e| e.to_string())?;
-    std::fs::write(state.rules_path(), json).map_err(|e| e.to_string())?;
-    Ok(())
+    state.persist_rules(&rules)
 }
 
 /* --------------------------- session / export --------------------------- */
@@ -76,18 +77,123 @@ pub fn read_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| e.to_string())
 }
 
+/* ---------------------------- flows / capture ---------------------------- */
+
+/// Drop every retained flow (and its spilled bodies). The UI's Clear action calls
+/// this so the engine, the UI and the MCP server agree on what is still captured
+/// — clearing only the frontend list would leave an agent reading flows the user
+/// believes they discarded.
+#[tauri::command]
+pub fn clear_flows(state: State<'_, Arc<AppState>>) {
+    state.flows.clear();
+}
+
+/* --------------------------------- MCP --------------------------------- */
+
+#[tauri::command]
+pub fn mcp_status(state: State<'_, Arc<AppState>>) -> McpStatus {
+    mcp_status_of(&state)
+}
+
+/// Start or stop the MCP endpoint, persisting the choice for next launch.
+#[tauri::command]
+pub async fn set_mcp_enabled(
+    state: State<'_, Arc<AppState>>,
+    enable: bool,
+    port: Option<u16>,
+) -> Result<McpStatus, String> {
+    let app: Arc<AppState> = (*state).clone();
+    if enable {
+        // Restarting on a port change is the only way to move the listener.
+        let running_port = app.mcp.lock().unwrap().as_ref().map(|h| h.addr.port());
+        let wanted = port.unwrap_or(crate::mcp::DEFAULT_MCP_PORT);
+        if running_port == Some(wanted) {
+            return Ok(mcp_status_of(&app));
+        }
+        stop_mcp(&app);
+        let handle = crate::mcp::start(app.clone(), wanted).await?;
+        app.mcp_port.store(handle.addr.port(), Ordering::Relaxed);
+        *app.mcp.lock().unwrap() = Some(handle);
+    } else {
+        stop_mcp(&app);
+    }
+    let status = mcp_status_of(&app);
+    let json = serde_json::to_string_pretty(&status).map_err(|e| e.to_string())?;
+    std::fs::write(app.mcp_path(), json).map_err(|e| e.to_string())?;
+    Ok(status)
+}
+
+/// Stop the endpoint if it is running, and clear the port the engine sees.
+pub fn stop_mcp(state: &AppState) {
+    if let Some(handle) = state.mcp.lock().unwrap().take() {
+        handle.stop();
+    }
+    state.mcp_port.store(0, Ordering::Relaxed);
+}
+
+fn mcp_status_of(state: &AppState) -> McpStatus {
+    match state.mcp.lock().unwrap().as_ref() {
+        Some(handle) => McpStatus {
+            running: true,
+            port: handle.addr.port(),
+            url: Some(format!("http://{}/", handle.addr)),
+        },
+        None => McpStatus {
+            running: false,
+            port: crate::mcp::DEFAULT_MCP_PORT,
+            url: None,
+        },
+    }
+}
+
+/* -------------------------------- bodies -------------------------------- */
+
+/// Largest body the Inspector will pull back into the UI in one go. Bodies can
+/// be far larger on disk; the returned preview reports the true size and flags
+/// the truncation.
+const MAX_READ_BODY: u64 = 16 * 1024 * 1024;
+
+/// Fetch a spilled body in full (up to [`MAX_READ_BODY`]).
+///
+/// Large bodies keep only a capped preview on the [`Flow`], with the complete
+/// bytes in the on-disk body store — this is how the Inspector shows the rest on
+/// demand. `media_type` and `encoding` come from the flow's own preview so the
+/// stored (still-compressed) bytes are decoded exactly as they were live.
+#[tauri::command]
+pub fn read_body(
+    state: State<'_, Arc<AppState>>,
+    flow_id: String,
+    side: String,
+    media_type: Option<String>,
+    encoding: Option<String>,
+) -> Result<nova_proto::BodyPreview, String> {
+    let side = match side.as_str() {
+        "request" => nova_core::flow::Side::Request,
+        "response" => nova_core::flow::Side::Response,
+        other => return Err(format!("unknown body side {other:?}")),
+    };
+    let (bytes, total, truncated) = state
+        .bodies
+        .read(&flow_id, side, MAX_READ_BODY)
+        .map_err(|e| e.to_string())?;
+    let mut preview = nova_core::flow::build_preview(bytes, total, truncated, media_type, encoding);
+    // The body is still on disk; the UI can ask again.
+    preview.spilled = true;
+    Ok(preview)
+}
+
 /* ------------------------------- scripts ------------------------------- */
 
 /// Return the persisted script source (empty string if none yet).
 #[tauri::command]
-pub fn get_script(state: State<'_, AppState>) -> String {
+pub fn get_script(state: State<'_, Arc<AppState>>) -> String {
     std::fs::read_to_string(state.script_path()).unwrap_or_default()
 }
 
 /// Set the script source and whether it runs against live traffic; persist it.
 #[tauri::command]
 pub fn set_script(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     source: String,
     enabled: bool,
 ) -> Result<(), String> {
@@ -100,13 +206,13 @@ pub fn set_script(
 /* -------------------------- network conditions -------------------------- */
 
 #[tauri::command]
-pub fn get_network_conditions(state: State<'_, AppState>) -> NetworkConditions {
+pub fn get_network_conditions(state: State<'_, Arc<AppState>>) -> NetworkConditions {
     *state.net.read().unwrap()
 }
 
 #[tauri::command]
 pub fn set_network_conditions(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     net: NetworkConditions,
 ) -> Result<(), String> {
     *state.net.write().unwrap() = net;
@@ -118,12 +224,12 @@ pub fn set_network_conditions(
 /* ------------------------------ TLS scope ------------------------------ */
 
 #[tauri::command]
-pub fn get_tls_scope(state: State<'_, AppState>) -> TlsScope {
+pub fn get_tls_scope(state: State<'_, Arc<AppState>>) -> TlsScope {
     state.tls_scope.read().unwrap().clone()
 }
 
 #[tauri::command]
-pub fn set_tls_scope(state: State<'_, AppState>, scope: TlsScope) -> Result<(), String> {
+pub fn set_tls_scope(state: State<'_, Arc<AppState>>, scope: TlsScope) -> Result<(), String> {
     *state.tls_scope.write().unwrap() = scope.clone();
     let json = serde_json::to_string_pretty(&scope).map_err(|e| e.to_string())?;
     std::fs::write(state.tls_scope_path(), json).map_err(|e| e.to_string())?;
@@ -134,13 +240,13 @@ pub fn set_tls_scope(state: State<'_, AppState>, scope: TlsScope) -> Result<(), 
 
 /// Register the channel that receives paused-request notifications.
 #[tauri::command]
-pub fn subscribe_breakpoints(state: State<'_, AppState>, channel: Channel<Interception>) {
+pub fn subscribe_breakpoints(state: State<'_, Arc<AppState>>, channel: Channel<Interception>) {
     state.bp_sink.set_channel(channel);
 }
 
 /// Arm (with an optional URL glob) or disarm the breakpoint.
 #[tauri::command]
-pub fn set_breakpoint(state: State<'_, AppState>, armed: bool, pattern: Option<String>) {
+pub fn set_breakpoint(state: State<'_, Arc<AppState>>, armed: bool, pattern: Option<String>) {
     if armed {
         state.breakpoints.arm(pattern.unwrap_or_else(|| "*".into()));
     } else {
@@ -151,7 +257,7 @@ pub fn set_breakpoint(state: State<'_, AppState>, armed: bool, pattern: Option<S
 /// Resolve a paused request: continue (with edited headers) or abort.
 #[tauri::command]
 pub fn resume_breakpoint(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     id: String,
     cont: bool,
     headers: Vec<Header>,
@@ -168,18 +274,30 @@ pub fn resume_breakpoint(
 
 #[tauri::command]
 pub async fn set_system_proxy(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     enable: bool,
 ) -> Result<ProxyStatus, String> {
     if enable {
         let addr = ensure_engine(&state, None)?;
-        let backup = tauri::async_runtime::spawn_blocking(sysproxy::snapshot)
-            .await
-            .map_err(|e| e.to_string())?;
-        // Persist the snapshot BEFORE mutating, so a crash mid-session is
-        // recoverable on next launch.
-        let backup_json = serde_json::to_string_pretty(&backup).map_err(|e| e.to_string())?;
-        std::fs::write(state.sysproxy_backup_path(), backup_json).map_err(|e| e.to_string())?;
+        // A backup already on disk is a snapshot of the machine *before*
+        // NovaProxy touched it, left behind by an unclean exit. Snapshotting
+        // again would record "proxied to NovaProxy" as the state to return to,
+        // so the user could never get their settings back — keep the old one.
+        let backup = match read_backup(&state) {
+            Some(existing) => existing,
+            None => {
+                let fresh = tauri::async_runtime::spawn_blocking(sysproxy::snapshot)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                // Persist the snapshot BEFORE mutating, so a crash mid-session is
+                // recoverable on next launch.
+                let backup_json =
+                    serde_json::to_string_pretty(&fresh).map_err(|e| e.to_string())?;
+                std::fs::write(state.sysproxy_backup_path(), backup_json)
+                    .map_err(|e| e.to_string())?;
+                fresh
+            }
+        };
 
         let host = addr.ip().to_string();
         let port = addr.port();
@@ -188,6 +306,8 @@ pub async fn set_system_proxy(
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
         *state.system_proxy.lock().unwrap() = true;
+        // Whatever was outstanding is now this session's business to undo.
+        state.pending_restore.store(false, Ordering::Relaxed);
     } else {
         let backup = read_backup(&state);
         if let Some(backup) = backup {
@@ -198,6 +318,7 @@ pub async fn set_system_proxy(
         }
         let _ = std::fs::remove_file(state.sysproxy_backup_path());
         *state.system_proxy.lock().unwrap() = false;
+        state.pending_restore.store(false, Ordering::Relaxed);
         if let Some(handle) = state.engine.lock().unwrap().take() {
             handle.stop();
         }
@@ -205,13 +326,72 @@ pub async fn set_system_proxy(
     Ok(make_status(&state))
 }
 
+/// Put back proxy settings left over from a session that ended uncleanly.
+///
+/// Separate from `set_system_proxy(false)` because it is offered, not implied:
+/// without a helper this raises the administrator prompt, and the app must never
+/// do that on its own — least of all during launch, which is what it used to do.
+#[tauri::command]
+pub async fn restore_system_proxy(state: State<'_, Arc<AppState>>) -> Result<ProxyStatus, String> {
+    let owned = (*state).clone();
+    tauri::async_runtime::spawn_blocking(move || crate::restore_from_backup(&owned))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    *state.system_proxy.lock().unwrap() = false;
+    Ok(make_status(&state))
+}
+
+/* -------------------------- privileged helper -------------------------- */
+
+#[tauri::command]
+pub fn helper_status() -> HelperStatus {
+    crate::helper_status_now()
+}
+
+/// Install the helper — one administrator prompt, and then no more.
+#[tauri::command]
+pub async fn install_helper(state: State<'_, Arc<AppState>>) -> Result<HelperStatus, String> {
+    let source = helper::source_binary().ok_or_else(|| {
+        "The helper binary was not found next to the app. Build it with \
+         `cargo build -p nova-helper`, or set NOVAPROXY_HELPER_BIN."
+            .to_string()
+    })?;
+    let staged = state.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        helper::install(&source, &staged, helper::current_uid())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    Ok(crate::helper_status_now())
+}
+
+#[tauri::command]
+pub async fn uninstall_helper() -> Result<HelperStatus, String> {
+    tauri::async_runtime::spawn_blocking(helper::uninstall)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    Ok(crate::helper_status_now())
+}
+
 /* ------------------------------- resend ------------------------------- */
 
 /// Replay a captured flow by re-issuing it *through* the proxy, so it is
 /// recaptured as a fresh flow (tagged `resent` via the `x-nova-resend` header).
 #[tauri::command]
-pub async fn resend_flow(state: State<'_, AppState>, flow: Flow) -> Result<(), String> {
-    let addr = ensure_engine(&state, None)?;
+pub async fn resend_flow(state: State<'_, Arc<AppState>>, flow: Flow) -> Result<(), String> {
+    replay(&state, flow, false).await
+}
+
+/// Re-issue `flow` through the proxy.
+///
+/// `internal` marks the replay as NovaProxy's own traffic — set when the MCP
+/// server replays on an agent's behalf, so those flows stay out of unfiltered
+/// listings instead of polluting the capture the agent is reading.
+pub async fn replay(state: &AppState, flow: Flow, internal: bool) -> Result<(), String> {
+    let addr = ensure_engine(state, None)?;
     let proxy_url = format!("http://{}:{}", addr.ip(), addr.port());
 
     let client = reqwest::Client::builder()
@@ -224,6 +404,9 @@ pub async fn resend_flow(state: State<'_, AppState>, flow: Flow) -> Result<(), S
     let method =
         reqwest::Method::from_bytes(flow.method.as_bytes()).map_err(|e| e.to_string())?;
     let mut req = client.request(method, &flow.url).header("x-nova-resend", "1");
+    if internal {
+        req = req.header("x-nova-internal", "1");
+    }
 
     for h in &flow.request_headers {
         let lname = h.name.to_ascii_lowercase();
@@ -255,14 +438,25 @@ pub async fn resend_flow(state: State<'_, AppState>, flow: Flow) -> Result<(), S
 /* ----------------------------- certificate ----------------------------- */
 
 #[tauri::command]
-pub fn ca_status(state: State<'_, AppState>) -> Result<CaStatus, String> {
+pub fn ca_status(state: State<'_, Arc<AppState>>) -> Result<CaStatus, String> {
     ca_status_inner(&state)
 }
 
+/// Install the CA and trust it. Defaults to the current user's trust domain,
+/// which needs no administrator password; `all_users` opts into the machine-wide
+/// system store (and its admin prompt) instead.
 #[tauri::command]
-pub async fn install_ca(state: State<'_, AppState>) -> Result<CaStatus, String> {
-    let (cert_path, fingerprint) = ca_path_and_fingerprint(&state)?;
-    tauri::async_runtime::spawn_blocking(move || trust::install(&cert_path, &fingerprint))
+pub async fn install_ca(
+    state: State<'_, Arc<AppState>>,
+    all_users: Option<bool>,
+) -> Result<CaStatus, String> {
+    let ca = ca_id(&state)?;
+    let domain = if all_users.unwrap_or(false) {
+        trust::TrustDomain::System
+    } else {
+        trust::TrustDomain::User
+    };
+    tauri::async_runtime::spawn_blocking(move || trust::install(&ca, domain))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
@@ -270,9 +464,9 @@ pub async fn install_ca(state: State<'_, AppState>) -> Result<CaStatus, String> 
 }
 
 #[tauri::command]
-pub async fn uninstall_ca(state: State<'_, AppState>) -> Result<CaStatus, String> {
-    let (cert_path, fingerprint) = ca_path_and_fingerprint(&state)?;
-    tauri::async_runtime::spawn_blocking(move || trust::uninstall(&cert_path, &fingerprint))
+pub async fn uninstall_ca(state: State<'_, Arc<AppState>>) -> Result<CaStatus, String> {
+    let ca = ca_id(&state)?;
+    tauri::async_runtime::spawn_blocking(move || trust::uninstall(&ca))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
@@ -280,17 +474,16 @@ pub async fn uninstall_ca(state: State<'_, AppState>) -> Result<CaStatus, String
 }
 
 #[tauri::command]
-pub async fn regenerate_ca(state: State<'_, AppState>) -> Result<CaStatus, String> {
+pub async fn regenerate_ca(state: State<'_, Arc<AppState>>) -> Result<CaStatus, String> {
     let (data_dir, old) = {
         let guard = state.ca.lock().unwrap();
         (
             state.data_dir.clone(),
-            guard.as_ref().map(|c| (c.cert_path.clone(), c.fingerprint())),
+            guard.as_ref().map(trust::CaId::of),
         )
     };
-    if let Some((old_path, old_fp)) = old {
-        let _ =
-            tauri::async_runtime::spawn_blocking(move || trust::uninstall(&old_path, &old_fp)).await;
+    if let Some(old) = old {
+        let _ = tauri::async_runtime::spawn_blocking(move || trust::uninstall(&old)).await;
     }
     let _ = std::fs::remove_file(data_dir.join("ca.pem"));
     let _ = std::fs::remove_file(data_dir.join("ca.key"));
@@ -313,20 +506,11 @@ fn ensure_engine(state: &AppState, port: Option<u16>) -> Result<SocketAddr, Stri
             .as_ref()
             .ok_or_else(|| "Certificate authority not initialized".to_string())?;
         nova_core::start(
-            EngineConfig {
-                addr,
-                body_cap: nova_core::DEFAULT_BODY_CAP,
-            },
+            EngineConfig { addr },
             ca,
             state.sink.clone(),
             state.ws_sink.clone(),
-            nova_core::EngineHooks {
-                rules: state.rules.clone(),
-                breakpoints: state.breakpoints.clone(),
-                scripts: state.scripts.clone(),
-                net: state.net.clone(),
-                tls_scope: state.tls_scope.clone(),
-            },
+            state.hooks(),
         )
         .map_err(|e| format!("failed to start proxy: {e}"))?
     };
@@ -341,28 +525,35 @@ fn read_backup(state: &AppState) -> Option<sysproxy::Backup> {
 
 fn make_status(state: &AppState) -> ProxyStatus {
     let system_proxy = *state.system_proxy.lock().unwrap();
+    let flows_captured = state.flows.total_captured();
+    let pending_restore = state.pending_restore.load(Ordering::Relaxed);
     match state.engine.lock().unwrap().as_ref() {
         Some(handle) => ProxyStatus {
             running: true,
             host: Some(handle.addr.ip().to_string()),
             port: Some(handle.addr.port()),
-            flows_captured: handle.flows_captured(),
+            flows_captured,
             system_proxy,
+            pending_restore,
         },
         None => ProxyStatus {
+            flows_captured,
             system_proxy,
+            pending_restore,
             ..Default::default()
         },
     }
 }
 
-fn ca_path_and_fingerprint(state: &AppState) -> Result<(std::path::PathBuf, String), String> {
+/// Identity of the loaded CA — the two digests plus the cert path that the
+/// per-platform trust stores need.
+fn ca_id(state: &AppState) -> Result<trust::CaId, String> {
     state
         .ca
         .lock()
         .unwrap()
         .as_ref()
-        .map(|c| (c.cert_path.clone(), c.fingerprint()))
+        .map(trust::CaId::of)
         .ok_or_else(|| "Certificate authority not initialized".to_string())
 }
 
@@ -371,12 +562,15 @@ fn ca_status_inner(state: &AppState) -> Result<CaStatus, String> {
     let ca = guard
         .as_ref()
         .ok_or_else(|| "Certificate authority not initialized".to_string())?;
-    let fingerprint = ca.fingerprint();
-    let trusted = trust::is_trusted(&fingerprint);
+    let id = trust::CaId::of(ca);
+    let state = trust::trust_state(&id);
     Ok(CaStatus {
         cert_path: ca.cert_path.display().to_string(),
-        fingerprint,
-        trusted,
+        fingerprint: id.sha256,
+        trusted: state.any(),
+        trusted_user: state.user,
+        trusted_system: state.system,
         subject: ca.subject(),
+        platform: std::env::consts::OS.to_string(),
     })
 }

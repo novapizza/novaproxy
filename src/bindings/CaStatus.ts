@@ -2,6 +2,11 @@
 
 /**
  * Status of NovaProxy's root CA and its trust in the OS store.
+ *
+ * Trust is reported *per domain* because both can hold the cert: the default
+ * install targets the current user's login keychain (no admin password), while
+ * "install for all users" targets the machine-wide system store. Four states
+ * are reachable — user / system / both / neither.
  */
 export type CaStatus = { 
 /**
@@ -13,10 +18,25 @@ cert_path: string,
  */
 fingerprint: string, 
 /**
- * Whether the CA is currently trusted in the system store.
+ * Whether the CA is trusted in *at least one* domain, i.e. whether HTTPS
+ * interception works for this user's apps.
  */
 trusted: boolean, 
 /**
+ * Trusted in the current user's login keychain (installed without admin).
+ */
+trusted_user: boolean, 
+/**
+ * Trusted machine-wide, for every user and root-owned daemon.
+ */
+trusted_system: boolean, 
+/**
  * Human-readable subject line.
  */
-subject: string, };
+subject: string, 
+/**
+ * Host platform (`macos`, `windows`, `linux`, …). The two trust domains mean
+ * materially different things per platform — notably, Linux's user domain
+ * covers browsers only — so the UI phrases them accordingly.
+ */
+platform: string, };

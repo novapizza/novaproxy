@@ -53,6 +53,11 @@ impl CaMaterial {
         fingerprint_pem(&self.cert_pem).unwrap_or_default()
     }
 
+    /// SHA-1 thumbprint, which is how Windows certificate stores name a cert.
+    pub fn thumbprint_sha1(&self) -> String {
+        thumbprint_sha1_pem(&self.cert_pem).unwrap_or_default()
+    }
+
     pub fn subject(&self) -> String {
         "NovaProxy Root CA".to_string()
     }
@@ -95,6 +100,24 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
 pub fn fingerprint_pem(cert_pem: &str) -> Option<String> {
     let der = pem_to_der(cert_pem)?;
     let digest = Sha256::digest(&der);
+    Some(
+        digest
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join(":"),
+    )
+}
+
+/// SHA-1 thumbprint of the DER inside a PEM certificate, as `AA:BB:...`.
+///
+/// SHA-1 is not used here as a security property — it is the identifier Windows'
+/// `certutil` prints and accepts, so matching our cert in the ROOT store means
+/// speaking its language.
+pub fn thumbprint_sha1_pem(cert_pem: &str) -> Option<String> {
+    use sha1::Sha1;
+    let der = pem_to_der(cert_pem)?;
+    let digest = Sha1::digest(&der);
     Some(
         digest
             .iter()

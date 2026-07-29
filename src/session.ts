@@ -54,6 +54,17 @@ export async function exportHar(flows: Flow[]): Promise<boolean> {
       queryString = [];
     }
     const dur = f.duration_ms ?? 0;
+    // Real measurements where we have them, HAR's -1 ("not available") where we
+    // don't — never a fabricated zero. `connect` includes `ssl` per the HAR
+    // spec, and `wait` is TTFB with connection setup taken back out so the
+    // phases sum to `time` instead of double-counting it.
+    const t = f.timings;
+    const dns = t?.dns_ms ?? -1;
+    const ssl = t?.tls_ms ?? -1;
+    const connect = t?.connect_ms != null ? t.connect_ms + Math.max(ssl, 0) : -1;
+    const setup = Math.max(dns, 0) + Math.max(connect, 0);
+    const wait = t?.ttfb_ms != null ? Math.max(t.ttfb_ms - setup, 0) : dur;
+    const receive = t?.download_ms ?? 0;
     return {
       startedDateTime: new Date(f.started_at).toISOString(),
       time: dur,
@@ -86,7 +97,7 @@ export async function exportHar(flows: Flow[]): Promise<boolean> {
         bodySize: num(f.response_size),
       },
       cache: {},
-      timings: { send: 0, wait: dur, receive: 0 },
+      timings: { blocked: -1, dns, connect, ssl, send: 0, wait, receive },
     };
   });
 

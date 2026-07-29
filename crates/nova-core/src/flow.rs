@@ -11,8 +11,12 @@ use nova_proto::{
     BodyPreview, Flow, FlowState, Header, NetworkConditions, Rule, TlsScope, WsMessage,
 };
 
+use crate::bodystore::BodyStore;
 use crate::breakpoint::Breakpoints;
+use crate::flowstore::FlowStore;
 use crate::scripting::ScriptEngine;
+use crate::timing::ConnectLog;
+use crate::EngineHooks;
 
 /// Which half of the exchange a captured body belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,9 +61,14 @@ pub struct Shared {
     /// concurrent sockets to an identical URL fold into the latest flow (same
     /// documented approximation as the HTTP/2 request↔response FIFO).
     pub ws_routes: Mutex<HashMap<String, Arc<WsRoute>>>,
-    pub flows: Mutex<HashMap<String, Flow>>,
-    pub body_cap: usize,
-    pub total_captured: AtomicU64,
+    /// Retained flows. Owned by the app (see [`FlowStore`]), so the UI, the
+    /// commands and the MCP server share one truth across proxy restarts.
+    pub flows: Arc<FlowStore>,
+    /// Body storage: inline preview cap plus spill-to-disk for large bodies.
+    pub bodies: Arc<BodyStore>,
+    /// Real connect/DNS/TLS measurements taken by the instrumented connector,
+    /// claimed by whichever flow opened the connection.
+    pub connects: Arc<ConnectLog>,
     /// Live traffic-control rules; shared with the app so edits take effect
     /// without restarting the engine.
     pub rules: Arc<RwLock<Vec<Rule>>>,
@@ -71,53 +80,51 @@ pub struct Shared {
     pub net: Arc<RwLock<NetworkConditions>>,
     /// Per-host SSL-proxying scope (decrypt vs tunnel).
     pub tls_scope: Arc<RwLock<TlsScope>>,
+    /// Port of NovaProxy's own MCP endpoint (0 = not running).
+    pub internal_port: Arc<std::sync::atomic::AtomicU16>,
 }
 
 impl Shared {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        sink: Arc<dyn FlowSink>,
-        ws_sink: Arc<dyn WsSink>,
-        body_cap: usize,
-        rules: Arc<RwLock<Vec<Rule>>>,
-        breakpoints: Arc<Breakpoints>,
-        scripts: Arc<ScriptEngine>,
-        net: Arc<RwLock<NetworkConditions>>,
-        tls_scope: Arc<RwLock<TlsScope>>,
-    ) -> Self {
+    pub fn new(sink: Arc<dyn FlowSink>, ws_sink: Arc<dyn WsSink>, hooks: EngineHooks) -> Self {
         Self {
             seq: AtomicU64::new(0),
             sink,
             ws_sink,
             ws_routes: Mutex::new(HashMap::new()),
-            flows: Mutex::new(HashMap::new()),
-            body_cap,
-            total_captured: AtomicU64::new(0),
-            rules,
-            breakpoints,
-            scripts,
-            net,
-            tls_scope,
+            flows: hooks.flows,
+            bodies: hooks.bodies,
+            connects: hooks.connects,
+            rules: hooks.rules,
+            breakpoints: hooks.breakpoints,
+            scripts: hooks.scripts,
+            net: hooks.net,
+            tls_scope: hooks.tls_scope,
+            internal_port: hooks.internal_port,
         }
     }
 
-    /// Insert a freshly-seen flow and emit it.
+    /// Bytes of each captured body retained in memory (and streamed to the UI).
+    pub fn body_cap(&self) -> usize {
+        self.bodies.inline_cap()
+    }
+
+    /// Store a freshly-seen flow (applying retention) and stream it out.
     pub fn insert(&self, flow: Flow) {
-        self.total_captured
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.flows.lock().unwrap().insert(flow.id.clone(), flow.clone());
+        self.flows.insert(flow.clone());
         self.sink.emit(flow);
     }
 
-    /// Mutate a flow in place and emit the updated snapshot.
+    /// Mutate a stored flow and stream the updated snapshot. A flow that is gone
+    /// (evicted while its body was still finishing) is silently skipped.
     pub fn update<F: FnOnce(&mut Flow)>(&self, id: &str, f: F) {
-        let snapshot = {
-            let mut map = self.flows.lock().unwrap();
-            let Some(flow) = map.get_mut(id) else { return };
-            f(flow);
-            flow.clone()
-        };
-        self.sink.emit(snapshot);
+        if let Some(snapshot) = self.flows.update(id, f) {
+            self.sink.emit(snapshot);
+        }
+    }
+
+    /// A stored flow, if still retained.
+    pub fn flow(&self, id: &str) -> Option<Flow> {
+        self.flows.get(id)
     }
 }
 
@@ -177,41 +184,51 @@ pub fn build_preview(
         decoded_from: content_encoding.filter(|e| !e.eq_ignore_ascii_case("identity")),
         text,
         base64,
+        // Set by the capture path when the full body went to the body store.
+        spilled: false,
     }
 }
 
-/// Decode a `Content-Encoding` off a captured body copy. Best-effort: on any
-/// failure the original bytes are returned unchanged.
+/// Decode a `Content-Encoding` off a captured body copy.
+///
+/// Best-effort in two directions. A body we truncated at the preview cap is an
+/// *incomplete* compressed stream, so decoding it always ends in an error — but
+/// everything decoded before that error is real content, and keeping it is the
+/// difference between the Inspector showing the first 500 KB of a large JSON
+/// response and showing a wall of base64. Only when nothing at all could be
+/// decoded (the body isn't actually in the encoding it claims) do we fall back
+/// to the original bytes.
 fn decode(raw: &[u8], encoding: Option<&str>) -> Vec<u8> {
     let Some(enc) = encoding.map(|e| e.to_ascii_lowercase()) else {
         return raw.to_vec();
     };
-    let attempt = |result: std::io::Result<Vec<u8>>| result.unwrap_or_else(|_| raw.to_vec());
+    let partial = |out: Vec<u8>| if out.is_empty() { raw.to_vec() } else { out };
 
     if enc.contains("gzip") || enc.contains("x-gzip") {
-        let mut out = Vec::new();
-        attempt(
-            flate2::read::MultiGzDecoder::new(raw)
-                .read_to_end(&mut out)
-                .map(|_| out),
-        )
+        partial(read_lossy(flate2::read::MultiGzDecoder::new(raw)))
     } else if enc.contains("deflate") {
-        let mut out = Vec::new();
-        attempt(
-            flate2::read::ZlibDecoder::new(raw)
-                .read_to_end(&mut out)
-                .map(|_| out),
-        )
+        partial(read_lossy(flate2::read::ZlibDecoder::new(raw)))
     } else if enc.contains("br") {
-        let mut out = Vec::new();
-        attempt(
-            brotli::Decompressor::new(raw, 4096)
-                .read_to_end(&mut out)
-                .map(|_| out),
-        )
+        partial(read_lossy(brotli::Decompressor::new(raw, 4096)))
     } else {
         raw.to_vec()
     }
+}
+
+/// Read a decoder to exhaustion, keeping whatever was produced before an error.
+fn read_lossy<R: Read>(mut reader: R) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => out.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            // Truncated or corrupt stream: keep what we decoded so far.
+            Err(_) => break,
+        }
+    }
+    out
 }
 
 /// Heuristic: is this body better shown as text than as base64?
@@ -282,11 +299,14 @@ pub fn new_flow(
         content_type,
         started_at: now_ms(),
         duration_ms: None,
+        timings: Default::default(),
         error: None,
         resent: false,
         mapped_from: None,
         is_websocket: false,
         tunneled: false,
+        mcp: None,
+        internal: false,
     }
 }
 
@@ -453,18 +473,16 @@ mod tests {
     }
 
     fn shared_with(sink: Arc<CountingSink>) -> Shared {
-        Shared::new(
-            sink,
-            Arc::new(crate::flow::NoopWsSink),
-            1024,
-            Arc::new(RwLock::new(Vec::new())),
-            Arc::new(crate::breakpoint::Breakpoints::new(Arc::new(
-                crate::breakpoint::NoopBreakpointSink,
-            ))),
-            crate::scripting::ScriptEngine::new(),
-            Arc::new(RwLock::new(NetworkConditions::default())),
-            Arc::new(RwLock::new(TlsScope::default())),
-        )
+        shared_retaining(sink, 10_000)
+    }
+
+    /// A `Shared` over an in-memory store with a bounded retention window.
+    fn shared_retaining(sink: Arc<CountingSink>, max_flows: usize) -> Shared {
+        let mut hooks = crate::EngineHooks::in_memory(Arc::new(crate::breakpoint::Breakpoints::new(
+            Arc::new(crate::breakpoint::NoopBreakpointSink),
+        )));
+        hooks.flows = Arc::new(crate::flowstore::FlowStore::new(hooks.bodies.clone(), max_flows));
+        Shared::new(sink, Arc::new(crate::flow::NoopWsSink), hooks)
     }
 
     fn sample_flow(id: &str) -> Flow {
@@ -488,8 +506,8 @@ mod tests {
         let shared = shared_with(sink.clone());
 
         shared.insert(sample_flow("f0"));
-        assert_eq!(shared.total_captured.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert!(shared.flows.lock().unwrap().contains_key("f0"));
+        assert_eq!(shared.flows.total_captured(), 1);
+        assert!(shared.flow("f0").is_some());
         assert_eq!(sink.0.lock().unwrap().len(), 1);
     }
 
@@ -504,7 +522,7 @@ mod tests {
             f.status = Some(200);
         });
 
-        let stored = shared.flows.lock().unwrap().get("f0").cloned().unwrap();
+        let stored = shared.flow("f0").unwrap();
         assert_eq!(stored.state, FlowState::Completed);
         assert_eq!(stored.status, Some(200));
         // insert emitted once, update emitted the new snapshot once more.
@@ -520,8 +538,53 @@ mod tests {
 
         shared.update("ghost", |f| f.status = Some(500));
         // No stored flow, and nothing emitted.
-        assert!(shared.flows.lock().unwrap().is_empty());
+        assert_eq!(shared.flows.retained(), 0);
         assert!(sink.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn retention_evicts_the_oldest_flows() {
+        let sink = Arc::new(CountingSink(Mutex::new(Vec::new())));
+        let shared = shared_retaining(sink.clone(), 2);
+
+        for id in ["f0", "f1", "f2"] {
+            shared.insert(sample_flow(id));
+        }
+
+        assert_eq!(shared.flows.retained(), 2, "the window is honoured");
+        assert!(shared.flow("f0").is_none(), "oldest flow is evicted");
+        assert!(shared.flow("f1").is_some() && shared.flow("f2").is_some());
+        // Eviction is about memory, not accounting: the session total still
+        // counts every flow that was captured.
+        assert_eq!(shared.flows.total_captured(), 3);
+        // And every flow was still streamed to the UI as it arrived.
+        assert_eq!(sink.0.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn updating_an_evicted_flow_is_a_noop() {
+        let sink = Arc::new(CountingSink(Mutex::new(Vec::new())));
+        let shared = shared_retaining(sink.clone(), 1);
+        shared.insert(sample_flow("f0"));
+        shared.insert(sample_flow("f1"));
+        // f0 is gone; a late body-finalization update for it must not resurrect it.
+        shared.update("f0", |f| f.status = Some(200));
+        assert!(shared.flow("f0").is_none());
+        assert_eq!(sink.0.lock().unwrap().len(), 2, "no snapshot emitted for it");
+    }
+
+    #[test]
+    fn decode_keeps_what_it_could_inflate_from_a_truncated_stream() {
+        // A body we cut off at the preview cap is an incomplete gzip stream.
+        // Regression: this used to fall back to the raw compressed bytes, so the
+        // Inspector showed base64 noise instead of the start of the payload.
+        let plain = "the quick brown fox jumps over the lazy dog ".repeat(50);
+        let full = gzip(plain.as_bytes());
+        let cut = full[..full.len() - 20].to_vec();
+        let p = build_preview(cut, full.len() as u64, true, Some("text/plain".into()), Some("gzip".into()));
+        let text = p.text.expect("truncated gzip still yields text");
+        assert!(text.starts_with("the quick brown fox"), "got: {:?}", &text[..40.min(text.len())]);
+        assert!(text.len() < plain.len(), "and it is only the part that decoded");
     }
 
     #[test]

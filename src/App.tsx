@@ -11,10 +11,22 @@ import {
   type NetworkConditions,
   type WsMessage,
   type TlsScope,
+  type McpStatus,
+  type HelperStatus,
 } from "./api";
 import { useStore } from "./store";
 import { exportSession, exportHar, importSession } from "./session";
-import { distinctApps, filterFlows, toastDuration } from "./filter";
+import { distinctApps, filterFlows, mcpLabel, toastDuration } from "./filter";
+import { formatMs, timingBreakdown } from "./timing";
+import {
+  clampListWidth,
+  DEFAULT_PREFS,
+  loadPrefs,
+  savePrefs,
+  MAX_LIST_WIDTH,
+  MIN_LIST_WIDTH,
+  type Prefs,
+} from "./prefs";
 
 /* ------------------------------- helpers ------------------------------- */
 
@@ -106,13 +118,27 @@ const RULE_KIND_LABEL: Record<RuleKind, string> = {
 export function App() {
   const { flows, recording, selectedId, proxy, ca, setRecording, clear, select } = useStore();
 
+  // Persisted preferences. Read once: they are defaults for this session, not a
+  // live binding — flipping "default grouping" must not reshuffle the list under
+  // someone who has since toggled it in the toolbar.
+  const [prefs, setPrefsState] = useState<Prefs>(() => loadPrefs());
+  const setPrefs = (next: Prefs) => {
+    setPrefsState(next);
+    savePrefs(next);
+  };
+
   const [section, setSection] = useState<Section>("flows");
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [accent, setAccent] = useState(ACCENTS[1]);
   const [query, setQuery] = useState("");
   const [appFilter, setAppFilter] = useState("");
-  const [groupByHost, setGroupByHost] = useState(true);
+  // MCP view filters: isolate MCP traffic, and (separately) show or hide
+  // NovaProxy's own MCP/replay traffic.
+  const [mcpOnly, setMcpOnly] = useState(false);
+  const [showInternal, setShowInternal] = useState(false);
+  const [groupByHost, setGroupByHost] = useState(prefs.flowGrouping === "grouped");
   const [detailTab, setDetailTab] = useState<DetailTab>("overview");
+  const [listWidth, setListWidth] = useState(prefs.flowListWidth);
 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
@@ -127,6 +153,9 @@ export function App() {
   const [intercept, setIntercept] = useState<Interception | null>(null);
   const [net, setNet] = useState<NetworkConditions>({ enabled: false, latency_ms: 0, down_kbps: 0 });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [mcp, setMcp] = useState<McpStatus | null>(null);
+  const [helper, setHelper] = useState<HelperStatus | null>(null);
+  const [restoreHidden, setRestoreHidden] = useState(false);
 
   const saveNet = (next: NetworkConditions) => {
     setNet(next);
@@ -162,6 +191,18 @@ export function App() {
     api.setBreakpoint(armed, pattern).catch((e) => showToast(String(e)));
   };
 
+  // Clear both sides: the engine keeps its own retained flows, which the MCP
+  // server reads. Clearing only the UI would leave an agent looking at traffic
+  // the user believes they discarded.
+  async function clearAll() {
+    clear();
+    try {
+      await api.clearFlows();
+    } catch (e) {
+      showToast(String(e));
+    }
+  }
+
   const showToast = (t: string, ms?: number) => {
     setToastState(t);
     window.clearTimeout(toastTimer.current);
@@ -190,6 +231,28 @@ export function App() {
     api.getRules().then(setRulesState).catch(() => {});
     api.getScript().then((s) => { if (s.trim()) setScriptSource(s); }).catch(() => {});
     api.getNetworkConditions().then(setNet).catch(() => {});
+    api.mcpStatus().then(setMcp).catch(() => {});
+    api.helperStatus().then(setHelper).catch(() => {});
+  }, []);
+
+  // "System proxy at launch" — off unless the user asked for it, because it
+  // rewrites an OS setting they depend on for working internet. Without the
+  // privileged helper this is also the one path that can still raise a password
+  // prompt at startup, which is why Settings says so.
+  useEffect(() => {
+    if (prefs.systemProxyAtLaunch !== "system") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const now = await api.proxyStatus();
+        if (cancelled || now.system_proxy) return;
+        useStore.getState().setProxy(await api.setSystemProxy(true));
+        showToast("System proxy enabled (launch default)");
+      } catch (e) {
+        if (!cancelled) showToast(String(e));
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   // Refresh the captured counter while running.
@@ -204,6 +267,18 @@ export function App() {
       const next = await api.setSystemProxy(!proxy.system_proxy);
       useStore.getState().setProxy(next);
       showToast(next.system_proxy ? "System proxy enabled" : "System proxy disabled");
+    } catch (e) {
+      showToast(String(e));
+    }
+  }
+
+  // Put back settings a previous session left behind. Deliberately a button and
+  // not something the app does by itself: without the helper the OS asks for a
+  // password, and that dialog should never appear unasked.
+  async function restorePrevious() {
+    try {
+      useStore.getState().setProxy(await api.restoreSystemProxy());
+      showToast("Previous proxy settings restored");
     } catch (e) {
       showToast(String(e));
     }
@@ -238,6 +313,7 @@ export function App() {
       { id: "save", icon: "⇩", label: "Save session (.nova)", run: () => void doExportSession() },
       { id: "open", icon: "⇧", label: "Open session (.nova)", run: () => void doImportSession() },
       { id: "har", icon: "⤓", label: "Export as HAR", run: () => void doExportHar() },
+      { id: "mcponly", icon: "⌗", label: mcpOnly ? "Show all traffic (clear MCP filter)" : "Show only MCP traffic", run: () => { setMcpOnly((v) => !v); setSection("flows"); } },
       { id: "bp", icon: "⏸", label: "Arm breakpoint on next request", run: () => { armBreakpoint(true); setSection("break"); showToast("Breakpoint armed"); } },
       { id: "rules", icon: "⤳", label: "Open Rules", run: () => setSection("rules") },
       { id: "scripts", icon: "{ }", label: "Open Scripts", run: () => setSection("scripts") },
@@ -319,7 +395,7 @@ export function App() {
               <span className="rec-dot" />
               {recording ? "Recording" : "Paused"}
             </div>
-            <div className="tool-btn" onClick={() => clear()}>Clear</div>
+            <div className="tool-btn" onClick={() => void clearAll()}>Clear</div>
             <div className="tool-sep" />
             <div className="search">
               <span className="mag">⌕</span>
@@ -330,6 +406,15 @@ export function App() {
               />
               {query && <span className="clear" onClick={() => setQuery("")}>✕</span>}
             </div>
+            {section === "flows" && (
+              <div
+                className={`tool-btn ${mcpOnly ? "on" : ""}`}
+                title="Show only Model Context Protocol traffic (JSON-RPC over HTTP/SSE)"
+                onClick={() => setMcpOnly((v) => !v)}
+              >
+                ⌗ MCP only
+              </div>
+            )}
             {section === "flows" && (
               <select
                 className="app-filter"
@@ -353,11 +438,27 @@ export function App() {
             </div>
           </div>
 
+          {proxy.pending_restore && !restoreHidden && (
+            <div className="restore-bar">
+              <span className="rb-icon">⚠</span>
+              <span>
+                Your system proxy still points at NovaProxy from a session that ended
+                unexpectedly{helper?.supported && !helper.running ? " — restoring it needs your password once" : ""}.
+              </span>
+              <span className="spacer" />
+              <button className="tool-btn" onClick={() => void restorePrevious()}>Restore settings</button>
+              <span className="rb-x" title="Dismiss" onClick={() => setRestoreHidden(true)}>✕</span>
+            </div>
+          )}
+
           {section === "flows" && (
             <FlowsSection
               flows={flows}
               query={query}
               appFilter={appFilter}
+              mcpOnly={mcpOnly}
+              showInternal={showInternal}
+              toggleInternal={() => setShowInternal((v) => !v)}
               groupByHost={groupByHost}
               toggleGroup={() => setGroupByHost((v) => !v)}
               recording={recording}
@@ -365,9 +466,13 @@ export function App() {
               select={select}
               detailTab={detailTab}
               setDetailTab={setDetailTab}
+              listWidth={listWidth}
+              setListWidth={setListWidth}
+              commitListWidth={(w) => setPrefs({ ...prefs, flowListWidth: w })}
               onResend={() => void resendSelected()}
               onCopyCurl={copyCurl}
               openPalette={openPalette}
+              showToast={showToast}
             />
           )}
           {section === "rules" && <RulesSection rules={rules} saveRules={saveRules} />}
@@ -442,6 +547,10 @@ export function App() {
           accent={accent} setAccent={setAccent}
           port={proxy.port ?? 9090} ca={ca}
           net={net} setNet={saveNet}
+          mcp={mcp} setMcp={setMcp}
+          helper={helper} setHelper={setHelper}
+          prefs={prefs} setPrefs={setPrefs}
+          showToast={showToast}
           onClose={() => setSettingsOpen(false)}
         />
       )}
@@ -472,6 +581,9 @@ function FlowsSection(props: {
   flows: Flow[];
   query: string;
   appFilter: string;
+  mcpOnly: boolean;
+  showInternal: boolean;
+  toggleInternal: () => void;
   groupByHost: boolean;
   toggleGroup: () => void;
   recording: boolean;
@@ -479,16 +591,31 @@ function FlowsSection(props: {
   select: (id: string | null) => void;
   detailTab: DetailTab;
   setDetailTab: (t: DetailTab) => void;
+  /** Live width of the flow list while dragging. */
+  listWidth: number;
+  setListWidth: (w: number) => void;
+  /** Called once at the end of a drag, so a drag writes one preference, not 200. */
+  commitListWidth: (w: number) => void;
   onResend: () => void;
   onCopyCurl: () => void;
   openPalette: () => void;
+  showToast: (t: string) => void;
 }) {
-  const { flows, query, appFilter, groupByHost, selected, select } = props;
+  const { flows, query, appFilter, mcpOnly, showInternal, groupByHost, selected, select } = props;
+  const splitRef = useRef<HTMLDivElement | null>(null);
 
   const filtered = useMemo(
-    () => filterFlows(flows, query, appFilter),
-    [flows, query, appFilter],
+    () =>
+      filterFlows(flows, query, {
+        app: appFilter,
+        mcpOnly,
+        includeInternal: showInternal,
+      }),
+    [flows, query, appFilter, mcpOnly, showInternal],
   );
+  // How much of the capture is NovaProxy's own doing, so the count can be
+  // surfaced rather than silently swallowed.
+  const internalCount = useMemo(() => flows.filter((f) => f.internal).length, [flows]);
 
   const groups = useMemo(() => {
     if (!groupByHost) {
@@ -509,11 +636,61 @@ function FlowsSection(props: {
       ? props.recording ? "Waiting for traffic…" : "Recording paused — no flows captured"
       : "No flows match your filter";
 
+  /**
+   * Drag the divider. Pointer capture (rather than window listeners) is what
+   * keeps the drag alive when the cursor outruns the 1px handle or leaves the
+   * window, and it releases itself if the pointer is lost.
+   */
+  const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const container = splitRef.current?.parentElement;
+    if (!container) return;
+    const left = container.getBoundingClientRect().left;
+    // Never let the inspector be squeezed out of existence, however wide the
+    // list is allowed to be in isolation.
+    const roomForDetail = container.clientWidth - 360;
+    const handle = splitRef.current!;
+    handle.setPointerCapture(e.pointerId);
+
+    const onMove = (ev: PointerEvent) =>
+      props.setListWidth(Math.min(clampListWidth(ev.clientX - left), Math.max(MIN_LIST_WIDTH, roomForDetail)));
+    const onUp = (ev: PointerEvent) => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      handle.releasePointerCapture(ev.pointerId);
+      props.commitListWidth(Math.min(clampListWidth(ev.clientX - left), Math.max(MIN_LIST_WIDTH, roomForDetail)));
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
+  };
+
+  /** Keyboard resizing, so the divider is not mouse-only. */
+  const nudge = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = e.shiftKey ? 48 : 12;
+    const delta = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+    if (!delta) return;
+    e.preventDefault();
+    const next = clampListWidth(props.listWidth + delta);
+    props.setListWidth(next);
+    props.commitListWidth(next);
+  };
+
   return (
     <div className="flows">
-      <div className="flow-list">
+      <div className="flow-list" style={{ width: props.listWidth }}>
         <div className="flow-list-head">
           <span>{filtered.length} flow{filtered.length === 1 ? "" : "s"}</span>
+          {internalCount > 0 && (
+            <span
+              className="grouptog"
+              title="NovaProxy's own MCP endpoint calls and replays"
+              onClick={props.toggleInternal}
+            >
+              {showInternal ? "◉" : "○"} {internalCount} own
+            </span>
+          )}
           <span className="grouptog" onClick={props.toggleGroup}>{groupByHost ? "▾ grouped" : "≡ flat"}</span>
         </div>
         <div className="flow-scroll">
@@ -537,11 +714,15 @@ function FlowsSection(props: {
                 >
                   <span className={`badge ${methodClass(f.method)}`}>{f.method}</span>
                   <span className="col">
-                    <div className="fpath">{f.path}</div>
+                    <div className="fpath">
+                      {f.mcp ? <span className="fmcp">⌗ {mcpLabel(f)}</span> : f.path}
+                    </div>
                     <div className="fsub">
                       {f.mapped_from && <span className="fmap">⤳ </span>}
                       {f.host}
+                      {f.mcp && <span className="fdim"> · {f.path}</span>}
                       {f.resent && <span className="fresent"> · resent</span>}
+                      {f.internal && <span className="fdim"> · NovaProxy</span>}
                     </div>
                   </span>
                   <span className="fright">
@@ -553,6 +734,26 @@ function FlowsSection(props: {
             </div>
           ))}
         </div>
+      </div>
+
+      <div
+        ref={splitRef}
+        className="splitter"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the flow list"
+        aria-valuenow={props.listWidth}
+        aria-valuemin={MIN_LIST_WIDTH}
+        aria-valuemax={MAX_LIST_WIDTH}
+        tabIndex={0}
+        onPointerDown={startDrag}
+        onKeyDown={nudge}
+        onDoubleClick={() => {
+          props.setListWidth(DEFAULT_PREFS.flowListWidth);
+          props.commitListWidth(DEFAULT_PREFS.flowListWidth);
+        }}
+      >
+        <span className="grip" />
       </div>
 
       <div className="detail">
@@ -569,6 +770,7 @@ function FlowsSection(props: {
             setTab={props.setDetailTab}
             onResend={props.onResend}
             onCopyCurl={props.onCopyCurl}
+            showToast={props.showToast}
           />
         )}
       </div>
@@ -585,13 +787,14 @@ const DETAIL_TABS: { id: DetailTab; label: string }[] = [
 ];
 
 function Detail({
-  flow, tab, setTab, onResend, onCopyCurl,
+  flow, tab, setTab, onResend, onCopyCurl, showToast,
 }: {
   flow: Flow;
   tab: DetailTab;
   setTab: (t: DetailTab) => void;
   onResend: () => void;
   onCopyCurl: () => void;
+  showToast: (t: string) => void;
 }) {
   const wsMessages = useStore((s) => s.wsMessages[flow.id]);
   const tabs = flow.is_websocket
@@ -637,6 +840,14 @@ function Detail({
                 </div>
               ))}
             </div>
+            {flow.mcp && (
+              <div className="fact-grid">
+                <div className="fact"><div className="k">MCP method</div><div className="v">{flow.mcp.method ?? "—"}</div></div>
+                <div className="fact"><div className="k">MCP tool</div><div className="v">{flow.mcp.tool ?? "—"}</div></div>
+                <div className="fact"><div className="k">JSON-RPC id</div><div className="v">{flow.mcp.id ?? "notification"}</div></div>
+                <div className="fact"><div className="k">Transport</div><div className="v">{flow.mcp.transport === "Sse" ? "SSE" : "HTTP"}</div></div>
+              </div>
+            )}
             <div className="chips">
               {flow.scheme === "https" ? (
                 <span className="chip green">🔒 TLS · decrypted</span>
@@ -647,6 +858,8 @@ function Detail({
               {flow.is_websocket && <span className="chip cyan">≋ WebSocket</span>}
               {flow.tunneled && <span className="chip amber">⇅ tunneled · not decrypted</span>}
               {flow.mapped_from && <span className="chip violet">⤳ mapped from {flow.mapped_from}</span>}
+              {flow.mcp && <span className="chip violet">⌗ MCP · {mcpLabel(flow)}</span>}
+              {flow.internal && <span className="chip amber">NovaProxy's own traffic</span>}
               {flow.resent && <span className="chip cyan">↻ resent</span>}
               {flow.error && <span className="chip red">⚠ {flow.error}</span>}
             </div>
@@ -661,7 +874,7 @@ function Detail({
               <div className="hrow" key={i}><span className="hk">{h.name}</span><span className="hv">{h.value}</span></div>
             ))}
             <div className="sec-label">Body</div>
-            <BodyBlock body={flow.request_body} kind="req" />
+            <BodyBlock body={flow.request_body} kind="req" flowId={flow.id} showToast={showToast} />
           </>
         )}
 
@@ -676,33 +889,11 @@ function Detail({
               Body
               <span className="metaval">{(flow.content_type ?? "—")} · {formatBytes(flow.response_size)}</span>
             </div>
-            <BodyBlock body={flow.response_body} kind="res" status={flow.status} />
+            <BodyBlock body={flow.response_body} kind="res" status={flow.status} flowId={flow.id} showToast={showToast} />
           </>
         )}
 
-        {tab === "timing" && (
-          <div className="timing">
-            <div className="timing-row">
-              <span className="tl">Total</span>
-              <div className="timing-bar"><span style={{ width: "100%", background: "var(--c-amber)" }} /></div>
-              <span className="tv">{flow.duration_ms != null ? `${Math.round(flow.duration_ms)}ms` : "—"}</span>
-            </div>
-            <div className="timing-row">
-              <span className="tl">Request</span>
-              <div className="timing-bar"><span style={{ width: "100%", background: "var(--c-blue)", opacity: 0.5 }} /></div>
-              <span className="tv">{formatBytes(flow.request_size)}</span>
-            </div>
-            <div className="timing-row">
-              <span className="tl">Response</span>
-              <div className="timing-bar"><span style={{ width: "100%", background: "var(--c-green)", opacity: 0.5 }} /></div>
-              <span className="tv">{formatBytes(flow.response_size)}</span>
-            </div>
-            <div className="timing-total">
-              <span>Started</span>
-              <span className="mono">{formatAgo(flow.started_at)}</span>
-            </div>
-          </div>
-        )}
+        {tab === "timing" && <TimingPanel flow={flow} />}
 
         {tab === "curl" && (
           <>
@@ -717,6 +908,76 @@ function Detail({
         {tab === "ws" && <WsPanel messages={wsMessages} />}
       </div>
     </>
+  );
+}
+
+/**
+ * Waterfall of the phases the engine actually measured. Every bar here comes
+ * from an instrumented timer — phases that did not happen (no DNS lookup for an
+ * IP literal, no handshake on plain HTTP) or could not be attributed (a reused
+ * connection) are stated as such instead of being drawn.
+ */
+function TimingPanel({ flow }: { flow: Flow }) {
+  const b = timingBreakdown(flow);
+
+  if (b.empty) {
+    return (
+      <div className="timing">
+        <div className="timing-note">
+          No timing was measured for this flow.
+          {flow.tunneled
+            ? " It was tunneled without decryption, so only the CONNECT is visible."
+            : flow.state === "Started"
+            ? " It is still in flight."
+            : " Rule-served and imported flows carry no measurements."}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="timing">
+      {b.phases.map((p) => (
+        <div className="timing-row" key={p.key}>
+          <span className="tl">{p.label}</span>
+          <div className="timing-bar">
+            <span
+              style={{
+                left: `${(p.startMs / b.spanMs) * 100}%`,
+                // Keep a hairline visible for phases that rounded to ~0ms.
+                width: `${Math.max((p.ms / b.spanMs) * 100, 0.5)}%`,
+                background: p.color,
+              }}
+            />
+          </div>
+          <span className="tv">{formatMs(p.ms)}</span>
+        </div>
+      ))}
+
+      {b.reused && (
+        <div className="timing-note">
+          Reused an open connection — no DNS, connect or TLS cost belongs to this request.
+        </div>
+      )}
+      {b.requestMs != null && (
+        <div className="timing-note">
+          Request body streamed upstream in {formatMs(b.requestMs)} ({formatBytes(flow.request_size)}).
+        </div>
+      )}
+
+      <div className="timing-total">
+        <span>Total</span>
+        <span className="mono">{b.totalMs != null ? formatMs(b.totalMs) : "in flight"}</span>
+      </div>
+      <div className="timing-total">
+        <span>Transferred</span>
+        <span className="mono">{formatBytes(num(flow.request_size) + num(flow.response_size))}</span>
+      </div>
+      <div className="timing-total">
+        <span>Started</span>
+        <span className="mono">{formatAgo(flow.started_at)}</span>
+      </div>
+    </div>
   );
 }
 
@@ -750,27 +1011,79 @@ function WsPanel({ messages }: { messages: WsMessage[] | undefined }) {
   );
 }
 
-function BodyBlock({ body, kind, status }: { body: Flow["request_body"]; kind: "req" | "res"; status?: number | null }) {
-  if (!body) {
+function BodyBlock({
+  body, kind, status, flowId, showToast,
+}: {
+  body: Flow["request_body"];
+  kind: "req" | "res";
+  status?: number | null;
+  flowId: string;
+  showToast?: (t: string) => void;
+}) {
+  // A body larger than the inline preview cap lives in the on-disk body store;
+  // it is fetched only when asked for, so opening a flow never pulls megabytes
+  // across the IPC boundary.
+  const [full, setFull] = useState<Flow["request_body"] | null>(null);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    setFull(null);
+    setLoading(false);
+  }, [flowId, kind]);
+
+  const shown = full ?? body;
+  if (!shown) {
     return <pre className={`code ${kind}`}>{status === 204 ? "— no content (204) —" : "— no body —"}</pre>;
   }
-  const ct = (body.media_type ?? "").toLowerCase();
-  if (body.base64 && ct.startsWith("image/")) {
+
+  async function loadFull() {
+    if (!body) return;
+    setLoading(true);
+    try {
+      setFull(await api.readBody(flowId, kind === "req" ? "request" : "response", body.media_type, body.decoded_from));
+    } catch (e) {
+      showToast?.(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const loadMore =
+    body?.spilled && !full ? (
+      <div className="body-more" onClick={() => !loading && loadFull()}>
+        {loading ? "Loading…" : `Load full body (${formatBytes(body.size)})`}
+      </div>
+    ) : null;
+
+  const ct = (shown.media_type ?? "").toLowerCase();
+  if (shown.base64 && ct.startsWith("image/")) {
     return (
       <div className={`code ${kind}`}>
-        <img src={`data:${body.media_type};base64,${body.base64}`} alt="body preview" />
+        <img src={`data:${shown.media_type};base64,${shown.base64}`} alt="body preview" />
+        {loadMore}
       </div>
     );
   }
-  if (body.base64) {
-    return <pre className={`code ${kind}`}>Binary body — {formatBytes(body.size)} ({body.media_type ?? "unknown"}){body.truncated ? ", truncated" : ""}</pre>;
+  if (shown.base64) {
+    return (
+      <>
+        <pre className={`code ${kind}`}>Binary body — {formatBytes(shown.size)} ({shown.media_type ?? "unknown"}){shown.truncated ? ", truncated" : ""}</pre>
+        {loadMore}
+      </>
+    );
   }
-  const text = bodyToText(body);
+  const text = bodyToText(shown);
   return (
-    <pre className={`code ${kind}`}>
-      {text ?? "— empty body —"}
-      {body.truncated ? "\n… preview truncated at capture cap" : ""}
-    </pre>
+    <>
+      <pre className={`code ${kind}`}>
+        {text ?? "— empty body —"}
+        {shown.truncated
+          ? shown.spilled && !full
+            ? "\n… preview truncated — the full body is stored on disk"
+            : "\n… truncated at the capture cap"
+          : ""}
+      </pre>
+      {loadMore}
+    </>
   );
 }
 
@@ -1000,19 +1313,65 @@ function ScriptsSection({
 
 /* ------------------------------ certificate section ------------------------------ */
 
+/**
+ * Human-readable trust state. Four states are reachable because the CA can be
+ * trusted for this user, for the whole machine, both, or neither.
+ */
+/**
+ * What the user trust domain actually covers, which differs by platform: on
+ * Linux there is no per-user OpenSSL store, so a user-domain install reaches
+ * browsers only and `curl`/Python/Go still reject our leaf certs.
+ */
+export function userDomainLabel(platform: string | undefined): string {
+  return platform === "linux" ? "browsers" : "this user";
+}
+
+export function trustLabel(ca: CaStatus | null): { text: string; kind: "trusted" | "untrusted" } {
+  if (!ca?.trusted) return { text: "Not installed", kind: "untrusted" };
+  const user = userDomainLabel(ca.platform);
+  if (ca.trusted_user && ca.trusted_system) return { text: `Trusted · ${user} + all users`, kind: "trusted" };
+  if (ca.trusted_system) return { text: "Trusted · all users", kind: "trusted" };
+  return { text: `Trusted · ${user}`, kind: "trusted" };
+}
+
+/** How each platform describes the no-admin install and what it costs. */
+export function trustHint(ca: CaStatus): string {
+  if (ca.trusted && ca.trusted_system) {
+    return "Trusted machine-wide: every user account, command-line tool and root-owned daemon accepts it.";
+  }
+  if (ca.trusted) {
+    return ca.platform === "linux"
+      ? "Trusted in your browser certificate databases only — no password was needed. Command-line tools (curl, Python, Go) will still reject it until you install for all users."
+      : "Trusted for your login only — no administrator password was needed. Other user accounts and root-owned daemons will not accept it.";
+  }
+  if (ca.platform === "windows") {
+    return "Installing for you writes your personal certificate store and needs no prompt at all. Choose “all users” (one UAC prompt) if other accounts or services need to trust it.";
+  }
+  if (ca.platform === "linux") {
+    return "Installing for you adds the CA to your browser certificate databases (Chrome, Firefox) — no password needed, but command-line tools are not covered. Choose “all users” (one polkit prompt) to add a system trust anchor.";
+  }
+  return "Installing for your user only needs a keychain confirmation, not an administrator password. Choose “all users” if you need root-owned daemons or other accounts to trust it too.";
+}
+
 function CertsSection({ ca, showToast }: { ca: CaStatus | null; showToast: (t: string) => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const setCa = useStore.getState().setCa;
 
-  async function run(kind: "install" | "uninstall" | "regen") {
+  async function run(kind: "install" | "install-all" | "uninstall" | "regen") {
     setBusy(kind);
     try {
       const next =
         kind === "install" ? await api.installCa()
+        : kind === "install-all" ? await api.installCa(true)
         : kind === "uninstall" ? await api.uninstallCa()
         : await api.regenerateCa();
       setCa(next);
-      showToast(kind === "install" ? "Certificate installed & trusted" : kind === "uninstall" ? "Certificate removed" : "Root CA regenerated");
+      showToast(
+        kind === "install" ? "Certificate installed & trusted for your user"
+        : kind === "install-all" ? "Certificate installed & trusted for all users"
+        : kind === "uninstall" ? "Certificate removed"
+        : "Root CA regenerated",
+      );
     } catch (e) {
       showToast(String(e));
     } finally {
@@ -1021,6 +1380,7 @@ function CertsSection({ ca, showToast }: { ca: CaStatus | null; showToast: (t: s
   }
 
   const trusted = !!ca?.trusted;
+  const status = trustLabel(ca);
 
   return (
     <div className="page">
@@ -1038,20 +1398,29 @@ function CertsSection({ ca, showToast }: { ca: CaStatus | null; showToast: (t: s
                   <div className="cert-name">{ca.subject || "NovaProxy Root CA"}</div>
                   <div className="cert-fp">SHA-256 · {ca.fingerprint}</div>
                 </div>
-                <span className={`cert-status ${trusted ? "trusted" : "untrusted"}`}>{trusted ? "Trusted" : "Not installed"}</span>
+                <span className={`cert-status ${status.kind}`}>{status.text}</span>
               </div>
               <div className="cert-meta">
                 <div><div className="k">Path</div><div className="v">{ca.cert_path}</div></div>
               </div>
               <div className="cert-actions">
                 {!trusted ? (
-                  <div className="btn-primary" onClick={() => !busy && run("install")}>{busy === "install" ? "Installing…" : "Install & trust"}</div>
+                  <>
+                    <div className="btn-primary" onClick={() => !busy && run("install")}>{busy === "install" ? "Installing…" : "Install & trust"}</div>
+                    <div className="btn-neutral" onClick={() => !busy && run("install-all")}>{busy === "install-all" ? "Installing…" : "Install for all users"}</div>
+                  </>
                 ) : (
-                  <div className="btn-primary red" onClick={() => !busy && run("uninstall")}>{busy === "uninstall" ? "Removing…" : "Remove certificate"}</div>
+                  <>
+                    <div className="btn-primary red" onClick={() => !busy && run("uninstall")}>{busy === "uninstall" ? "Removing…" : "Remove certificate"}</div>
+                    {!ca.trusted_system && (
+                      <div className="btn-neutral" onClick={() => !busy && run("install-all")}>{busy === "install-all" ? "Installing…" : "Also trust for all users"}</div>
+                    )}
+                  </>
                 )}
                 <div className="btn-neutral" onClick={() => { navigator.clipboard.writeText(ca.cert_path); showToast("Certificate path copied"); }}>Export .pem</div>
                 <div className="btn-neutral" onClick={() => !busy && run("regen")}>{busy === "regen" ? "Regenerating…" : "Regenerate CA"}</div>
               </div>
+              <div className="cert-hint">{trustHint(ca)}</div>
             </>
           )}
         </div>
@@ -1136,8 +1505,19 @@ function TlsScopeCard({ showToast }: { showToast: (t: string) => void }) {
 
 /* ------------------------------ settings modal ------------------------------ */
 
+type SettingsTab = "general" | "appearance" | "network" | "mcp" | "setup";
+
+const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: "general", label: "General" },
+  { id: "appearance", label: "Appearance" },
+  { id: "network", label: "Network" },
+  { id: "mcp", label: "MCP" },
+  { id: "setup", label: "Getting started" },
+];
+
 function SettingsModal({
-  theme, setTheme, accent, setAccent, port, ca, net, setNet, onClose,
+  theme, setTheme, accent, setAccent, port, ca, net, setNet, mcp, setMcp,
+  helper, setHelper, prefs, setPrefs, showToast, onClose,
 }: {
   theme: "dark" | "light";
   setTheme: (t: "dark" | "light") => void;
@@ -1147,8 +1527,16 @@ function SettingsModal({
   ca: CaStatus | null;
   net: NetworkConditions;
   setNet: (n: NetworkConditions) => void;
+  mcp: McpStatus | null;
+  setMcp: (m: McpStatus) => void;
+  helper: HelperStatus | null;
+  setHelper: (h: HelperStatus) => void;
+  prefs: Prefs;
+  setPrefs: (p: Prefs) => void;
+  showToast: (t: string) => void;
   onClose: () => void;
 }) {
+  const [tab, setTab] = useState<SettingsTab>("general");
   return (
     <>
       <div className="scrim modal-scrim" onClick={onClose}>
@@ -1157,7 +1545,23 @@ function SettingsModal({
             <h2>Settings</h2>
             <span className="modal-x" onClick={onClose}>✕</span>
           </div>
+          <div className="modal-tabs">
+            {SETTINGS_TABS.map((t) => (
+              <div
+                key={t.id}
+                className={`mtab ${tab === t.id ? "active" : ""}`}
+                onClick={() => setTab(t.id)}
+              >
+                {t.label}
+              </div>
+            ))}
+          </div>
           <div className="modal-body">
+          {tab === "general" && (
+            <GeneralTab prefs={prefs} setPrefs={setPrefs} helper={helper} setHelper={setHelper} showToast={showToast} />
+          )}
+
+          {tab === "appearance" && (<>
             <h3>Appearance</h3>
             <div className="field-group">
               <div className={`switch ${theme === "light" ? "on" : ""}`} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}><span className="knob" /></div>
@@ -1173,7 +1577,9 @@ function SettingsModal({
                 />
               ))}
             </div>
+          </>)}
 
+          {tab === "network" && (<>
             <h3>Network conditions</h3>
             <div className="field-group">
               <div
@@ -1208,7 +1614,14 @@ function SettingsModal({
                 />
               </label>
             </div>
+          </>)}
 
+          {tab === "mcp" && (<>
+            <h3>MCP server</h3>
+            <McpCard mcp={mcp} setMcp={setMcp} showToast={showToast} />
+          </>)}
+
+          {tab === "setup" && (<>
             <h3>1. Route traffic through the proxy</h3>
             <CodeSnippet text={`curl -x http://127.0.0.1:${port} https://example.com`} />
 
@@ -1219,9 +1632,194 @@ function SettingsModal({
 export HTTPS_PROXY=http://127.0.0.1:${port}
 export NODE_EXTRA_CA_CERTS="${ca?.cert_path ?? "<ca.pem path>"}"`}
             />
+          </>)}
           </div>
         </div>
       </div>
+    </>
+  );
+}
+
+/**
+ * The defaults a session starts from, plus the one piece of machinery that
+ * decides whether changing the system proxy costs a password.
+ */
+function GeneralTab({
+  prefs, setPrefs, helper, setHelper, showToast,
+}: {
+  prefs: Prefs;
+  setPrefs: (p: Prefs) => void;
+  helper: HelperStatus | null;
+  setHelper: (h: HelperStatus) => void;
+  showToast: (t: string) => void;
+}) {
+  return (
+    <>
+      <h3>Flow list</h3>
+      <label className="pref-row">
+        <span className="k">Default grouping</span>
+        <select
+          className="rule-input"
+          value={prefs.flowGrouping}
+          onChange={(e) => setPrefs({ ...prefs, flowGrouping: e.target.value as Prefs["flowGrouping"] })}
+        >
+          <option value="grouped">Grouped by host</option>
+          <option value="flat">Flat</option>
+        </select>
+      </label>
+      <p>
+        How the list opens. The <b>grouped / flat</b> control above the list still switches the
+        current session without changing this default.
+      </p>
+
+      <h3>System proxy</h3>
+      <label className="pref-row">
+        <span className="k">At launch</span>
+        <select
+          className="rule-input"
+          value={prefs.systemProxyAtLaunch}
+          onChange={(e) =>
+            setPrefs({ ...prefs, systemProxyAtLaunch: e.target.value as Prefs["systemProxyAtLaunch"] })
+          }
+        >
+          <option value="none">None — leave the OS alone</option>
+          <option value="system">System proxy — capture everything</option>
+        </select>
+      </label>
+      <p>
+        <b>None</b> is the default: pointing the OS at NovaProxy rewrites a setting the whole
+        machine depends on for working internet, so it should be a deliberate act.
+        {helper?.supported && !helper.running && (
+          <> Choosing <b>System proxy</b> without the helper below means macOS asks for your
+          password on every launch.</>
+        )}
+      </p>
+
+      {helper?.supported && <HelperCard helper={helper} setHelper={setHelper} showToast={showToast} />}
+    </>
+  );
+}
+
+/**
+ * Install (or remove) the privileged helper.
+ *
+ * macOS needs root to change the system proxy, and the app used to buy that
+ * privilege one `osascript` prompt at a time — including during launch, when
+ * recovering from an unclean exit. The helper turns that into a single prompt,
+ * once, ever.
+ */
+function HelperCard({
+  helper, setHelper, showToast,
+}: {
+  helper: HelperStatus;
+  setHelper: (h: HelperStatus) => void;
+  showToast: (t: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const stale = helper.running && helper.version !== helper.expected_version;
+
+  async function run(action: "install" | "remove") {
+    setBusy(true);
+    try {
+      const next = action === "install" ? await api.installHelper() : await api.uninstallHelper();
+      setHelper(next);
+      showToast(next.running ? "Helper installed — no more password prompts" : "Helper removed");
+    } catch (e) {
+      showToast(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <h3>Privileged helper</h3>
+      <div className="field-group">
+        <span className={`dot ${helper.running && !stale ? "ok" : "warn"}`} />
+        <span style={{ color: "var(--text2)" }}>
+          {busy
+            ? "Working…"
+            : stale
+              ? `Installed, but speaks protocol ${helper.version} — reinstall to update`
+              : helper.running
+                ? "Installed — proxy changes apply silently"
+                : "Not installed — every proxy change asks for your password"}
+        </span>
+      </div>
+      <p>
+        A small background service that applies system-proxy changes for you. Installing it costs
+        one administrator password; after that, turning the proxy on or off — and putting your
+        settings back after a crash — happens without a prompt.
+      </p>
+      <div className="cert-actions">
+        {(!helper.running || stale) && (
+          <div
+            className={`btn-primary ${busy || !helper.installable ? "disabled" : ""}`}
+            onClick={() => !busy && helper.installable && void run("install")}
+          >
+            {stale ? "Reinstall helper" : "Install helper"}
+          </div>
+        )}
+        {helper.running && (
+          <div className="btn-neutral" onClick={() => !busy && void run("remove")}>Remove helper</div>
+        )}
+      </div>
+      {!helper.installable && (
+        <p className="warn-note">
+          No helper binary was found next to the app. In a development tree, build it first:
+          <code> cargo build -p nova-helper</code>.
+        </p>
+      )}
+    </>
+  );
+}
+
+/**
+ * Enable/disable the MCP endpoint and hand the user the one command that wires
+ * an agent to it. Off by default: it exposes every captured request, so turning
+ * it on is a deliberate act.
+ */
+function McpCard({
+  mcp, setMcp, showToast,
+}: {
+  mcp: McpStatus | null;
+  setMcp: (m: McpStatus) => void;
+  showToast: (t: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const running = !!mcp?.running;
+  const port = mcp?.port ?? 9091;
+  const url = mcp?.url ?? `http://127.0.0.1:${port}/`;
+
+  async function toggle() {
+    setBusy(true);
+    try {
+      const next = await api.setMcpEnabled(!running, port);
+      setMcp(next);
+      showToast(next.running ? `MCP server listening on ${next.url}` : "MCP server stopped");
+    } catch (e) {
+      showToast(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="field-group">
+        <div className={`switch ${running ? "on" : ""}`} onClick={() => !busy && void toggle()}>
+          <span className="knob" />
+        </div>
+        <span style={{ color: "var(--text2)" }}>
+          {busy ? "Working…" : running ? `Serving on ${url}` : "Off"}
+        </span>
+      </div>
+      <p>
+        Lets Claude and other MCP clients read the traffic you have captured — list and search
+        flows, inspect bodies, replay requests, set rules. Loopback only, and its own calls are
+        marked so they stay out of your flow list.
+      </p>
+      {running && <CodeSnippet text={`claude mcp add --transport http novaproxy ${url}`} />}
     </>
   );
 }

@@ -35,20 +35,21 @@ fn start_engine(
     let sink = Arc::new(VecSink(Arc::new(Mutex::new(Vec::new()))));
     let flows = sink.0.clone();
 
+    // Defaults, then the two things this harness varies: the rule set and how
+    // many body bytes are retained.
+    let mut hooks = EngineHooks::in_memory(Arc::new(nova_core::breakpoint::Breakpoints::new(
+        Arc::new(nova_core::breakpoint::NoopBreakpointSink),
+    )));
+    hooks.rules = Arc::new(RwLock::new(rules));
+    hooks.bodies = Arc::new(nova_core::bodystore::BodyStore::memory_only(body_cap));
+    hooks.flows = Arc::new(nova_core::flowstore::FlowStore::new(hooks.bodies.clone(), 10_000));
+
     let handle = nova_core::start(
-        EngineConfig { addr: ([127, 0, 0, 1], port).into(), body_cap },
+        EngineConfig { addr: ([127, 0, 0, 1], port).into() },
         &ca,
         sink,
         Arc::new(nova_core::NoopWsSink),
-        EngineHooks {
-            rules: Arc::new(RwLock::new(rules)),
-            breakpoints: Arc::new(nova_core::breakpoint::Breakpoints::new(Arc::new(
-                nova_core::breakpoint::NoopBreakpointSink,
-            ))),
-            scripts: nova_core::scripting::ScriptEngine::new(),
-            net: Arc::new(RwLock::new(Default::default())),
-            tls_scope: Arc::new(RwLock::new(Default::default())),
-        },
+        hooks,
     )
     .unwrap();
     (handle, flows, ca_dir)

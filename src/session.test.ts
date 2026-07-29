@@ -146,6 +146,56 @@ describe("exportHar", () => {
     expect(b.request.postData).toEqual({ mimeType: "application/json", text: "{}" });
   });
 
+  it("maps measured timings into HAR phases", async () => {
+    saveMock.mockResolvedValue("/tmp/out.har");
+    await exportHar([
+      mkFlow({
+        duration_ms: 200,
+        timings: {
+          dns_ms: 10,
+          connect_ms: 20,
+          tls_ms: 30,
+          connection_reused: false,
+          request_ms: null,
+          ttfb_ms: 120,
+          download_ms: 80,
+        },
+      }),
+    ]);
+    const t = lastWritten().log.entries[0].timings;
+    expect(t.dns).toBe(10);
+    // HAR's `connect` includes the handshake; `ssl` is that handshake alone.
+    expect(t.connect).toBe(50);
+    expect(t.ssl).toBe(30);
+    // `wait` is TTFB minus setup, so the phases sum to `time` (200ms).
+    expect(t.wait).toBe(60);
+    expect(t.receive).toBe(80);
+    expect(t.blocked).toBe(-1);
+  });
+
+  it("marks unmeasured HAR phases as -1 rather than 0", async () => {
+    saveMock.mockResolvedValue("/tmp/out.har");
+    await exportHar([
+      mkFlow({
+        duration_ms: 90,
+        timings: {
+          dns_ms: null,
+          connect_ms: null,
+          tls_ms: null,
+          connection_reused: true,
+          request_ms: null,
+          ttfb_ms: 70,
+          download_ms: 20,
+        },
+      }),
+    ]);
+    const t = lastWritten().log.entries[0].timings;
+    expect(t.dns).toBe(-1);
+    expect(t.connect).toBe(-1);
+    expect(t.ssl).toBe(-1);
+    expect(t.wait).toBe(70);
+  });
+
   it("maps duration into timings.wait and response content", async () => {
     await exportHar([
       mkFlow({

@@ -1,5 +1,5 @@
 [workspace]
-members = ["src-tauri", "crates/nova-core", "crates/nova-proto"]
+members = ["src-tauri", "crates/nova-core", "crates/nova-helper", "crates/nova-os", "crates/nova-proto"]
 resolver = "2"
 
 [workspace.package]

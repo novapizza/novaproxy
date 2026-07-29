@@ -30,4 +30,10 @@ text: string | null,
 /**
  * Base64 preview when the (decoded) body is binary.
  */
-base64: string | null, };
+base64: string | null, 
+/**
+ * True when the full body was written to the on-disk body store and can be
+ * fetched with the `read_body` command, rather than only existing as the
+ * truncated preview above.
+ */
+spilled: boolean, };

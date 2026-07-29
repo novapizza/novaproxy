@@ -35,6 +35,61 @@ pub struct BodyPreview {
     pub text: Option<String>,
     /// Base64 preview when the (decoded) body is binary.
     pub base64: Option<String>,
+    /// True when the full body was written to the on-disk body store and can be
+    /// fetched with the `read_body` command, rather than only existing as the
+    /// truncated preview above.
+    pub spilled: bool,
+}
+
+/// Measured timing breakdown of one exchange, in milliseconds.
+///
+/// Every field is a real measurement or `None` — nothing here is estimated. A
+/// phase is `None` when it genuinely did not happen or could not be observed:
+/// DNS/connect/TLS are absent when the flow reused a pooled connection (see
+/// `connection_reused`), and `tls` is absent on plaintext HTTP.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub struct Timings {
+    /// Resolving the host name.
+    pub dns_ms: Option<f64>,
+    /// TCP handshake to the origin (or upstream proxy).
+    pub connect_ms: Option<f64>,
+    /// TLS handshake with the origin.
+    pub tls_ms: Option<f64>,
+    /// True when the request went out on an already-open connection, so no
+    /// DNS/connect/TLS cost is attributable to it.
+    pub connection_reused: bool,
+    /// Streaming the request body upstream (absent when there was no body).
+    pub request_ms: Option<f64>,
+    /// Request first seen → upstream response headers received.
+    pub ttfb_ms: Option<f64>,
+    /// Response headers → last response body byte.
+    pub download_ms: Option<f64>,
+}
+
+/// Which MCP transport a captured exchange used. The stdio transport never
+/// reaches the network, so it can never appear here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub enum McpTransport {
+    /// Streamable HTTP: a JSON-RPC message posted to an MCP endpoint.
+    Http,
+    /// Server-sent events: JSON-RPC messages inside `data:` frames.
+    Sse,
+}
+
+/// What a captured flow carries when it is a Model Context Protocol exchange.
+/// Present only on flows recognised as MCP (see `nova_core::mcp`).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub struct McpInfo {
+    /// JSON-RPC method, e.g. `tools/call`.
+    pub method: Option<String>,
+    /// For `tools/*` and `prompts/*`, the tool or prompt being invoked.
+    pub tool: Option<String>,
+    /// JSON-RPC id, rendered as a string. Absent for notifications.
+    pub id: Option<String>,
+    pub transport: McpTransport,
 }
 
 /// Lifecycle of a flow as it streams through the proxy.
@@ -137,6 +192,8 @@ pub struct Flow {
     pub started_at: f64,
     /// Total wall-clock duration once completed.
     pub duration_ms: Option<f64>,
+    /// Measured per-phase breakdown (DNS/connect/TLS/request/TTFB/download).
+    pub timings: Timings,
     pub error: Option<String>,
     /// True when this flow was produced by a Resend/Replay action.
     pub resent: bool,
@@ -148,6 +205,14 @@ pub struct Flow {
     /// True when this CONNECT was tunneled without decryption (per the TLS
     /// scope): only the host is known, no request/response bodies are captured.
     pub tunneled: bool,
+    /// Set when this exchange is Model Context Protocol traffic, so MCP work can
+    /// be isolated from everything else in the capture.
+    pub mcp: Option<McpInfo>,
+    /// True when NovaProxy itself produced this flow — a call to its own MCP
+    /// endpoint, or a request its MCP server replayed. Excluded by default from
+    /// the flow list and from MCP tool results, so an agent inspecting traffic
+    /// does not mostly see itself.
+    pub internal: bool,
 }
 
 /// Direction of a captured WebSocket frame, from the client's point of view.
@@ -206,6 +271,42 @@ pub struct ProxyStatus {
     pub flows_captured: u64,
     /// Whether the OS system proxy is currently pointed at NovaProxy.
     pub system_proxy: bool,
+    /// A snapshot from a previous session is still waiting to be put back — the
+    /// app exited uncleanly while the system proxy was on, and restoring it
+    /// needs a privilege the app does not have unattended. The UI offers the
+    /// restore instead of the old behaviour, which raised a password dialog
+    /// during launch.
+    pub pending_restore: bool,
+}
+
+/// State of the macOS privileged helper, which applies system-proxy changes
+/// without an administrator password.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub struct HelperStatus {
+    /// Whether this platform needs a helper at all (macOS only; elsewhere the
+    /// proxy settings are per-user and need no privileges).
+    pub supported: bool,
+    /// A helper is installed and answering.
+    pub running: bool,
+    /// Protocol version it answered with, when running.
+    pub version: Option<u32>,
+    /// Protocol version this build speaks. A mismatch means "reinstall".
+    pub expected_version: u32,
+    /// A helper binary was found to install from. False in a build tree that
+    /// never built `nova-helper`.
+    pub installable: bool,
+}
+
+/// State of the MCP endpoint that exposes captured traffic to AI tooling.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub struct McpStatus {
+    pub running: bool,
+    /// Port it is (or would be) served on.
+    pub port: u16,
+    /// Endpoint URL to hand an MCP client, when running.
+    pub url: Option<String>,
 }
 
 /// A traffic-control rule. The action is selected by [`RuleKind`]; the relevant
@@ -242,6 +343,11 @@ pub enum RuleKind {
 }
 
 /// Status of NovaProxy's root CA and its trust in the OS store.
+///
+/// Trust is reported *per domain* because both can hold the cert: the default
+/// install targets the current user's login keychain (no admin password), while
+/// "install for all users" targets the machine-wide system store. Four states
+/// are reachable — user / system / both / neither.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../src/bindings/")]
 pub struct CaStatus {
@@ -249,8 +355,17 @@ pub struct CaStatus {
     pub cert_path: String,
     /// SHA-256 fingerprint (uppercase hex, colon-separated).
     pub fingerprint: String,
-    /// Whether the CA is currently trusted in the system store.
+    /// Whether the CA is trusted in *at least one* domain, i.e. whether HTTPS
+    /// interception works for this user's apps.
     pub trusted: bool,
+    /// Trusted in the current user's login keychain (installed without admin).
+    pub trusted_user: bool,
+    /// Trusted machine-wide, for every user and root-owned daemon.
+    pub trusted_system: bool,
     /// Human-readable subject line.
     pub subject: String,
+    /// Host platform (`macos`, `windows`, `linux`, …). The two trust domains mean
+    /// materially different things per platform — notably, Linux's user domain
+    /// covers browsers only — so the UI phrases them accordingly.
+    pub platform: String,
 }

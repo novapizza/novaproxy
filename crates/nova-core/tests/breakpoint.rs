@@ -2,7 +2,7 @@
 //! proxy (which blocks), observe the paused interception, then resume with an
 //! edited header and confirm the request completes and the edit took effect.
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nova_core::breakpoint::{BreakpointSink, Breakpoints, Resume};
@@ -65,20 +65,11 @@ async fn breakpoint_pause_edit_resume() {
 
     let proxy_port = 39_071u16;
     let _handle = nova_core::start(
-        EngineConfig {
-            addr: ([127, 0, 0, 1], proxy_port).into(),
-            body_cap: nova_core::DEFAULT_BODY_CAP,
-        },
+        EngineConfig { addr: ([127, 0, 0, 1], proxy_port).into() },
         &ca,
         sink,
         Arc::new(nova_core::NoopWsSink),
-        nova_core::EngineHooks {
-            rules: Arc::new(RwLock::new(Vec::new())),
-            breakpoints: breakpoints.clone(),
-            scripts: nova_core::scripting::ScriptEngine::new(),
-            net: Arc::new(RwLock::new(Default::default())),
-            tls_scope: Arc::new(RwLock::new(Default::default())),
-        },
+        nova_core::EngineHooks::in_memory(breakpoints.clone()),
     )
     .unwrap();
 
