@@ -21,19 +21,6 @@
 //!
 //! Command *plans* are pure data (see [`nova_os::oscmd`]) so every platform's
 //! behaviour is unit-tested from any machine; only execution is platform-gated.
-//! OS trust-store integration. Installing a root CA always crosses one OS auth
-//! gate — on macOS we trigger the native trust-settings dialog via `osascript`,
-//! never asking the user to run terminal commands. macOS lands first (per the
-//! doc); Windows/Linux are stubbed with a clear error until their variants ship.
-//!
-//! We install into the **per-user** trust store (login keychain), NOT the admin
-//! System keychain. Writing admin trust settings needs a second, interactive
-//! authorization that `do shell script … with administrator privileges` (a
-//! non-interactive root context) can't present — it fails with
-//! "SecTrustSettingsSetTrustSettings: … no user interaction was possible". The
-//! per-user domain only needs the ordinary trust-settings dialog, which shows
-//! fine from our GUI session, and trusting the CA for the current user is the
-//! right scope for a personal proxy anyway.
 
 use std::path::{Path, PathBuf};
 
@@ -122,16 +109,6 @@ pub fn trust_state(ca: &CaId) -> TrustState {
     #[cfg(target_os = "macos")]
     {
         macos::trust_state(ca)
-/// Presence in the keychain is NOT sufficient: a cert can sit in the keychain
-/// with no trust settings at all, in which case macOS still rejects every leaf
-/// it signs (the browser shows unstyled pages / missing HTTPS assets while the
-/// app thinks the CA is installed). We therefore require BOTH that our cert is
-/// present (matched by fingerprint, so a stale same-name cert doesn't fool us)
-/// AND that a user-domain trust setting exists for it.
-pub fn is_trusted(fingerprint: &str) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        present_in_login_keychain(fingerprint) && has_user_trust_setting()
     }
     #[cfg(target_os = "windows")]
     {
@@ -154,50 +131,6 @@ pub fn is_trusted(ca: &CaId) -> bool {
 }
 
 /// Install the CA into `domain` behind at most one native auth prompt.
-        let _ = fingerprint;
-        false
-    }
-}
-
-/// Our cert (by SHA-1 fingerprint) is in a user keychain. With no keychain
-/// argument `find-certificate` searches the default list (which includes the
-/// login keychain we install into).
-#[cfg(target_os = "macos")]
-fn present_in_login_keychain(fingerprint: &str) -> bool {
-    let target = fingerprint.replace(':', "").to_ascii_uppercase();
-    let out = Command::new("security")
-        .args(["find-certificate", "-a", "-Z"])
-        .current_dir("/")
-        .output();
-    if let Ok(out) = out {
-        let text = String::from_utf8_lossy(&out.stdout).to_ascii_uppercase();
-        return text.contains(&target);
-    }
-    false
-}
-
-/// A user-domain trust setting exists for our root. This is the domain
-/// `install` writes to (`add-trusted-cert` without `-d`); `dump-trust-settings`
-/// (no `-d`) lists exactly those, identifying each cert by common name. When
-/// the domain has no trust settings the command prints to stderr and leaves
-/// stdout empty, so a name match on stdout is a reliable "trusted" signal.
-#[cfg(target_os = "macos")]
-fn has_user_trust_setting() -> bool {
-    let out = Command::new("security")
-        .args(["dump-trust-settings"])
-        .current_dir("/")
-        .output();
-    if let Ok(out) = out {
-        return String::from_utf8_lossy(&out.stdout).contains(CA_COMMON_NAME);
-    }
-    false
-}
-
-/// Common name of our root CA, used to delete it from the keychain by name.
-#[cfg(target_os = "macos")]
-const CA_COMMON_NAME: &str = "NovaProxy Root CA";
-
-/// Install the CA into the per-user trust store behind one native trust dialog.
 ///
 /// The result is decided by the *end state* (is the cert now trusted in that
 /// domain?), not by the command's exit code — `security add-trusted-cert` and
@@ -252,9 +185,6 @@ fn present_state(ca: &CaId) -> TrustState {
 
 /// The commands that install the CA into `domain` on the current platform.
 fn install_plan(cert_path: &Path, domain: TrustDomain) -> Result<Plan> {
-/// Remove the CA from the per-user trust store AND the keychain. Confirmed by
-/// end state: success means the cert is no longer present.
-pub fn uninstall(cert_path: &Path, fingerprint: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         macos::install_plan(cert_path, domain)
@@ -834,48 +764,6 @@ pub mod linux {
             .unwrap_or(false);
 
         TrustState { user, system }
-// Per-user trust: no `-d` (that targets the admin domain, which needs a second
-// interactive authorization the osascript-as-root context can't present), no
-// `with administrator privileges`, no System keychain. `add-trusted-cert`
-// defaults to the user domain + login keychain and shows the ordinary
-// trust-settings dialog, which works from our GUI session.
-#[cfg(target_os = "macos")]
-fn install_script(cert_path: &Path) -> String {
-    let path = cert_path.to_string_lossy().replace('"', "\\\"");
-    format!("do shell script \"security add-trusted-cert -r trustRoot \\\"{path}\\\"\"")
-}
-
-#[cfg(target_os = "macos")]
-fn uninstall_script(cert_path: &Path) -> String {
-    let path = cert_path.to_string_lossy().replace('"', "\\\"");
-    // Two steps behind ONE dialog: clear the user trust setting, then delete the
-    // cert from the login keychain. `remove-trusted-cert` only drops trust
-    // settings — the certificate itself lingers in the keychain, so `is_trusted`
-    // (a presence check) would keep reporting it as installed and the removal
-    // would appear to do nothing. `;` (not `&&`) so the delete runs even when
-    // there were no trust settings left to remove.
-    format!(
-        "do shell script \"security remove-trusted-cert \\\"{path}\\\" ; security delete-certificate -c \\\"{CA_COMMON_NAME}\\\"\""
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn run_osascript(script: &str) -> Result<()> {
-    // Force an always-accessible cwd. A dev build launched from a TCC-protected
-    // folder (e.g. ~/Documents) runs with a cwd the process can't read; the
-    // child `osascript`/`security` inherit it, `getcwd` fails ("Operation not
-    // permitted"), and the admin auth dialog then can't be presented
-    // ("SecTrustSettingsSetTrustSettings: … no user interaction was possible").
-    let status = Command::new("osascript")
-        .args(["-e", script])
-        .current_dir("/")
-        .output()?;
-    if status.status.success() {
-        Ok(())
-    } else {
-        let err = String::from_utf8_lossy(&status.stderr);
-        // User cancelling the auth dialog shows up as "User canceled." (-128).
-        bail!("trust-store change failed: {}", err.trim());
     }
 }
 
@@ -1104,31 +992,6 @@ mod tests {
         assert!(plan.best_effort);
         assert_eq!(plan.steps[0].program, "rm");
         assert_eq!(plan.steps[1].program, "update-ca-certificates");
-    fn install_script_adds_trusted_root_to_the_user_domain() {
-        let s = install_script(Path::new("/tmp/ca.pem"));
-        assert!(s.contains("add-trusted-cert"));
-        assert!(s.contains("-r trustRoot"));
-        assert!(s.contains("\\\"/tmp/ca.pem\\\""), "cert path is quoted for the shell");
-        // Per-user, NOT admin: no `-d`, no System keychain, no elevation — that
-        // path fails with "no user interaction was possible" (the bug we fixed).
-        assert!(!s.contains("-d "), "must not target the admin domain");
-        assert!(!s.contains("System.keychain"), "must not touch the System keychain");
-        assert!(!s.contains("with administrator privileges"), "must not elevate");
-    }
-
-    #[test]
-    fn uninstall_script_removes_trust_and_deletes_the_cert() {
-        let s = uninstall_script(Path::new("/tmp/ca.pem"));
-        // Regression: uninstall must ALSO delete the cert, not just its trust
-        // settings — otherwise is_trusted (presence check) stays true forever.
-        assert!(s.contains("remove-trusted-cert"), "clears trust settings");
-        assert!(s.contains("delete-certificate"), "and deletes the lingering cert");
-        assert!(s.contains(CA_COMMON_NAME), "deletes by our unique common name");
-        // A single '; ' sequences the two so delete runs regardless of the first.
-        assert!(s.contains(" ; security delete-certificate"));
-        // Per-user domain, no elevation.
-        assert!(!s.contains("-d "), "must not target the admin domain");
-        assert!(!s.contains("with administrator privileges"), "must not elevate");
     }
 
     #[test]

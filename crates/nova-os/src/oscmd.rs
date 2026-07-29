@@ -143,9 +143,29 @@ impl Plan {
     }
 }
 
+/// Spawn a command from a working directory we know is readable.
+///
+/// Every child process here goes through this, because inheriting our own cwd
+/// has bitten us: a build launched from a TCC-protected folder (`~/Documents`,
+/// `~/Desktop`, `~/Downloads`) runs with a cwd the process is not permitted to
+/// read. `getcwd` then fails in the child — `shell-init: … getcwd: Operation not
+/// permitted` — and macOS refuses to present the trust dialog on top of it
+/// ("SecTrustSettingsSetTrustSettings: … no user interaction was possible"), so
+/// installing the CA fails for reasons that look nothing like the cause.
+///
+/// `/` is readable by everyone and is never TCC-protected. Unix-only: the
+/// failure mode is a macOS sandbox behaviour with no Windows analogue, and
+/// changing the cwd of `reg.exe`/`certutil` unprompted is not worth the risk.
+fn command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(unix)]
+    cmd.current_dir("/");
+    cmd
+}
+
 /// Run one command, mapping a non-zero exit into an error carrying its stderr.
 fn run_one(step: &Step) -> Result<()> {
-    let out = Command::new(&step.program)
+    let out = command(&step.program)
         .args(&step.args)
         .output()
         .map_err(|e| anyhow::anyhow!("cannot run {}: {e}", step.program))?;
@@ -161,7 +181,7 @@ fn run_one(step: &Step) -> Result<()> {
 /// Capture a command's stdout (empty on failure). Queries use this: "not found"
 /// is an answer, not an error.
 pub fn capture(program: &str, args: &[&str]) -> String {
-    Command::new(program)
+    command(program)
         .args(args)
         .output()
         .map(|o| {
@@ -178,7 +198,7 @@ pub fn capture(program: &str, args: &[&str]) -> String {
 /// tool (NSS `certutil`, `gsettings`) is not installed.
 pub fn have_tool(program: &str) -> bool {
     let probe = if cfg!(windows) { "where" } else { "which" };
-    Command::new(probe)
+    command(probe)
         .arg(program)
         .output()
         .map(|o| o.status.success())
@@ -403,5 +423,17 @@ mod tests {
     fn capture_returns_stdout() {
         assert_eq!(capture("echo", &["hello"]).trim(), "hello");
         assert_eq!(capture("novaproxy-no-such-program", &[]), "");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn spawned_commands_do_not_inherit_our_working_directory() {
+        // Regression: a build launched from a TCC-protected folder has a cwd its
+        // own children cannot read, and `security` then fails to present the
+        // trust dialog. Children must start from `/` regardless of where we are.
+        assert_eq!(capture("pwd", &[]).trim(), "/");
+        // Whatever the test harness's cwd is, it is not what the child saw.
+        let ours = std::env::current_dir().unwrap();
+        assert_ne!(ours.as_path(), std::path::Path::new("/"), "test premise");
     }
 }
