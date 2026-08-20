@@ -306,7 +306,8 @@ input { font-family: inherit; }
   display: flex; align-items: center; gap: 11px;
   padding: 10px 14px; cursor: pointer; width: 100%; text-align: left;
   border-left: 2px solid transparent;
-  animation: novaflow .22s;
+  /* No entry animation: the list is windowed, so rows mount as they are
+     scrolled into view and an animation would flash on every scroll. */
 }
 .flow-row:hover { background: var(--hover); }
 .flow-row.sel {
@@ -482,6 +483,14 @@ input { font-family: inherit; }
 .ws-op { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
 .ws-payload { color: var(--text2); overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
 .ws-meta { color: var(--muted); font-size: 11px; white-space: nowrap; }
+
+/* What the frame window and the retention cap are hiding, and how to see it. */
+.ws-note {
+  margin: 0 18px 10px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  font: 400 12px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif; color: var(--muted);
+}
+.ws-note .ws-more { cursor: pointer; color: var(--text2); text-decoration: underline; }
+.ws-note .ws-more:hover { color: var(--accent); }
 
 /* timing */
 .timing { padding: 18px; }

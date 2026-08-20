@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   Channel,
@@ -13,11 +13,13 @@ import {
   type TlsScope,
   type McpStatus,
   type HelperStatus,
+  type BodyPreview,
 } from "./api";
-import { useStore } from "./store";
+import { MAX_WS_FRAMES, useStore } from "./store";
 import { exportSession, exportHar, importSession } from "./session";
 import { distinctApps, filterFlows, mcpLabel, toastDuration } from "./filter";
 import { formatMs, timingBreakdown } from "./timing";
+import { sliceGroups } from "./virtual";
 import {
   clampListWidth,
   DEFAULT_PREFS,
@@ -65,6 +67,72 @@ function buildCurl(f: Flow): string {
   for (const h of f.request_headers) s += ` \\\n  -H '${h.name}: ${h.value}'`;
   if (f.request_body?.text) s += ` \\\n  --data '${f.request_body.text}'`;
   return s;
+}
+
+/**
+ * Whether a preview describes bytes the list is not holding: the metadata says
+ * there is content, but neither the text nor the base64 came with it. The store
+ * drops body bytes on ingest (see `withoutBodies`); the engine keeps them.
+ */
+function bytesMissing(body: Flow["request_body"]): boolean {
+  return !!body && body.text == null && body.base64 == null && Number(body.size) > 0;
+}
+
+/** Put a flow's request body back, for the paths that need the bytes themselves. */
+async function withRequestBody(flow: Flow): Promise<Flow> {
+  const body = flow.request_body;
+  if (!bytesMissing(body)) return flow;
+  try {
+    return {
+      ...flow,
+      request_body: await api.readBody(flow.id, "request", body!.media_type, body!.decoded_from),
+    };
+  } catch {
+    return flow; // a cURL without its body still beats no cURL
+  }
+}
+
+/**
+ * A body preview with its bytes, fetched when the list is not holding them.
+ *
+ * The fetched copy is tagged with the flow and side it belongs to, so switching
+ * flows can never show one flow's body under another's headers while the next
+ * fetch is in flight.
+ */
+function useBodyBytes(
+  flowId: string,
+  side: "request" | "response",
+  body: Flow["request_body"],
+  onError?: (m: string) => void,
+) {
+  const [fetched, setFetched] = useState<{ key: string; body: BodyPreview } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const key = `${flowId}:${side}`;
+  const current = fetched?.key === key ? fetched.body : null;
+  const missing = bytesMissing(body);
+
+  useEffect(() => {
+    if (!missing) return;
+    let alive = true;
+    setLoading(true);
+    api
+      .readBody(flowId, side, body!.media_type, body!.decoded_from)
+      .then((p) => alive && setFetched({ key, body: p }))
+      .catch((e) => alive && onError?.(String(e)))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+    // `key` covers flowId and side; the rest of `body` is metadata for the fetch.
+  }, [key, missing]);
+
+  return {
+    shown: current ?? body,
+    fetched: current,
+    loading,
+    put: (p: BodyPreview) => setFetched({ key, body: p }),
+    setLoading,
+  };
 }
 
 function bodyToText(body: Flow["request_body"]): string | null {
@@ -162,14 +230,30 @@ export function App() {
     api.setNetworkConditions(next).catch((e) => showToast(String(e)));
   };
 
+  /**
+   * The flows to write out, with their bodies.
+   *
+   * The list itself keeps no body bytes (see `withoutBodies`), so an export takes
+   * the engine's retained copies and falls back to the list for anything the
+   * engine does not have — flows imported from a session file exist only here.
+   */
+  async function flowsForExport(): Promise<Flow[]> {
+    const listed = useStore.getState().flows;
+    try {
+      const retained = new Map((await api.retainedFlows()).map((f) => [f.id, f]));
+      return listed.map((f) => retained.get(f.id) ?? f);
+    } catch {
+      return listed;
+    }
+  }
   async function doExportSession() {
     try {
-      if (await exportSession(useStore.getState().flows)) showToast("Session saved");
+      if (await exportSession(await flowsForExport())) showToast("Session saved");
     } catch (e) { showToast(String(e)); }
   }
   async function doExportHar() {
     try {
-      if (await exportHar(useStore.getState().flows)) showToast("HAR exported");
+      if (await exportHar(await flowsForExport())) showToast("HAR exported");
     } catch (e) { showToast(String(e)); }
   }
   async function doImportSession() {
@@ -211,8 +295,38 @@ export function App() {
 
   // Wire the streaming channel + initial status once.
   useEffect(() => {
+    /**
+     * Snapshots and frames arrive several times per flow and, under load,
+     * hundreds of times a second. Each one used to be its own store update —
+     * one re-render of the whole list per message, which is what made a busy
+     * capture unusable. Coalescing a frame's worth into a single update caps the
+     * render rate at the display's, however fast traffic is.
+     */
+    const coalesce = <T,>(apply: (batch: T[]) => void) => {
+      let queued: T[] = [];
+      let frame = 0;
+      const flush = () => {
+        frame = 0;
+        const batch = queued;
+        queued = [];
+        apply(batch);
+      };
+      return {
+        push: (item: T) => {
+          queued.push(item);
+          if (!frame) frame = requestAnimationFrame(flush);
+        },
+        cancel: () => {
+          if (frame) cancelAnimationFrame(frame);
+        },
+      };
+    };
+
+    const flowQueue = coalesce<Flow>((b) => useStore.getState().upsertFlows(b));
+    const wsQueue = coalesce<WsMessage>((b) => useStore.getState().addWsMessages(b));
+
     const channel = new Channel<Flow>();
-    channel.onmessage = (flow) => useStore.getState().upsertFlow(flow);
+    channel.onmessage = (flow) => flowQueue.push(flow);
     api.subscribeFlows(channel);
 
     const bpChannel = new Channel<Interception>();
@@ -223,7 +337,7 @@ export function App() {
     api.subscribeBreakpoints(bpChannel);
 
     const wsChannel = new Channel<WsMessage>();
-    wsChannel.onmessage = (m) => useStore.getState().addWsMessage(m);
+    wsChannel.onmessage = (m) => wsQueue.push(m);
     api.subscribeWs(wsChannel);
 
     api.proxyStatus().then((p) => useStore.getState().setProxy(p));
@@ -233,6 +347,11 @@ export function App() {
     api.getNetworkConditions().then(setNet).catch(() => {});
     api.mcpStatus().then(setMcp).catch(() => {});
     api.helperStatus().then(setHelper).catch(() => {});
+
+    return () => {
+      flowQueue.cancel();
+      wsQueue.cancel();
+    };
   }, []);
 
   // "System proxy at launch" — off unless the user asked for it, because it
@@ -296,9 +415,11 @@ export function App() {
 
   const selected = useMemo(() => flows.find((f) => f.id === selectedId) ?? null, [flows, selectedId]);
 
-  function copyCurl() {
+  async function copyCurl() {
     if (!selected) return showToast("No flow selected");
-    navigator.clipboard.writeText(buildCurl(selected));
+    // The list holds no body bytes, so the request body is fetched before the
+    // command is written out — a cURL without its `--data` is not the request.
+    navigator.clipboard.writeText(buildCurl(await withRequestBody(selected)));
     showToast("cURL copied to clipboard");
   }
 
@@ -309,7 +430,7 @@ export function App() {
       { id: "clear", icon: "🗑", label: "Clear all flows", run: () => clear() },
       { id: "proxy", icon: "⇄", label: proxy.system_proxy ? "Disable system proxy" : "Enable system proxy", run: () => void toggleProxy() },
       { id: "resend", icon: "↻", label: "Resend selected flow", run: () => void resendSelected() },
-      { id: "curl", icon: "⌗", label: "Copy selected as cURL", kbd: "↵", run: () => copyCurl() },
+      { id: "curl", icon: "⌗", label: "Copy selected as cURL", kbd: "↵", run: () => void copyCurl() },
       { id: "save", icon: "⇩", label: "Save session (.nova)", run: () => void doExportSession() },
       { id: "open", icon: "⇧", label: "Open session (.nova)", run: () => void doImportSession() },
       { id: "har", icon: "⤓", label: "Export as HAR", run: () => void doExportHar() },
@@ -693,47 +814,12 @@ function FlowsSection(props: {
           )}
           <span className="grouptog" onClick={props.toggleGroup}>{groupByHost ? "▾ grouped" : "≡ flat"}</span>
         </div>
-        <div className="flow-scroll">
-          {filtered.length === 0 && <div className="list-empty">{emptyMsg}</div>}
-          {groups.map((g) => (
-            <div key={g.key}>
-              {g.showHeader && (
-                <div className="group-head">
-                  <span className="hdot" />
-                  <span className="hname">{g.host}</span>
-                  {g.tls && <span className="tls-chip">TLS</span>}
-                  <span className="spacer" />
-                  <span className="hcount">{g.flows.length}</span>
-                </div>
-              )}
-              {g.flows.map((f) => (
-                <button
-                  key={f.id}
-                  className={`flow-row ${f.id === selected?.id ? "sel" : ""}`}
-                  onClick={() => select(f.id)}
-                >
-                  <span className={`badge ${methodClass(f.method)}`}>{f.method}</span>
-                  <span className="col">
-                    <div className="fpath">
-                      {f.mcp ? <span className="fmcp">⌗ {mcpLabel(f)}</span> : f.path}
-                    </div>
-                    <div className="fsub">
-                      {f.mapped_from && <span className="fmap">⤳ </span>}
-                      {f.host}
-                      {f.mcp && <span className="fdim"> · {f.path}</span>}
-                      {f.resent && <span className="fresent"> · resent</span>}
-                      {f.internal && <span className="fdim"> · NovaProxy</span>}
-                    </div>
-                  </span>
-                  <span className="fright">
-                    <div className={`fstatus ${statusClass(f.status, f.error)}`}>{statusText(f.status, f.error)}</div>
-                    <div className="ftime">{f.duration_ms != null ? `${Math.round(f.duration_ms)}ms` : "—"}</div>
-                  </span>
-                </button>
-              ))}
-            </div>
-          ))}
-        </div>
+        <FlowList
+          groups={groups}
+          selectedId={selected?.id ?? null}
+          select={select}
+          emptyMsg={filtered.length === 0 ? emptyMsg : null}
+        />
       </div>
 
       <div
@@ -778,6 +864,169 @@ function FlowsSection(props: {
   );
 }
 
+/* ------------------------------ windowed list ------------------------------ */
+
+/** One host's flows, or all of them when the list is flat. */
+interface FlowGroup {
+  key: string;
+  host: string;
+  tls: boolean;
+  showHeader: boolean;
+  flows: Flow[];
+}
+
+/** Rows kept rendered beyond each viewport edge, so a fast flick stays covered. */
+const OVERSCAN = 8;
+/** First-frame estimates only — the real heights are measured from the DOM. */
+const ROW_H_GUESS = 52;
+const HEADER_H_GUESS = 31;
+
+/**
+ * The flow list, windowed.
+ *
+ * Retention allows `MAX_FLOWS` rows, and rendering them all put well over a
+ * hundred thousand nodes in the webview: scrolling stuttered, every snapshot
+ * walked the lot, and a long recording session ended with the renderer dying and
+ * the UI reloading itself. Only the rows overlapping the viewport are mounted
+ * now; `sliceGroups` holds the rest open with spacers so the scrollbar and the
+ * host headers behave exactly as they did.
+ */
+function FlowList({
+  groups,
+  selectedId,
+  select,
+  emptyMsg,
+}: {
+  groups: FlowGroup[];
+  selectedId: string | null;
+  select: (id: string) => void;
+  emptyMsg: string | null;
+}) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(0);
+  const [rowH, setRowH] = useState(ROW_H_GUESS);
+  const [headerH, setHeaderH] = useState(HEADER_H_GUESS);
+
+  // Measure the viewport in a layout effect, so the first paint is already
+  // windowed, and observe it: a window resize or a divider drag changes how many
+  // rows fit.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const sync = () => {
+      setViewportH(el.clientHeight);
+      setScrollTop(el.scrollTop);
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  /**
+   * Row and header heights are read from the DOM rather than hard-coded: they
+   * follow the font, and a window whose arithmetic disagrees with the layout
+   * drifts. The fractional rect height is what makes the spacers add up exactly.
+   */
+  const measure = (current: number, set: (h: number) => void) => (el: HTMLElement | null) => {
+    if (!el) return;
+    const h = el.getBoundingClientRect().height;
+    if (h > 0 && Math.abs(h - current) > 0.5) set(h);
+  };
+
+  const hasHeaders = groups.length > 0 && groups[0].showHeader;
+  const slices = sliceGroups(
+    groups.map((g) => g.flows.length),
+    { rowH, headerH: hasHeaders ? headerH : 0, overscan: OVERSCAN },
+    scrollTop,
+    viewportH,
+  );
+  // Measure against the first group that is actually on screen.
+  const firstOnScreen = slices.findIndex((s) => s.onScreen);
+
+  return (
+    <div
+      className="flow-scroll"
+      ref={scrollRef}
+      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+    >
+      {emptyMsg && <div className="list-empty">{emptyMsg}</div>}
+      {groups.map((g, gi) => {
+        const s = slices[gi];
+        // An off-screen group is one spacer: no header, no rows, no cost.
+        if (!s.onScreen) return <div key={g.key} style={{ height: s.height }} />;
+        return (
+          <div key={g.key}>
+            {g.showHeader && (
+              <div
+                className="group-head"
+                ref={gi === firstOnScreen ? measure(headerH, setHeaderH) : undefined}
+              >
+                <span className="hdot" />
+                <span className="hname">{g.host}</span>
+                {g.tls && <span className="tls-chip">TLS</span>}
+                <span className="spacer" />
+                <span className="hcount">{g.flows.length}</span>
+              </div>
+            )}
+            {s.padTop > 0 && <div style={{ height: s.padTop }} />}
+            {g.flows.slice(s.from, s.to).map((f, i) => (
+              <FlowRow
+                key={f.id}
+                flow={f}
+                selected={f.id === selectedId}
+                select={select}
+                measure={gi === firstOnScreen && i === 0 ? measure(rowH, setRowH) : undefined}
+              />
+            ))}
+            {s.padBottom > 0 && <div style={{ height: s.padBottom }} />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** One row. Memoised: a snapshot for one flow must not re-render its neighbours. */
+const FlowRow = memo(function FlowRow({
+  flow: f,
+  selected,
+  select,
+  measure,
+}: {
+  flow: Flow;
+  selected: boolean;
+  select: (id: string) => void;
+  measure?: (el: HTMLElement | null) => void;
+}) {
+  return (
+    <button
+      ref={measure}
+      className={`flow-row ${selected ? "sel" : ""}`}
+      onClick={() => select(f.id)}
+    >
+      <span className={`badge ${methodClass(f.method)}`}>{f.method}</span>
+      <span className="col">
+        <div className="fpath">{f.mcp ? <span className="fmcp">⌗ {mcpLabel(f)}</span> : f.path}</div>
+        <div className="fsub">
+          {f.mapped_from && <span className="fmap">⤳ </span>}
+          {f.host}
+          {f.mcp && <span className="fdim"> · {f.path}</span>}
+          {f.resent && <span className="fresent"> · resent</span>}
+          {f.internal && <span className="fdim"> · NovaProxy</span>}
+        </div>
+      </span>
+      <span className="fright">
+        <div className={`fstatus ${statusClass(f.status, f.error)}`}>
+          {statusText(f.status, f.error)}
+        </div>
+        <div className="ftime">{f.duration_ms != null ? `${Math.round(f.duration_ms)}ms` : "—"}</div>
+      </span>
+    </button>
+  );
+});
+
 const DETAIL_TABS: { id: DetailTab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "request", label: "Request" },
@@ -797,6 +1046,7 @@ function Detail({
   showToast: (t: string) => void;
 }) {
   const wsMessages = useStore((s) => s.wsMessages[flow.id]);
+  const wsDropped = useStore((s) => s.wsDropped[flow.id] ?? 0);
   const tabs = flow.is_websocket
     ? [...DETAIL_TABS, { id: "ws" as DetailTab, label: `WebSocket${wsMessages ? ` (${wsMessages.length})` : ""}` }]
     : DETAIL_TABS;
@@ -895,17 +1145,9 @@ function Detail({
 
         {tab === "timing" && <TimingPanel flow={flow} />}
 
-        {tab === "curl" && (
-          <>
-            <div className="sec-label meta">
-              Export as cURL
-              <span className="copy" onClick={onCopyCurl}>Copy</span>
-            </div>
-            <pre className="code curl">{buildCurl(flow)}</pre>
-          </>
-        )}
+        {tab === "curl" && <CurlPanel flow={flow} onCopy={onCopyCurl} showToast={showToast} />}
 
-        {tab === "ws" && <WsPanel messages={wsMessages} />}
+        {tab === "ws" && <WsPanel key={flow.id} messages={wsMessages} dropped={wsDropped} />}
       </div>
     </>
   );
@@ -981,13 +1223,40 @@ function TimingPanel({ flow }: { flow: Flow }) {
   );
 }
 
-function WsPanel({ messages }: { messages: WsMessage[] | undefined }) {
+/**
+ * Frames rendered at once. A busy socket fills its retention window in seconds,
+ * and every frame is a DOM row — the rest stay one click away rather than being
+ * mounted where nobody is looking.
+ */
+const WS_PAGE = 400;
+
+function WsPanel({ messages, dropped }: { messages: WsMessage[] | undefined; dropped: number }) {
+  const [showAll, setShowAll] = useState(false);
   if (!messages || messages.length === 0) {
     return <pre className="code res">— no WebSocket frames captured yet —</pre>;
   }
+  // Newest frames are the ones being read, so the window is the tail.
+  const visible = showAll ? messages : messages.slice(Math.max(0, messages.length - WS_PAGE));
+  const earlier = messages.length - visible.length;
   return (
-    <div className="ws-log">
-      {messages.map((m) => {
+    <>
+      {(dropped > 0 || earlier > 0) && (
+        <div className="ws-note">
+          {dropped > 0 && (
+            <span>
+              {dropped.toLocaleString()} earlier frame{dropped === 1 ? "" : "s"} dropped at the{" "}
+              {MAX_WS_FRAMES.toLocaleString()}-frame cap.
+            </span>
+          )}
+          {earlier > 0 && (
+            <span className="ws-more" onClick={() => setShowAll(true)}>
+              Show {earlier.toLocaleString()} earlier retained frame{earlier === 1 ? "" : "s"}
+            </span>
+          )}
+        </div>
+      )}
+      <div className="ws-log">
+      {visible.map((m) => {
         const sent = m.direction === "Sent";
         const label = m.opcode.toLowerCase();
         const payload =
@@ -1007,7 +1276,35 @@ function WsPanel({ messages }: { messages: WsMessage[] | undefined }) {
           </div>
         );
       })}
-    </div>
+      </div>
+    </>
+  );
+}
+
+/**
+ * The cURL tab. Its own component so the request body is fetched when the tab is
+ * actually open, rather than on every flow selection.
+ */
+function CurlPanel({
+  flow,
+  onCopy,
+  showToast,
+}: {
+  flow: Flow;
+  onCopy: () => void;
+  showToast: (t: string) => void;
+}) {
+  const { shown, loading, fetched } = useBodyBytes(flow.id, "request", flow.request_body, showToast);
+  return (
+    <>
+      <div className="sec-label meta">
+        Export as cURL
+        <span className="copy" onClick={onCopy}>Copy</span>
+      </div>
+      <pre className="code curl">
+        {buildCurl(loading && !fetched ? flow : { ...flow, request_body: shown })}
+      </pre>
+    </>
   );
 }
 
@@ -1020,26 +1317,24 @@ function BodyBlock({
   flowId: string;
   showToast?: (t: string) => void;
 }) {
-  // A body larger than the inline preview cap lives in the on-disk body store;
-  // it is fetched only when asked for, so opening a flow never pulls megabytes
-  // across the IPC boundary.
-  const [full, setFull] = useState<Flow["request_body"] | null>(null);
-  const [loading, setLoading] = useState(false);
-  useEffect(() => {
-    setFull(null);
-    setLoading(false);
-  }, [flowId, kind]);
+  // Bodies are not held in the list. The bytes of the one on screen are fetched
+  // here — from the on-disk store when the body was too large to preview in
+  // full, otherwise from the flow the engine retains.
+  const side = kind === "req" ? "request" : "response";
+  const { shown, fetched: full, loading, put, setLoading } = useBodyBytes(flowId, side, body, showToast);
 
-  const shown = full ?? body;
   if (!shown) {
     return <pre className={`code ${kind}`}>{status === 204 ? "— no content (204) —" : "— no body —"}</pre>;
+  }
+  if (loading && !full) {
+    return <pre className={`code ${kind}`}>Loading body ({formatBytes(shown.size)})…</pre>;
   }
 
   async function loadFull() {
     if (!body) return;
     setLoading(true);
     try {
-      setFull(await api.readBody(flowId, kind === "req" ? "request" : "response", body.media_type, body.decoded_from));
+      put(await api.readBody(flowId, side, body.media_type, body.decoded_from));
     } catch (e) {
       showToast?.(String(e));
     } finally {

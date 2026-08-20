@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { MAX_FLOWS, prependWithinCap, useStore } from "./store";
+import {
+  applyFlowBatch,
+  appendWsMessages,
+  MAX_FLOWS,
+  MAX_WS_FRAMES,
+  prependWithinCap,
+  useStore,
+  withoutBodies,
+} from "./store";
 import type { Flow } from "./api";
 
 // Minimal Flow factory — only the fields the store touches matter here.
@@ -96,18 +104,187 @@ describe("store misc actions", () => {
   });
 });
 
+describe("applyFlowBatch (one store update per frame)", () => {
+  const list = (...ids: string[]) => ids.map((id) => mkFlow(id));
+
+  it("prepends a batch of new flows newest-first", () => {
+    const { flows } = applyFlowBatch(list("a", "b", "c"), [], {}, {}, true, 10);
+    expect(flows!.map((f) => f.id)).toEqual(["c", "b", "a"]);
+  });
+
+  it("applies a flow's whole lifecycle arriving in one batch", () => {
+    const { flows } = applyFlowBatch([mkFlow("a"), mkFlow("b"), mkFlow("a", { state: "Completed", status: 200 })], [], {}, {}, true, 10);
+    expect(flows!.map((f) => f.id)).toEqual(["b", "a"]);
+    expect(flows!.find((f) => f.id === "a")!.status).toBe(200);
+  });
+
+  it("updates flows already in the list without reordering them", () => {
+    const existing = list("b", "a");
+    const { flows } = applyFlowBatch([mkFlow("a", { status: 404 })], existing, {}, {}, true, 10);
+    expect(flows!.map((f) => f.id)).toEqual(["b", "a"]);
+    expect(flows![1].status).toBe(404);
+    expect(existing[1].status).toBeNull(); // the input list is not mutated
+  });
+
+  it("tracks positions as prepends shift them", () => {
+    // "old" starts at index 0; two prepends push it to index 2, and its update
+    // must still land on it.
+    const { flows } = applyFlowBatch([mkFlow("new1"), mkFlow("new2"), mkFlow("old", { status: 500 })], list("old"), {}, {}, true, 10);
+    expect(flows!.map((f) => f.id)).toEqual(["new2", "new1", "old"]);
+    expect(flows![2].status).toBe(500);
+  });
+
+  it("never writes a snapshot over a different flow after an eviction", () => {
+    // Cap 2: prepending "new" evicts "old", so "old"'s stale index now points at
+    // a row belonging to someone else. Its late snapshot is re-added (as it was
+    // before batching) and must not overwrite "recent".
+    const { flows } = applyFlowBatch([mkFlow("new"), mkFlow("old", { status: 500 })], list("recent", "old"), {}, {}, true, 2);
+    expect(flows!.map((f) => f.id)).toEqual(["old", "new"]);
+    expect(flows!.every((f) => f.id !== "recent" || f.status === null)).toBe(true);
+  });
+
+  it("drops new flows while paused but still updates known ones", () => {
+    const { flows } = applyFlowBatch([mkFlow("fresh"), mkFlow("a", { status: 204 })], list("a"), {}, {}, false, 10);
+    expect(flows!.map((f) => f.id)).toEqual(["a"]);
+    expect(flows![0].status).toBe(204);
+  });
+
+  it("reports no change rather than a new list when nothing applied", () => {
+    // Paused, and the batch holds only flows the list never saw.
+    expect(applyFlowBatch(list("x"), [], {}, {}, false, 10)).toEqual({});
+    expect(applyFlowBatch([], list("a"), {}, {}, true, 10)).toEqual({});
+  });
+
+  it("drops the frames of flows the batch evicted", () => {
+    const ws = { old: [{ flow_id: "old" } as never] };
+    const out = applyFlowBatch([mkFlow("new")], list("recent", "old"), ws, {}, true, 2);
+    expect(out.wsMessages).toEqual({});
+  });
+
+  it("matches upsertFlow applied one snapshot at a time", () => {
+    reset();
+    const batch = [mkFlow("a"), mkFlow("b"), mkFlow("a", { status: 200 }), mkFlow("c")];
+    for (const f of batch) useStore.getState().upsertFlow(f);
+    const oneByOne = useStore.getState().flows;
+
+    reset();
+    useStore.getState().upsertFlows(batch);
+    expect(useStore.getState().flows).toEqual(oneByOne);
+  });
+});
+
+describe("body bytes are not kept in the list", () => {
+  const withBody = (id: string) =>
+    mkFlow(id, {
+      request_body: { size: 3, truncated: false, media_type: "application/json", decoded_from: null, text: "{}", base64: null, spilled: false } as never,
+      response_body: { size: 9, truncated: true, media_type: "image/png", decoded_from: null, text: null, base64: "AAAA", spilled: true } as never,
+    });
+
+  it("keeps every piece of metadata and drops only the bytes", () => {
+    const out = withoutBodies(withBody("a"));
+    expect(out.request_body).toEqual({
+      size: 3, truncated: false, media_type: "application/json", decoded_from: null,
+      text: null, base64: null, spilled: false,
+    });
+    // Truncation, media type and `spilled` survive: the Inspector needs them to
+    // know what to fetch and what to say about it.
+    expect(out.response_body!.truncated).toBe(true);
+    expect(out.response_body!.spilled).toBe(true);
+    expect(out.response_body!.base64).toBeNull();
+  });
+
+  it("leaves a flow that carries no bytes untouched", () => {
+    const bare = mkFlow("a");
+    expect(withoutBodies(bare)).toBe(bare); // same object: nothing to copy
+  });
+
+  it("strips flows arriving from the engine", () => {
+    const { flows } = applyFlowBatch([withBody("a")], [], {}, {}, true, 10);
+    expect(flows![0].request_body!.text).toBeNull();
+    expect(flows![0].response_body!.base64).toBeNull();
+  });
+
+  it("keeps the bodies of an imported session, which nothing else holds", () => {
+    reset();
+    useStore.getState().loadFlows([withBody("a")]);
+    expect(useStore.getState().flows[0].request_body!.text).toBe("{}");
+  });
+});
+
+describe("appendWsMessages", () => {
+  const frame = (flow_id: string, seq: number) => ({ flow_id, seq }) as never;
+
+  it("appends frames in arrival order, grouped by flow", () => {
+    const { wsMessages } = appendWsMessages(
+      [frame("a", 1), frame("b", 1), frame("a", 2)],
+      {},
+      {},
+      MAX_WS_FRAMES,
+    );
+    expect(wsMessages!.a).toEqual([frame("a", 1), frame("a", 2)]);
+    expect(wsMessages!.b).toEqual([frame("b", 1)]);
+  });
+
+  it("keeps frames already captured for the flow", () => {
+    const prev = { a: [frame("a", 1)] };
+    const { wsMessages } = appendWsMessages([frame("a", 2)], prev, {}, MAX_WS_FRAMES);
+    expect(wsMessages!.a).toHaveLength(2);
+    expect(prev.a).toHaveLength(1); // input untouched
+  });
+
+  it("reports no change for an empty batch", () => {
+    expect(appendWsMessages([], { a: [frame("a", 1)] }, {}, MAX_WS_FRAMES)).toEqual({});
+  });
+
+  it("keeps the newest frames once a socket hits the cap", () => {
+    const prev = { a: [frame("a", 1), frame("a", 2), frame("a", 3)] };
+    const { wsMessages, wsDropped } = appendWsMessages([frame("a", 4)], prev, {}, 3);
+    expect(wsMessages!.a).toEqual([frame("a", 2), frame("a", 3), frame("a", 4)]);
+    expect(wsDropped!.a).toBe(1);
+  });
+
+  it("adds to a socket's dropped count rather than resetting it", () => {
+    const prev = { a: [frame("a", 9)] };
+    const { wsDropped } = appendWsMessages([frame("a", 10), frame("a", 11)], prev, { a: 40 }, 1);
+    expect(wsDropped!.a).toBe(42);
+  });
+
+  it("caps each socket independently", () => {
+    const { wsMessages, wsDropped } = appendWsMessages(
+      [frame("a", 1), frame("a", 2), frame("b", 1)],
+      {},
+      {},
+      1,
+    );
+    expect(wsMessages!.a).toEqual([frame("a", 2)]);
+    expect(wsMessages!.b).toEqual([frame("b", 1)]);
+    expect(wsDropped).toEqual({ a: 1 });
+  });
+
+  it("leaves the dropped map alone while every socket is under the cap", () => {
+    const out = appendWsMessages([frame("a", 1)], {}, {}, MAX_WS_FRAMES);
+    expect(out.wsDropped).toBeUndefined();
+  });
+
+  it("forgets the dropped count of an evicted flow", () => {
+    const list = (...ids: string[]) => ids.map((id) => mkFlow(id));
+    const out = prependWithinCap(mkFlow("new"), list("recent", "old"), {}, { old: 12 }, 2);
+    expect(out.wsDropped).toEqual({});
+  });
+});
+
 describe("prependWithinCap (retention window)", () => {
   const list = (...ids: string[]) => ids.map((id) => mkFlow(id));
 
   it("prepends while under the cap", () => {
-    const { flows, wsMessages } = prependWithinCap(mkFlow("new"), list("a", "b"), {}, 5);
+    const { flows, wsMessages } = prependWithinCap(mkFlow("new"), list("a", "b"), {}, {}, 5);
     expect(flows.map((f) => f.id)).toEqual(["new", "a", "b"]);
     expect(wsMessages).toBeUndefined();
   });
 
   it("evicts the oldest flows once the cap is reached", () => {
     // Newest-first, so "c" is the oldest and must be the one dropped.
-    const { flows } = prependWithinCap(mkFlow("new"), list("a", "b", "c"), {}, 3);
+    const { flows } = prependWithinCap(mkFlow("new"), list("a", "b", "c"), {}, {}, 3);
     expect(flows.map((f) => f.id)).toEqual(["new", "a", "b"]);
     expect(flows).toHaveLength(3);
   });
@@ -117,13 +294,13 @@ describe("prependWithinCap (retention window)", () => {
       c: [{ flow_id: "c" } as never],
       a: [{ flow_id: "a" } as never],
     };
-    const { wsMessages } = prependWithinCap(mkFlow("new"), list("a", "b", "c"), ws, 3);
+    const { wsMessages } = prependWithinCap(mkFlow("new"), list("a", "b", "c"), ws, {}, 3);
     expect(wsMessages).toEqual({ a: ws.a });
   });
 
   it("leaves the frame map untouched when no evicted flow had frames", () => {
     const ws = { a: [{ flow_id: "a" } as never] };
-    const out = prependWithinCap(mkFlow("new"), list("a", "b", "c"), ws, 3);
+    const out = prependWithinCap(mkFlow("new"), list("a", "b", "c"), ws, {}, 3);
     // Same object identity: no needless re-render of every WS panel.
     expect(out.wsMessages).toBeUndefined();
   });
