@@ -80,6 +80,13 @@ async fn proxy_get(port: u16, target: &str, host: &str) -> String {
     String::from_utf8_lossy(&response).into_owned()
 }
 
+/// The body half of a raw response. Assertions that count payload bytes must
+/// not see the head: hyper stamps a `Date:` header, whose month abbreviation
+/// carries an "A" every April and August.
+fn body_of(response: &str) -> &str {
+    response.split_once("\r\n\r\n").map_or("", |(_, body)| body)
+}
+
 /// Poll the flow log for a snapshot matching `pred`.
 async fn wait_for(flows: &Arc<Mutex<Vec<Flow>>>, pred: impl Fn(&Flow) -> bool) -> Option<Flow> {
     for _ in 0..40 {
@@ -173,7 +180,7 @@ async fn oversized_body_is_truncated_but_fully_forwarded() {
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let response = proxy_get(39_103, &format!("http://127.0.0.1:{up}/big"), &format!("127.0.0.1:{up}")).await;
-    assert_eq!(response.matches('A').count(), 100, "client did not get the full body");
+    assert_eq!(body_of(&response).matches('A').count(), 100, "client did not get the full body");
 
     let flow = wait_for(&flows, |f| f.state == FlowState::Completed).await.expect("no completed flow");
     let rb = flow.response_body.expect("no response body");
