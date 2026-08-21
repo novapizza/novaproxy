@@ -199,6 +199,18 @@ pub fn read_body_from(
         // because it is — the UI must not offer to "load the full body" from a
         // store that does not have it.
         Err(disk_err) => {
+            // Only "there is nothing on disk" may fall through to the inline
+            // preview. A body that spilled but failed to read back must stay an
+            // error: the preview is capped, and handing it out here would pass
+            // off a truncated body as the whole thing.
+            let nothing_stored = disk_err
+                .downcast_ref::<std::io::Error>()
+                .map_or(true, |io| io.kind() == std::io::ErrorKind::NotFound);
+            if !nothing_stored {
+                return Err(format!(
+                    "reading the stored {side} body of flow {flow_id}: {disk_err:#}"
+                ));
+            }
             let flow = state
                 .flows
                 .get(flow_id)

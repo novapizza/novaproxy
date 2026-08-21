@@ -213,10 +213,12 @@ describe("body bytes are not kept in the list", () => {
 
 describe("appendWsMessages", () => {
   const frame = (flow_id: string, seq: number) => ({ flow_id, seq }) as never;
+  const held = (...ids: string[]) => ids.map((id) => mkFlow(id));
 
   it("appends frames in arrival order, grouped by flow", () => {
     const { wsMessages } = appendWsMessages(
       [frame("a", 1), frame("b", 1), frame("a", 2)],
+      held("a", "b"),
       {},
       {},
       MAX_WS_FRAMES,
@@ -227,31 +229,54 @@ describe("appendWsMessages", () => {
 
   it("keeps frames already captured for the flow", () => {
     const prev = { a: [frame("a", 1)] };
-    const { wsMessages } = appendWsMessages([frame("a", 2)], prev, {}, MAX_WS_FRAMES);
+    const { wsMessages } = appendWsMessages([frame("a", 2)], held("a"), prev, {}, MAX_WS_FRAMES);
     expect(wsMessages!.a).toHaveLength(2);
     expect(prev.a).toHaveLength(1); // input untouched
   });
 
   it("reports no change for an empty batch", () => {
-    expect(appendWsMessages([], { a: [frame("a", 1)] }, {}, MAX_WS_FRAMES)).toEqual({});
+    expect(appendWsMessages([], held("a"), { a: [frame("a", 1)] }, {}, MAX_WS_FRAMES)).toEqual({});
+  });
+
+  it("drops frames of flows the list no longer holds", () => {
+    const { wsMessages } = appendWsMessages(
+      [frame("evicted", 1), frame("a", 1)],
+      held("a"),
+      {},
+      {},
+      MAX_WS_FRAMES,
+    );
+    expect(wsMessages!.evicted).toBeUndefined();
+    expect(wsMessages!.a).toEqual([frame("a", 1)]);
+  });
+
+  it("reports no change when every frame belongs to an evicted flow", () => {
+    expect(appendWsMessages([frame("evicted", 1)], held("a"), {}, {}, MAX_WS_FRAMES)).toEqual({});
   });
 
   it("keeps the newest frames once a socket hits the cap", () => {
     const prev = { a: [frame("a", 1), frame("a", 2), frame("a", 3)] };
-    const { wsMessages, wsDropped } = appendWsMessages([frame("a", 4)], prev, {}, 3);
+    const { wsMessages, wsDropped } = appendWsMessages([frame("a", 4)], held("a"), prev, {}, 3);
     expect(wsMessages!.a).toEqual([frame("a", 2), frame("a", 3), frame("a", 4)]);
     expect(wsDropped!.a).toBe(1);
   });
 
   it("adds to a socket's dropped count rather than resetting it", () => {
     const prev = { a: [frame("a", 9)] };
-    const { wsDropped } = appendWsMessages([frame("a", 10), frame("a", 11)], prev, { a: 40 }, 1);
+    const { wsDropped } = appendWsMessages(
+      [frame("a", 10), frame("a", 11)],
+      held("a"),
+      prev,
+      { a: 40 },
+      1,
+    );
     expect(wsDropped!.a).toBe(42);
   });
 
   it("caps each socket independently", () => {
     const { wsMessages, wsDropped } = appendWsMessages(
       [frame("a", 1), frame("a", 2), frame("b", 1)],
+      held("a", "b"),
       {},
       {},
       1,
@@ -262,7 +287,7 @@ describe("appendWsMessages", () => {
   });
 
   it("leaves the dropped map alone while every socket is under the cap", () => {
-    const out = appendWsMessages([frame("a", 1)], {}, {}, MAX_WS_FRAMES);
+    const out = appendWsMessages([frame("a", 1)], held("a"), {}, {}, MAX_WS_FRAMES);
     expect(out.wsDropped).toBeUndefined();
   });
 

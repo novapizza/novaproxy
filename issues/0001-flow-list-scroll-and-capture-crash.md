@@ -1,6 +1,8 @@
 # 0001 — Flow list không virtual scroll, record một lúc thì UI crash & reload
 
-*Trạng thái: đã sửa phần chính (chưa commit) · Còn phần cần review ở cuối.*
+*Trạng thái: phần chính đã commit (`48824a2`, branch `fix/flow-list-windowing`) +
+3 fix theo review (read_body không nuốt disk error, chặn orphan `wsMessages`,
+export toast khi thiếu body). Còn phần cần review/quyết ở cuối.*
 
 ## Tóm tắt
 
@@ -129,10 +131,35 @@ list gets`).
 2. **Engine cũng giữ preview trong RAM — chưa chặn.** `FlowStore` retain 10.000
    `Flow`, mỗi cái mang preview tới 512 KB (Rust UTF-8 nên bằng nửa phía JS,
    nhưng cùng bậc). Bỏ preview khỏi webview chặn được process hay chết
-   (renderer), phía Rust thì chưa. Hướng chặn cả hai bên: **hạ
-   `DEFAULT_INLINE_CAP`** (512 KB → 64 KB) để mọi body lớn hơn đều spill xuống
-   disk và chỉ fetch khi cần. Chưa làm vì nó đổi ý nghĩa "preview" trên toàn
-   engine, ảnh hưởng cả payload MCP → cần quyết định về mặt sản phẩm.
+   (renderer), phía Rust thì chưa. Worst case: 10k × 2 body × 512 KB ≈ **10 GB**;
+   hạ cap về 64 KB ≈ 1,25 GB (8×).
+
+   **Impact analysis của việc hạ `DEFAULT_INLINE_CAP` 512 KB → 64 KB**
+   (đã trace từng consumer của preview inline — 2026-08-21, chưa quyết):
+
+   | Consumer | Impact |
+   |---|---|
+   | MCP `get_flow` (cap 2.000 chars) | không |
+   | MCP `get_body` | không — spilled đọc lại từ disk (`src-tauri/src/mcp.rs:371`); body 64 KB–512 KB giờ spill nên vẫn đọc đủ |
+   | MCP `search_flows` | grep trên preview inline (`mcp.rs:601`) → coverage mỗi body tụt 512 KB → 64 KB |
+   | MCP **tagging** (`detect_mcp`, `crates/nova-core/src/intercept.rs:762`) | **nặng nhất** — `detect_request` parse JSON toàn thân trên preview đã cắt: request JSON-RPC > 64 KB fail parse → flow không được tag MCP. `detect_sse` ít ảnh hưởng (parse từng line) |
+   | MCP `replay_request` (`mcp.rs:402`) | **bug sẵn có** — gọi thẳng `replay()` không hydrate, request body spilled bị gửi truncated; hạ cap làm ngưỡng dính tụt 512 KB → 64 KB. (UI resend không sao — đã hydrate từ disk) |
+   | Export session/HAR | body xuất cắt ở 64 KB thay vì 512 KB (`retained_flows` trả preview) |
+   | UI Inspector / UI resend | không — `read_body`/hydrate đọc disk |
+   | Disk | nhiều spill file hơn; budget 1 GB FIFO evict sớm hơn |
+
+   **Phương án (chờ quyết):**
+   - *Chung, làm dù chọn gì:* fix MCP `replay_request` — mở rộng
+     `hydrate_request_body` hydrate cả khi preview `truncated && spilled`
+     (đọc full từ disk, cap `MAX_READ_BODY` 16 MB), gọi ở cả 2 đường replay.
+   - *A — hạ cap thẳng (1 dòng):* đơn giản; đổi lại mất tag MCP cho request
+     > 64 KB, search coverage giảm, export cắt ở 64 KB.
+   - *B — tách 2 knob (đề xuất):* spill threshold 64 KB (RAM retain 64 KB/body);
+     `BodyCapture` giữ buffer 512 KB *transient* trong lúc capture để
+     `detect_mcp` vẫn thấy như hôm nay, rồi mới cắt preview về 64 KB khi vào
+     `FlowStore`; export hydrate body spilled từ disk tới 512 KB/body qua
+     `retained_flows`. RAM giảm 8× mà tagging + export không regression; đổi lại
+     `BodyCapture` phức tạp hơn (~40–60 dòng), search vẫn chỉ thấy 64 KB đầu.
 
 3. **Virtualize thật cho `WsPanel`** (nếu muốn): cần windowing có đo từng row
    (measurement cache) vì payload wrap nhiều dòng. Xem mục 4 ở trên.
@@ -148,5 +175,9 @@ list gets`).
    phím trong list thì phải thêm keyboard nav + scroll-into-view (hiện list không
    có keyboard nav, chỉ command palette có).
 
-6. Diff **chưa commit**: 8 file sửa + 3 file mới (`src/virtual.ts`,
-   `src/virtual.test.ts`, `src-tauri/tests/body_refetch.rs`).
+6. Phần chính đã commit ở `48824a2`. Diff **chưa commit** (3 fix theo review,
+   2026-08-21): `src-tauri/src/commands.rs` (read_body không nuốt disk error),
+   `src/store.ts` + `src/store.test.ts` (drop frame của flow đã evict),
+   `src/App.tsx` (gộp 2 rAF queue — flows apply trước ws; export toast khi không
+   đọc được body từ engine). Frontend đã verify (96 test + tsc); **cargo test
+   chưa chạy được trên máy này** (không có toolchain).

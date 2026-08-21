@@ -173,23 +173,33 @@ export function applyFlowBatch(
  * Append captured frames, grouped by flow so a batch touching one socket copies
  * that socket's list once rather than once per frame.
  *
+ * Frames belonging to no flow in `flows` are dropped: eviction deletes a flow's
+ * frames, and a socket that keeps streaming afterwards would otherwise recreate
+ * the entry — an orphan nothing renders and nothing ever cleans up. (The App
+ * applies each animation frame's snapshots before its WS frames, so a frame
+ * cannot outrun the flow it belongs to.)
+ *
  * Only the newest `cap` frames of a socket are kept. The count of what was
  * dropped is kept alongside so the panel can say so, rather than quietly showing
  * a partial conversation.
  */
 export function appendWsMessages(
   batch: WsMessage[],
+  flows: Flow[],
   wsMessages: Record<string, WsMessage[]>,
   wsDropped: Record<string, number>,
   cap: number,
 ): { wsMessages?: Record<string, WsMessage[]>; wsDropped?: Record<string, number> } {
   if (batch.length === 0) return {};
+  const retained = new Set(flows.map((f) => f.id));
   const byFlow = new Map<string, WsMessage[]>();
   for (const m of batch) {
+    if (!retained.has(m.flow_id)) continue;
     const seen = byFlow.get(m.flow_id);
     if (seen) seen.push(m);
     else byFlow.set(m.flow_id, [m]);
   }
+  if (byFlow.size === 0) return {};
 
   const next = { ...wsMessages };
   let dropped: Record<string, number> | undefined;
@@ -233,9 +243,10 @@ export const useStore = create<Store>((set) => ({
   upsertFlows: (batch) =>
     set((s) => applyFlowBatch(batch, s.flows, s.wsMessages, s.wsDropped, s.recording, MAX_FLOWS)),
   // Append captured WS frames to their flow's list (ordered by arrival).
-  addWsMessage: (m) => set((s) => appendWsMessages([m], s.wsMessages, s.wsDropped, MAX_WS_FRAMES)),
+  addWsMessage: (m) =>
+    set((s) => appendWsMessages([m], s.flows, s.wsMessages, s.wsDropped, MAX_WS_FRAMES)),
   addWsMessages: (batch) =>
-    set((s) => appendWsMessages(batch, s.wsMessages, s.wsDropped, MAX_WS_FRAMES)),
+    set((s) => appendWsMessages(batch, s.flows, s.wsMessages, s.wsDropped, MAX_WS_FRAMES)),
   // Replace the flow list (used when importing a saved .nova session). Imported
   // flows keep their bodies: nothing else has a copy to fetch them from.
   loadFlows: (flows) => set({ flows, selectedId: null, wsMessages: {}, wsDropped: {} }),

@@ -242,7 +242,10 @@ export function App() {
     try {
       const retained = new Map((await api.retainedFlows()).map((f) => [f.id, f]));
       return listed.map((f) => retained.get(f.id) ?? f);
-    } catch {
+    } catch (e) {
+      // The export still has every flow, just not the bodies the list dropped —
+      // said out loud, because a silently body-less export looks complete.
+      showToast(`Couldn't read bodies from the engine — exporting without them (${e})`);
       return listed;
     }
   }
@@ -302,31 +305,30 @@ export function App() {
      * capture unusable. Coalescing a frame's worth into a single update caps the
      * render rate at the display's, however fast traffic is.
      */
-    const coalesce = <T,>(apply: (batch: T[]) => void) => {
-      let queued: T[] = [];
-      let frame = 0;
-      const flush = () => {
-        frame = 0;
-        const batch = queued;
-        queued = [];
-        apply(batch);
-      };
-      return {
-        push: (item: T) => {
-          queued.push(item);
-          if (!frame) frame = requestAnimationFrame(flush);
-        },
-        cancel: () => {
-          if (frame) cancelAnimationFrame(frame);
-        },
-      };
+    let flowQueue: Flow[] = [];
+    let wsQueue: WsMessage[] = [];
+    let frame = 0;
+    // One flush for both channels, snapshots first: the store drops frames of
+    // flows it does not hold, so a socket's first frames must never be applied
+    // ahead of the snapshot that introduces their flow.
+    const flush = () => {
+      frame = 0;
+      const flows = flowQueue;
+      const ws = wsQueue;
+      flowQueue = [];
+      wsQueue = [];
+      if (flows.length) useStore.getState().upsertFlows(flows);
+      if (ws.length) useStore.getState().addWsMessages(ws);
+    };
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(flush);
     };
 
-    const flowQueue = coalesce<Flow>((b) => useStore.getState().upsertFlows(b));
-    const wsQueue = coalesce<WsMessage>((b) => useStore.getState().addWsMessages(b));
-
     const channel = new Channel<Flow>();
-    channel.onmessage = (flow) => flowQueue.push(flow);
+    channel.onmessage = (flow) => {
+      flowQueue.push(flow);
+      schedule();
+    };
     api.subscribeFlows(channel);
 
     const bpChannel = new Channel<Interception>();
@@ -337,7 +339,10 @@ export function App() {
     api.subscribeBreakpoints(bpChannel);
 
     const wsChannel = new Channel<WsMessage>();
-    wsChannel.onmessage = (m) => wsQueue.push(m);
+    wsChannel.onmessage = (m) => {
+      wsQueue.push(m);
+      schedule();
+    };
     api.subscribeWs(wsChannel);
 
     api.proxyStatus().then((p) => useStore.getState().setProxy(p));
@@ -349,8 +354,7 @@ export function App() {
     api.helperStatus().then(setHelper).catch(() => {});
 
     return () => {
-      flowQueue.cancel();
-      wsQueue.cancel();
+      if (frame) cancelAnimationFrame(frame);
     };
   }, []);
 
