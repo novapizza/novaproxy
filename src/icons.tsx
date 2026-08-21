@@ -1,0 +1,104 @@
+/* Lucide icon set, per design.md §Icons — one place so stroke weight and the
+   name→glyph mapping stay auditable instead of drifting across ~60 call sites.
+   Only the icons listed here are imported, so the rest tree-shake away. */
+import {
+  Activity,
+  AppWindow,
+  ArrowDown,
+  ArrowLeftRight,
+  ArrowRight,
+  ArrowUp,
+  ArrowUpDown,
+  Braces,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  CircleDot,
+  CirclePause,
+  Command,
+  Copy,
+  Download,
+  Eraser,
+  FileCode,
+  FileDown,
+  Gauge,
+  GitBranch,
+  Globe,
+  List,
+  Lock,
+  Play,
+  Plug,
+  Plus,
+  Power,
+  RefreshCw,
+  Repeat,
+  Search,
+  SearchX,
+  Settings,
+  ShieldCheck,
+  Trash2,
+  TriangleAlert,
+  Upload,
+  Users,
+  X,
+} from "lucide-react";
+
+const GLYPHS = {
+  activity: Activity,
+  "app-window": AppWindow,
+  "arrow-down": ArrowDown,
+  "arrow-left-right": ArrowLeftRight,
+  "arrow-right": ArrowRight,
+  "arrow-up": ArrowUp,
+  "arrow-up-down": ArrowUpDown,
+  braces: Braces,
+  check: Check,
+  "chevron-down": ChevronDown,
+  "chevron-right": ChevronRight,
+  circle: Circle,
+  "circle-dot": CircleDot,
+  "circle-pause": CirclePause,
+  command: Command,
+  copy: Copy,
+  download: Download,
+  eraser: Eraser,
+  "file-code": FileCode,
+  "file-down": FileDown,
+  gauge: Gauge,
+  "git-branch": GitBranch,
+  globe: Globe,
+  list: List,
+  lock: Lock,
+  play: Play,
+  plug: Plug,
+  plus: Plus,
+  power: Power,
+  "refresh-cw": RefreshCw,
+  repeat: Repeat,
+  search: Search,
+  "search-x": SearchX,
+  settings: Settings,
+  "shield-check": ShieldCheck,
+  "trash-2": Trash2,
+  "triangle-alert": TriangleAlert,
+  upload: Upload,
+  users: Users,
+  x: X,
+} as const;
+
+export type IconName = keyof typeof GLYPHS;
+
+/** Design spec: Lucide, 1.6px stroke, sized in px, inheriting `currentColor`. */
+export function Icon({
+  name,
+  size = 14,
+  className,
+}: {
+  name: IconName;
+  size?: number;
+  className?: string;
+}) {
+  const Glyph = GLYPHS[name];
+  return <Glyph size={size} strokeWidth={1.6} className={className} aria-hidden />;
+}

@@ -1,322 +1,288 @@
 # NovaProxy — Design Reference
 
-> Extracted from `claude-design/NovaProxy Prototype.html`. This documents the visual
-> language, UI structure, CSS system, and interaction behaviors so any session can
-> rebuild or extend the UI consistently.
+> The visual language the app is built from, imported from the Claude Design project
+> *NovaProxy Design System* (`NovaProxy Design System.dc.html` for the tokens and parts,
+> `NovaProxy-standalone-src.dc.html` for the screens). This documents the system so any
+> session can extend the UI consistently. `src/styles.css` is the implementation.
 
 NovaProxy is a **desktop HTTPS-debugging proxy** (Charles/Proxyman-style) — it captures,
-inspects, and manipulates live network traffic. The prototype presents a macOS-style
-desktop app window with a left icon rail, a flow list, a detail inspector, and several
-settings sections, plus a command palette and modal overlays.
+inspects, and manipulates live network traffic. The window is a left icon rail, a header bar,
+one of five rail-switched sections, and a status bar, plus a command palette and overlays.
 
 ---
 
 ## 1. Look & Feel
 
-- **Tone:** Professional developer tool. Dense but calm. Dark-first, with a full light theme.
-- **Window chrome:** Emulates a native macOS window — 38px titlebar with the three traffic-light
-  dots (`#ff5f57` red, `#febc2e` yellow, `#28c840` green), centered app title with a small
-  gradient logo chip, and a bottom status bar.
-- **Typography:**
-  - UI text: `-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif`
-  - Monospace (paths, headers, code, cURL, badges): `ui-monospace, 'SF Mono', Menlo, Monaco, monospace`
-- **Shape language:** Rounded throughout — cards/modals `12–16px`, buttons/inputs `8–11px`,
-  badges/pills/tags `5–7px`, toggle tracks `11px` (pill).
-- **Density:** Small type (10–15px), tight paddings. Uppercase micro-labels with letterspacing
-  (`.05–.06em`) for section/field headers.
-- **Motion:** Subtle, fast. Fade/slide-in on new rows and overlays; a pulsing dot for the
-  live "Recording" state and the paused-breakpoint indicator.
-- **Accent-driven:** A single user-configurable `--accent` color drives active nav, primary
-  buttons, toggles, focus rings, and selection highlights.
+- **Tone:** Professional developer tool, but light and calm rather than dense and dark.
+  Depth comes from white panels floating on a mint wash with hairline borders — never from
+  heavy strokes or dark surfaces.
+- **One theme.** Light only. There is no `data-nova-theme` switch and no user-configurable
+  accent; the green below *is* the accent. (Both existed before the redesign and were removed
+  deliberately — do not reintroduce a second palette without redoing the whole system.)
+- **Typography — three families, three jobs:**
+  - **Petrona** (`--font-display`) — page titles only. Serif, 400 weight, negative tracking.
+  - **Inter** (`--font-ui`) — everything a human wrote: labels, buttons, prose.
+  - **JetBrains Mono** (`--font-mono`) — everything a machine wrote: URLs, headers, hashes,
+    durations, status codes, code. If the proxy captured it, it is mono.
+  All three are bundled locally via `@fontsource-variable/*` and imported in `src/main.tsx`,
+  so the app keeps its typography with no network.
+- **Green means live.** The accent is for the thing that acts — active rail item, primary
+  button, toggle-on, active tab underline, focus ring, row selection. It never fills a
+  whole surface.
+- **Icons:** Lucide at **1.6px stroke**, via `src/icons.tsx`. That module owns the
+  name→glyph map and the stroke weight; import `Icon` from there rather than reaching into
+  `lucide-react` directly.
 
 ---
 
-## 2. Theming & CSS Variables
+## 2. Tokens
 
-Theme is switched via a `data-nova-theme="dark|light"` attribute on the root container.
-The accent is injected as an inline `--accent` custom property on the same element.
+All of them live in one `.nova` block at the top of `src/styles.css`. Reference the variable,
+never the literal.
 
-### Dark theme (default feel)
-```css
-[data-nova-theme="dark"]{
-  --bg:#0d0f13; --panel:#111419; --list:#0f1217; --card:#12151b; --input:#161a21; --hover:#1b2029;
-  --border:#20252e; --border2:#2a2f39; --bsoft:#171b22;
-  --text:#e6e8ec; --text2:#b6bcc6; --muted:#8b929e; --faint:#5b6270;
-  --shadow:rgba(0,0,0,.6); --overlay:rgba(6,8,11,.62);
-  --c-green:#5fe0a8; --c-blue:#7db9ff; --c-amber:#f7c86b; --c-red:#ff8a8a;
-  --c-violet:#c3a3ff; --c-pink:#f79bde; --c-cyan:#38d6c8;
-}
-```
-
-### Light theme
-```css
-[data-nova-theme="light"]{
-  --bg:#eef0f4; --panel:#ffffff; --list:#f7f8fb; --card:#ffffff; --input:#eef1f5; --hover:#e9ecf2;
-  --border:#e2e5ec; --border2:#d2d7e0; --bsoft:#edeff4;
-  --text:#1b1e26; --text2:#4a515f; --muted:#6d7484; --faint:#a2a8b5;
-  --shadow:rgba(30,42,66,.16); --overlay:rgba(28,38,55,.34);
-  --c-green:#0f9d63; --c-blue:#2b6fed; --c-amber:#b0761a; --c-red:#d63b3b;
-  --c-violet:#7a4fd6; --c-pink:#c43a9e; --c-cyan:#0c9c90;
-}
-```
-
-### Variable roles
-| Group | Vars | Use |
+### Colour
+| Token | Value | Role |
 |---|---|---|
-| Surfaces | `--bg`, `--panel`, `--list`, `--card`, `--input`, `--hover` | Page bg, chrome bars, list column, cards/detail, form fields, hover state |
-| Borders | `--border`, `--border2`, `--bsoft` | Standard dividers, stronger/interactive borders, subtle inner row separators |
-| Text | `--text`, `--text2`, `--muted`, `--faint` | Primary, secondary, labels, hints/placeholders (4-level hierarchy) |
-| Depth | `--shadow`, `--overlay` | Modal shadows, backdrop scrims |
-| Semantic | `--c-green/blue/amber/red/violet/pink/cyan` | Status codes, HTTP methods, tags, accents (theme-adjusted for contrast) |
-| Injected | `--accent` | Primary actions, active nav, toggles-on, focus, selection |
+| `--accent` / `--accent-hover` | `#3EB56D` / `#2E9A59` | Primary action; hover & press |
+| `--mint` | `#9BE3B4` | Gradient blooms, brandmark |
+| `--bg` | `#F2F6F3` | Flat canvas base |
+| `--wash` | two mint radials over `#F8FBF8 → #EFF5F1` | The page background itself |
+| `--panel` | `rgba(255,255,255,.62)` | Rail and bars (with `backdrop-filter: blur(18px)`) |
+| `--list` | `rgba(255,255,255,.82)` | Flow-list panel |
+| `--card` | `#FFFFFF` | Cards, modals, detail panel |
+| `--input` | `#F7FAF8` | Inset fields, code surfaces, table key cells |
+| `--hover` | `rgba(27,26,61,.05)` | Hover wash |
+| `--border` / `--border2` / `--bsoft` | `rgba(27,26,61,.07)` / `.12` / `.045` | Hairline, interactive, inner row |
+| `--text` / `--text2` / `--muted` / `--faint` | `#1B1A3D` / `#3B3A5C` / `#6B6A86` / `#A9A8BE` | Four-level ink hierarchy |
+| `--shadow` / `--overlay` | `rgba(27,26,61,.10)` / `.28` | Modal shadow, scrim |
 
-> **Semantic colors are theme-aware.** Always reference them via the CSS var (e.g.
-> `color:var(--c-green)`) so both themes stay legible. Raw rgba tints (backgrounds/borders
-> like `rgba(56,217,150,.1)`) are reused across both themes intentionally.
+**Semantics.** Green, salmon and violet come from the design. Blue, cyan, amber and pink are
+**derived** — the design ships no equivalents, and the app needs seven for methods, chips,
+timing phases and cert states. They are pitched in the same low-chroma, ink-leaning register;
+if the design system ever specifies them, replace these values.
 
-### Accent tinting helper
-Translucent accent shades use `color-mix`:
+| Token | Value | Designed? | Used for |
+|---|---|---|---|
+| `--c-green` / `--c-green-deep` | `#3EB56D` / `#2E9A59` | yes | 2xx, GET/POST, download phase |
+| `--c-violet` | `#7C5CE0` | yes | 3xx, PATCH, MCP, keywords |
+| `--c-indigo` | `#8C78F3` | yes | WebSocket, MCP badge, gradients |
+| `--c-red` / `--c-red-deep` | `#D88689` / `#A85B5E` | yes | 4xx / 5xx, PUT/DELETE, destructive |
+| `--c-blue` | `#5E86C9` | derived | 1xx, TCP connect, plaintext chip |
+| `--c-cyan` | `#3FA9A0` | derived | TLS handshake, resent |
+| `--c-amber` | `#C08A4A` | derived | Server wait, armed breakpoint, untrusted CA |
+| `--c-pink` | `#C77BB4` | derived | Spare semantic slot |
+
+### Scale
 ```
-color-mix(in srgb, var(--accent) <pct>%, transparent)
+radius     --r-tag 8  --r-field 12  --r-card 16  --r-panel 20  --r-pill 999
+elevation  --e-xs 0 2px 6px  ·  --e-sm 0 6px 18px  ·  --e-md 0 8px 24px  ·  --e-lg 0 24px 60px
+           (all rgba(27,26,61,·)), plus --e-accent for green buttons
+spacing    4 icon→label · 8 chip gaps · 12 card gaps · 24 panel padding · 48 section breaks
+motion     --t-micro 120ms · --t-base 200ms · --t-page 360ms, all on --ease
+           cubic-bezier(.2,.8,.2,1)
 ```
-Common percentages: 13% (row selection bg), 16% (palette hover), 20% (active nav bg), 42% (active nav border).
 
-### Scrollbars (custom, thin)
+### Type ramp
+| Role | Spec |
+|---|---|
+| Page title | Petrona 400 · 38px · −0.018em |
+| Section head | Petrona 400 · 27px · −0.015em |
+| Body | Inter 400 · 14/1.6 |
+| UI label | Inter 500 · 13px |
+| Eyebrow | Inter 600 · 11px · +0.09–0.11em · uppercase |
+| Data | JetBrains Mono 400 · 12px |
+
+### Scrollbars
 ```css
 ::-webkit-scrollbar{width:10px;height:10px}
-::-webkit-scrollbar-thumb{background:rgba(128,136,150,.4);border-radius:6px;border:2px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-thumb{background:rgba(27,26,61,.16);border-radius:999px;border:3px solid transparent;background-clip:content-box}
 ::-webkit-scrollbar-track{background:transparent}
 ```
 
 ---
 
-## 3. Layout Structure
+## 3. Layout
 
-Root is a full-viewport (`100vh`) vertical flex column, `overflow:hidden`, `position:relative`
-(so overlays anchor to it).
+The root is a full-viewport flex column. There is **no in-app titlebar** — the OS draws the
+window chrome, and the design does not double it.
 
 ```
-┌───────────────────────────────────────────────── titlebar (38px) ──┐
-│ ● ● ●        ▪ NovaProxy — default workspace                        │
-├──────┬──────────────────────────────────────────────────────────────┤
-│ rail │  toolbar (52px): Recording | Clear | search | ⌘K | SysProxy   │
-│ 64px ├──────────────────────────────────────────────────────────────┤
+┌──────┬───────────────────────────────────────────────────────────────┐
+│ rail │  header (62px): title/sub │ Recording │ Clear │ … │ ⌘K │ proxy │
+│ 78px ├───────────────────────────────────────────────────────────────┤
 │      │                     active section body                        │
-│ ≋    │  ┌─ flow list (412px) ─┬─ detail inspector (flex) ─┐          │
-│ ⤳    │  │  grouped by host    │  header + tabs + body     │          │
-│ ⏸    │  │  method/path/status │  Overview/Req/Res/Timing  │          │
-│ { }  │  │                     │  /cURL                    │          │
-│ 🔒   │  └─────────────────────┴───────────────────────────┘          │
-│ ⚙    │                                                                │
-├──────┴──────────────────────────────────────────────────────────────┤
-│ ● live   N flows · M hosts        upstream: direct  CA…  127.0.0.1:9090│  status bar (26px)
-└──────────────────────────────────────────────────────────────────────┘
+│  ≈   │  ┌ stats ─────────────────────────────────── throughput ─┐    │
+│  ⑂   │  ├ flow list (412px) ─┬─ inspector (flex) ───────────────┤    │
+│  ⏸   │  │ search + chips     │ head + tabs + body               │    │
+│  {}   │  │ grouped rows       │                                  │    │
+│  ⛨   │  └────────────────────┴──────────────────────────────────┘    │
+│  ⚙   │                                                                │
+├──────┴───────────────────────────────────────────────────────────────┤
+│ ● recording  N flows · M hosts      upstream: direct  CA…  host:port  │  30px
+└───────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3.1 Titlebar (38px)
-`background:var(--panel)`, bottom border. Left: three 12px traffic-light dots. Center:
-600/13px title with a 14px gradient chip `linear-gradient(135deg,var(--accent),var(--c-cyan))`
-and a faint "— default workspace" suffix. Right: 56px spacer for symmetry.
+### Rail (78px)
+`--panel` + blur, right hairline. A 32px gradient brandmark on top, then five items —
+**Flows, Rules, Break, Scripts, Certs** — each a 58px-wide, 16px-radius stack of a 19px
+Lucide icon over a 10px/600 label. Active item is a **white pill** with `--e-sm` and a
+hairline border, icon and label in `--accent`; inactive is `--muted` on transparent, hover
+`--hover`. A spacer pushes the settings gear to the bottom.
 
-### 3.2 Left rail (64px)
-Vertical, centered, `background:var(--panel)`, right border. Nav items are 44×44 rounded
-(`11px`) squares, icon (18px) over 10px uppercase label. Sections: **Flows ≋, Rules ⤳,
-Break ⏸, Scripts { }, Certs 🔒**. A flex spacer pushes a settings gear (⚙) to the bottom.
-- Active item: `background:color-mix(accent 20%)`, `color:var(--accent)`, `border:1px accent 42%`.
-- Inactive: `color:var(--muted)`, transparent border; hover → `--hover` bg + `--text2`.
+### Header (62px)
+Bottom hairline, no fill. Left: the section title (Inter 600/14.5px) over
+`default workspace · host:port`. Then a hairline divider and pill buttons —
+**Recording/Paused** (salmon tint + pulsing dot when live) and **Clear**, plus the app filter
+`<select>` on the Flows section. Right: **Commands** with a `⌘K` keycap, then the
+**System proxy** switch.
 
-### 3.3 Toolbar (52px)
-`background:var(--panel)`, bottom border, horizontal flex with 11px gap. Contents:
-- **Record/Pause button** — toggles capture. When recording: red text/border/tint
-  (`--c-red`, `rgba(255,107,107,…)`) with a pulsing red dot. When paused: muted + `--input`.
-- **Clear button** — neutral `--input` bordered button.
-- Divider (1px × 22px).
-- **Search input** — `--input` field, `⌕` icon, placeholder
-  `"Filter by host, path, method:GET, status:401…"`, focus ring = accent border, `✕` clear
-  affordance when non-empty. Flex-grows to `max-width:520px`.
-- Flex spacer.
-- **Commands button** — opens palette; shows a `⌘K` keycap chip.
-- **System Proxy toggle** — pill switch + "System Proxy" label.
-
-### 3.4 Status bar (26px)
-`background:var(--panel)`, top border, 11px monospace muted text. Left: live/paused indicator
-(green `● live` / muted `❚❚ paused`), then `N flows · M hosts`. Right: `upstream: direct`,
-CA trust state (green/amber), and bind address `127.0.0.1:9090`.
+### Status bar (30px)
+`rgba(255,255,255,.6)`, top hairline, 11px mono `--muted`. Left: a state pip (pulsing salmon
+when recording) and `recording | paused | stopped`, then `N flows · M hosts`. Right:
+`upstream: direct`, CA trust (green/amber), bind address.
 
 ---
 
-## 4. Sections (rail-switched, one visible at a time)
+## 4. Sections
 
-### 4.1 Flows (default) — two-pane
-**Flow list (412px, `background:var(--list)`):**
-- 36px header row: count label (`"N flows"`) + a group toggle (`▾ grouped` / `≡ flat`).
-- Group headers (when grouped by host): sticky, 700/12px, a cyan host dot, host name
-  (ellipsized), a green **TLS** chip, and a per-host count. `position:sticky;top:0`.
-- **Flow rows:** method badge + (path in monospace / subline = host, with `⤳` prefix if
-  mapped and `· resent` suffix) + right-aligned status code (semantic color) & relative time.
-  Selected row: 2px accent left-border and `color-mix(accent 13%)` bg. New rows fade in
-  (`novaflow .22s`). Hover → `--hover`.
-- Empty states: centered faint text — "Waiting for traffic…", "Recording paused — no flows
-  captured", or "No flows match your filter".
+### 4.1 Flows — stat strip over two panes
+**Stat strip** (`.stat-row`): four cards — Flows (visible of total), Median ms, Failed
+(4xx/5xx), MCP calls — each an eyebrow with a 15px icon over a 25px mono figure and a faint
+unit. Then a 240px **Throughput** card with a sparkline: an accent stroke over a fading
+accent fill, with a leading dot. All five values come from `src/stats.ts`; the series buckets
+`response_size` by `started_at` over the trailing 60s.
 
-**Detail inspector (flex, `background:var(--bg)`):**
-- Empty state: dashed rounded icon (`≋`) + "Select a flow to inspect" + ⌘K hint.
-- Header: method badge, full URL (monospace, break-all), a status pill, and a primary
-  **↻ Resend** button (accent bg, white text).
-- **Tab bar:** Overview / Request / Response / Timing / cURL. Active tab = `--text` with a
-  2px accent bottom-border; inactive = `--muted`.
-- **Overview:** a 2-column fact grid (Method, Status, Protocol, Scheme, Remote host,
-  Duration, Size, Started) rendered as bordered cells (1px `--border` gaps over `--card`),
-  followed by inline pill chips: green TLS (`🔒 TLS 1.3 · decrypted`), blue protocol
-  (`HTTP/2`), and (if mapped) a violet `⤳ mapped from <host>` chip.
-- **Request / Response:** uppercase "headers" label → key/value rows (150px min key column,
-  bottom-bordered by `--bsoft`) → a "Body" `<pre>` block. Bodies use a dark code surface
-  `#0f1217`, `1px var(--border)`, rounded 9px; request body text `#a9c8ee`, response body
-  `#c8e6c2`. Response body shows a `content-type · size` meta line.
-- **Timing:** waterfall of phases (DNS, Connect, TLS, TTFB, Download), each a labeled
-  horizontal bar (`--input` track, colored fill per phase) with a right-aligned ms value,
-  then a bold Total row.
-- **cURL:** "Export as cURL" label + Copy button, then a `<pre>` code block (`#dfe3e9` text)
-  with the generated `curl -X … -H … --data …` command.
+**Flow list** (`.flow-list`, 412px default, resizable) — a `--list` panel, `--r-panel`
+corners, `--e-xs`. Header holds the mono search field, the chip row
+(**All / Errors / Slow / MCP**, `src/filter.ts`), and a meta line with the count and the
+internal-traffic and grouping toggles. Group headers are sticky, with a host dot, host name,
+a **TLS** chip and a count. Rows are: method badge, mono path over a faint sub-line
+(host · MCP · resent), then right-aligned status and duration. Selected rows take an accent
+left border and an `rgba(62,181,109,.11)` tint.
 
-### 4.2 Rules — centered column (max 720px)
-Header "Rules" + accent **+ New rule** button. Subtitle explains Map Local / Map Remote /
-header rewrites on live traffic. Each rule is a `--card` bordered box:
-- Header row: enable toggle (pill switch) + a violet **type tag** (uppercase) + rule label +
-  trash icon (hover → red).
-- Body: field rows — uppercase field key + a value shown as monospace blue text in an
-  `--input` pill (`border-radius:7px`).
-- Rule types: **Map Remote**, **Map Local**, **Rewrite**.
+> Row and header heights feed `src/virtual.ts` (`ROW_H_GUESS` / `HEADER_H_GUESS`). They are
+> first-frame estimates that `FlowList` re-measures from the DOM, but changing row padding
+> without updating them causes a visible jump on first paint.
 
-### 4.3 Breakpoints — centered column (max 720px)
-Header + subtitle. Single `--card` panel: a large `⏸` state icon (amber tint when armed,
-neutral when idle), a title/subtitle describing armed vs idle, and an **Arm breakpoint /
-Disarm** button (cyan when armed, accent when idle). Arming pauses the next matching request.
+**Inspector** (`.detail`) — a `rgba(255,255,255,.9)` panel. Empty state is a mint-tinted
+rounded tile with the Flows icon. Head: method badge, mono URL, status pill, green **Resend**
+pill. Tabs (Overview / Request / Response / Timing / cURL, plus WebSocket when relevant) use
+a 2px accent underline on the active one.
+- **Overview** — a two-column grid of `--input` cards, uppercase key over a mono value, then
+  a row of semantic pill chips.
+- **Request / Response** — an eyebrow, then a bordered `.hlist` table: a 230px `--input` key
+  column beside the value. Then the body `<pre>` on `--code-bg`.
+- **Timing** — a waterfall on a 130px / bar / 72px grid; 8px pill track, per-phase colour
+  from `src/timing.ts` (which emits `var(--c-*)`, so retuning the tokens is enough).
+- **cURL** — eyebrow + Copy, then the command on a code surface.
 
-### 4.4 Scripts — centered column (max 820px)
-Header + accent-cyan **▶ Run on next flow** button. Subtitle mentions `onRequest`/`onResponse`
-JS hooks (accent-colored). A faux editor: a `tamper.js` tab bar over a syntax-highlighted
-`<pre>` (dark `#0f1217`). Highlight palette in code: comments `#5b6270`, strings `#c8e6c2`,
-keywords `#c3a3ff`, numbers `#f7c86b`, base text `#dfe3e9`.
+### 4.2 Rules — centred column
+Petrona title, a prose subtitle with mono spans in accent, and a green **New rule** pill.
+Each rule is an 18px-radius `rgba(255,255,255,.86)` card: a head row of enable switch, mono
+uppercase kind tag, name, and a trash icon; then a two-column body of uppercase field label
+over an `--input` field.
 
-### 4.5 Certificate — centered column (max 640px)
-Header + subtitle about the local root CA for HTTPS decryption. A `--card` panel: a `🔒` icon
-(green tint when trusted), "NovaProxy Root CA" with a SHA-256 fingerprint, a status pill
-(green **Trusted** / amber **Not installed**), and buttons **Install & trust** (accent; becomes
-red **Remove certificate** when installed) and **Export .pem** (neutral).
+### 4.3 Breakpoints — centred column
+Title, subtitle, then a card with a 46px state tile (amber tint when armed), a title/subtitle
+pair, and the Arm/Disarm button, followed by the match-URL field.
+
+### 4.4 Scripts — centred column
+Title with the enable switch and **Save & apply** in the head actions. The editor is an
+18px-radius card: an `--input` tab strip with a file icon and `tamper.js`, then the textarea
+on white at 12.5px/1.85 mono.
+
+### 4.5 Certificate — centred column
+Title, subtitle, then the CA card: a 52px gradient shield tile (when trusted), the CA name
+with a trust pill, the SHA-256 fingerprint, the path, and a row of pill actions
+(**Install & trust** / **Remove certificate** green or `#C4676B`, the rest neutral), closed by
+a hint explaining which trust domain is in play. Below it the **SSL proxying scope** card.
 
 ---
 
-## 5. Reusable Component Patterns
+## 5. Component patterns
 
-### HTTP method badge
-Fixed-scheme per method, `min-width:44px`, `border-radius:6px`, 700/10.5px monospace, colored
-text over a translucent tint + border:
-| Method | Color var | tint bg | border |
-|---|---|---|---|
-| GET | `--c-blue` | `rgba(78,161,255,.13)` | `rgba(78,161,255,.32)` |
-| POST | `--c-green` | `rgba(56,217,150,.13)` | `rgba(56,217,150,.32)` |
-| PUT | `--c-amber` | `rgba(247,185,85,.14)` | `rgba(247,185,85,.34)` |
-| PATCH | `--c-pink` | `rgba(247,139,214,.14)` | `rgba(247,139,214,.32)` |
-| DELETE | `--c-red` | `rgba(255,107,107,.14)` | `rgba(255,107,107,.34)` |
-| WS | `--c-violet` | `rgba(185,140,255,.15)` | `rgba(185,140,255,.34)` |
+### Method badge
+`min-width:42px`, radius 5px, 9.5px/500 mono, `+.05em`. Green reads, salmon mutates, violet
+is protocol traffic:
 
-### Status-code color scale
-`101` → violet · `<300` → green · `<400` → blue · `<500` → amber · `≥500` (or aborted) → red.
+| Method | Text | Tint |
+|---|---|---|
+| GET | `--c-green` | `rgba(62,181,109,.10)` |
+| POST | `--c-green-deep` | `rgba(62,181,109,.18)` |
+| PUT | `--c-red-deep` | `rgba(216,134,137,.16)` |
+| DELETE | `--c-red-deep` | `rgba(216,134,137,.20)` |
+| PATCH | `--c-violet` | `rgba(124,92,224,.12)` |
+| WS / other | `--c-indigo` | `rgba(140,120,243,.14)` |
 
-### Toggle switch (pill)
-Track: `width` 34/36px × `height:20px`, `border-radius:11px`; on = `var(--accent)`, off =
-`var(--border2)`, `transition:background .15s`. Knob: 16px white circle, `top:2px`, slides
-`left` from `2px` to `width-18px`, subtle shadow, `transition:left .15s`.
+### Status scale
+`1xx` blue · `2xx` green · `3xx` violet · `4xx` salmon · `5xx`/aborted deep salmon ·
+pending `--faint`.
 
-### Chips / tags / pills
-Small rounded (`5–7px`), 600–700 weight, often uppercase, semantic-colored text over a
-matching translucent tint with a matching-color border. Used for TLS, protocol, mapped-from,
-rule type, cert status, keycaps.
+### Toggle switch
+40×23px pill track, `rgba(27,26,61,.14)` off / `--accent` on with an accent glow. Knob is a
+17px white circle at `top/left: 3px` that `translateX(17px)` on `--t-base`.
 
-### Primary vs neutral buttons
-- **Primary:** `background:var(--accent)`, `color:#fff`, rounded 9px, hover `filter:brightness(1.1)`.
-  Variants swap accent for `--c-cyan` (Scripts run) or `--c-red` (destructive).
-- **Neutral:** `background:var(--input)`, `1px var(--border2)`, `color:var(--text2)`, hover
-  → `--hover` or accent border.
+### Chips, tags, pills
+Filter chips (`.fchip`) are pill-shaped, 11.5px/500, white-ish over a hairline; active is
+solid accent with white text. Semantic chips (`.chip`) are pill-shaped, coloured text over a
+~10% tint with a ~30% border. Method and kind tags are the squarer 5–8px radius mono form.
 
-### Code / body blocks
-`<pre>` with `background:#0f1217`, `1px var(--border)`, `border-radius:9px`, 12.5px monospace,
-`line-height:1.65–1.8`, `white-space:pre-wrap`, `overflow-x:auto`.
+### Buttons
+- **Primary** — accent pill, white text, `--e-accent`, hover `--accent-hover`, press
+  `scale(.98)`. `.red` is `#C4676B`. `.cyan` is an alias of primary: the design collapses
+  secondary-accent actions into the one green.
+- **Neutral** — white pill, `--border2` hairline, `--text2`; hover darkens the border.
+
+### Fields and focus
+Inputs sit on `--input` with an 11–12px radius. Focus is
+`border-color: rgba(62,181,109,.45)` plus `box-shadow: 0 0 0 3px rgba(62,181,109,.12)` —
+a ring, not a colour swap.
+
+### Code surfaces
+`--code-bg` (`#F7FAF8`), hairline border, 14px radius, 12px mono, `line-height:1.7`,
+`pre-wrap`, `overflow-x:auto`.
 
 ---
 
 ## 6. Overlays
 
-All overlays are `position:absolute` within the root (`z-index` 40–60) over a
-`var(--overlay)` scrim.
+`position:absolute` within the root, over a `--overlay` scrim.
 
-- **Intercept modal (z40):** 520px `--card` panel, centered. Amber pulsing dot + "Request
-  paused at breakpoint" title, the paused method badge + URL, an editable-headers `<pre>`,
-  and footer actions **Abort** (red outline/tint) + **Continue →** (accent). Enters with
-  `novafade` + `novaflow`.
-- **Command palette (z50/51):** click-scrim + a 540px `--card` panel `88px` from top,
-  centered via `translateX(-50%)`. Header: `⌘` icon + text input ("Type a command…") + ESC
-  keycap. Scrollable list (max 280px) of icon + label (+ optional keycap) rows; active/hover
-  row = `color-mix(accent 16%)`. "No commands match" empty state. Enters with `novapop`.
-- **Toast (z60):** bottom-center `--card` pill, `44px` from bottom, cyan `✓` + message,
-  shadow, `novaflow` entry. Auto-dismisses after ~2.2s.
+- **Intercept modal (z41):** 520px `--card` panel, `--r-panel`, `--e-lg`. Amber pulsing dot,
+  the paused method badge + URL, an editable-headers textarea, then **Abort** (danger neutral)
+  and **Continue** (primary).
+- **Command palette (z50/51):** a 540px `rgba(255,255,255,.92)` blurred sheet, 88px from top.
+  Search icon + input + `esc` keycap; rows are a 15px icon, a 12.5px/500 label, and a mono
+  keycap, with the active row on `rgba(62,181,109,.10)` and its icon in accent.
+- **Settings modal (z40):** 560px, four tabs — General / Network / MCP / Getting started.
+- **Toast (z60):** bottom-centre white card, 14px radius, accent border tint, green check.
 
 ---
 
-## 7. Animations (keyframes)
+## 7. Animations
 
 ```css
-@keyframes novapulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.82)}} /* live dot, paused indicator */
-@keyframes novaflow {from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}} /* new rows, modal, toast */
+@keyframes novapulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.82)}} /* live dot, breakpoint */
+@keyframes novaflow {from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}} /* modal, toast */
 @keyframes novafade {from{opacity:0}to{opacity:1}}                                                    /* scrims, empty states */
-@keyframes novapop  {from{opacity:0;transform:translate(-50%,8px) scale(.97)}to{opacity:1;transform:translate(-50%,0) scale(1)}} /* command palette */
+@keyframes novapop  {from{opacity:0;transform:translate(-50%,8px) scale(.97)}to{opacity:1;transform:translate(-50%,0) scale(1)}} /* palette */
 ```
 
-Interaction transitions are short (`.15s`) on toggles; hover feedback is instant via
-`style-hover` (bg/color/filter/border shifts).
+The flow list is windowed, so rows deliberately have **no** entry animation — one would flash
+on every scroll.
 
 ---
 
-## 8. Configurable Props (design-doc props)
+## 8. Rules of thumb
 
-The prototype exposes these tweakable inputs (drive theming/behavior):
-- **theme** — enum `dark | light` (default `light` in props; component falls back to `dark`).
-- **accent** — color, default `#2b8fff`; presets `#7c6cff` (violet), `#2b8fff` (blue),
-  `#12b886` (green), `#f2622a` (orange).
-- **streamSpeed** — range 400–3000ms (default 1600), how fast simulated flows arrive.
-
----
-
-## 9. Behavior & Interaction Notes
-
-- **Live traffic simulation:** flows stream in on an interval (`streamSpeed`), capped at 120,
-  newest first. Recording can be paused; a breakpoint can pause the next request into the
-  intercept modal (Continue/Abort).
-- **Search grammar:** free text matches host/path/method/status; prefixes `method:`,
-  `status:`, `host:` do targeted filters.
-- **Grouping:** flow list groups by host (sticky headers) or flat list, toggleable.
-- **Command palette:** `⌘K`/`Ctrl+K` toggles; arrow keys navigate, Enter runs, Esc closes.
-  Commands: pause/record, clear, resend, copy cURL, arm breakpoint, open Rules/Certs, toggle
-  system proxy.
-- **Rules engine:** Map Remote actually rewrites the host of matching simulated flows (shown
-  with the `⤳ mapped` indicator).
-- **Resend:** clones the selected flow as a new entry (`· resent`).
-- **Cert install** and **system proxy** are stateful toggles reflected in the status bar and
-  cert section, with confirming toasts.
-
----
-
-## 10. Notes for Rebuilding
-
-- Everything is driven by CSS variables + one `--accent`; keep new UI referencing vars, never
-  hardcode grays/text colors, so both themes and accent swaps keep working.
-- Reference semantic colors via `var(--c-*)` (theme-adjusted); reuse the fixed rgba tints for
-  badge/chip backgrounds.
-- Match the existing density and radii scale (cards 12–16 / controls 8–11 / chips 5–7).
-- Use the 4-level text hierarchy (`--text`, `--text2`, `--muted`, `--faint`) rather than
-  ad-hoc opacities.
-- Uppercase micro-labels (10–11px, `letter-spacing:.05–.06em`) for section/field headers.
-- The prototype's markup is inline-styled (a design-doc template with `{{ }}` bindings,
-  `sc-if`/`sc-for` control flow). A production rebuild would extract these into CSS classes
-  keyed off the same variables and semantic tokens.
+- **Green means live.** Primary green is for the thing that acts. It never fills a surface.
+- **Mono is machine text.** Anything the proxy captured is JetBrains Mono; anything we wrote
+  is Inter. Petrona is page titles and nothing else.
+- **Contrast by surface.** White on the mint wash plus hairline borders. If something needs
+  to stand out, raise it with `--e-sm`, do not darken it.
+- **Never hardcode a colour, radius, shadow or font stack.** Every one has a token; a literal
+  in a rule is a bug the next palette change will not catch.
+- Use the four-level ink hierarchy rather than ad-hoc opacities.
+- Uppercase eyebrows (10.5–11px, `+.09em`) label sections and fields.
+- Three empty states per list, not one: nothing captured, nothing matching, nothing
+  configured. Telling someone to loosen a filter they never set is worse than saying nothing.
