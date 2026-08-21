@@ -4,3 +4,10 @@
 src-tauri/target
 *.log
 .DS_Store
+
+# generated logo previews — regenerate with assets/logo/{render,preview}.py
+/assets/logo/preview.html
+/assets/logo/icon-macos-1024.png
+/assets/logo/icon-small.png
+/novaproxy-logo
+/novaproxy-logo.zip

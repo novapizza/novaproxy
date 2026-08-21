@@ -124,7 +124,7 @@ window chrome, and the design does not double it.
 ```
 
 ### Rail (78px)
-`--panel` + blur, right hairline. A 32px gradient brandmark on top, then five items —
+`--panel` + blur, right hairline. The 32px brandmark on top, then five items —
 **Flows, Rules, Break, Scripts, Certs** — each a 58px-wide, 16px-radius stack of a 19px
 Lucide icon over a 10px/600 label. Active item is a **white pill** with `--e-sm` and a
 hairline border, icon and label in `--accent`; inactive is `--muted` on transparent, hover
@@ -257,6 +257,22 @@ and hand focus back, click-outside to dismiss).
   the mint wash `rgba(62,181,109,.10)` with the icon and a trailing `check` in `--accent`.
 - **Clear row** — a hairline separator, then `x` + label in `--c-red-deep` over a
   `rgba(216,134,137,.12)` hover. Rendered only when there is a filter to clear.
+
+### Brandmark
+The mark is a **nova node** — a four-point star drawn as one filled path — with a relay
+reading across it: a wire in from the left, an arrow out to the right, all on one stroke
+weight with round caps so it sits with the Lucide set. Its gradient runs
+`--c-indigo → --c-cyan → --accent-hover` diagonally, with a `--mint` bloom top-right on the
+app tiles; this is the one place a second hue is allowed, and only here.
+
+- **At or below 32px the wire and arrow are dropped** — they mush together — leaving the node
+  alone, scaled up. `src/Brandmark.tsx` is that node-only form, inline SVG so the gradient
+  runs on tokens; the rail is its only caller.
+- Sources and generators live in `assets/logo/` (`build.py` holds the geometry on a 1024
+  grid; `render.py`, `icns.py`, `preview.py` cut the rasters). App-icon output is checked in
+  under `src-tauri/icons/`, and `tauri.conf.json` bundles the 32/128/128@2x/`.icns`/`.ico`
+  set. `assets/logo/README.md` documents the full ladder, the tray template rule and the
+  clear-space rules.
 
 ### Code surfaces
 `--code-bg` (`#F7FAF8`), hairline border, 14px radius, 12px mono, `line-height:1.7`,

@@ -141,14 +141,8 @@ input, textarea, select { font-family: inherit; }
   display: flex; flex-direction: column; align-items: center; gap: 6px;
   padding: 18px 0 14px;
 }
-.rail-logo {
-  width: 32px; height: 32px; flex: none; border-radius: 11px; margin-bottom: 22px;
-  background:
-    radial-gradient(120% 120% at 20% 10%, var(--c-red) 0%, transparent 55%),
-    radial-gradient(120% 120% at 85% 100%, var(--accent) 0%, transparent 70%),
-    linear-gradient(135deg, var(--c-indigo), var(--accent));
-  box-shadow: 0 6px 16px rgba(62,181,109,.32);
-}
+/* the mark carries its own gradient, so the rail only reserves its space */
+.rail-logo { width: 32px; height: 32px; flex: none; margin-bottom: 22px; display: block; }
 .rail-item {
   position: relative;
   width: 58px; padding: 11px 0 9px; border-radius: var(--r-card);

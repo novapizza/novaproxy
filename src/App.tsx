@@ -25,6 +25,7 @@ import {
   mcpLabel,
   toastDuration,
 } from "./filter";
+import { Brandmark } from "./Brandmark";
 import { Dropdown, type DropdownItem } from "./Dropdown";
 import { Icon, type IconName } from "./icons";
 import {
@@ -512,7 +513,7 @@ export function App() {
       <div className="body">
         {/* rail */}
         <div className="rail">
-          <div className="rail-logo" />
+          <Brandmark className="rail-logo" />
           {RAIL.map((r) => (
             <div
               key={r.id}
