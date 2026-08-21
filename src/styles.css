@@ -353,8 +353,13 @@ input, textarea, select { font-family: inherit; }
   font: 600 11px var(--font-ui); letter-spacing: .09em; text-transform: uppercase; color: var(--muted);
 }
 .stat .k .icon { display: flex; flex: none; }
-.stat .row { display: flex; align-items: baseline; gap: 7px; margin-top: 9px; }
-.stat .v { font: 500 25px var(--font-mono); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.stat .row { display: flex; align-items: baseline; gap: 7px; margin-top: 9px; min-width: 0; }
+/* a stat is a fixed-width card, so an unexpectedly long value has to clip
+   inside it rather than run over the card beside it */
+.stat .v {
+  font: 500 25px var(--font-mono); letter-spacing: -.02em; font-variant-numeric: tabular-nums;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .stat .u { font: 400 11.5px var(--font-ui); color: var(--faint); }
 .stat.green .v { color: var(--accent); }
 .stat.red .v { color: var(--c-red); }

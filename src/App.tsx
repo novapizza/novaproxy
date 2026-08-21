@@ -35,7 +35,7 @@ import {
   throughputRate,
   throughputSeries,
 } from "./stats";
-import { formatMs, timingBreakdown } from "./timing";
+import { formatDuration, formatMs, timingBreakdown } from "./timing";
 import { sliceGroups } from "./virtual";
 import {
   clampListWidth,
@@ -853,7 +853,7 @@ function FlowsSection(props: {
         <div className="stat green">
           <div className="k"><span className="icon"><Icon name="gauge" size={15} /></span>Median</div>
           <div className="row">
-            <span className="v">{stats.medianMs ?? "—"}</span>
+            <span className="v">{stats.medianMs != null ? formatDuration(stats.medianMs) : "—"}</span>
             <span className="u">ms</span>
           </div>
         </div>
@@ -1157,7 +1157,7 @@ const FlowRow = memo(function FlowRow({
         <div className={`fstatus ${statusClass(f.status, f.error)}`}>
           {statusText(f.status, f.error)}
         </div>
-        <div className="ftime">{f.duration_ms != null ? `${Math.round(f.duration_ms)}ms` : "—"}</div>
+        <div className="ftime">{f.duration_ms != null ? formatMs(f.duration_ms) : "—"}</div>
       </span>
     </button>
   );
@@ -1194,7 +1194,7 @@ function Detail({
     { k: "Scheme", v: flow.scheme.toUpperCase() },
     { k: "Remote host", v: flow.host },
     { k: "App", v: flow.process ? `${flow.process}${flow.pid != null ? ` (${flow.pid})` : ""}` : "—" },
-    { k: "Duration", v: flow.duration_ms != null ? `${Math.round(flow.duration_ms)} ms` : "—" },
+    { k: "Duration", v: flow.duration_ms != null ? `${formatDuration(flow.duration_ms)} ms` : "—" },
     { k: "Size", v: formatBytes(totalSize) },
     { k: "Started", v: formatAgo(flow.started_at) },
   ];
