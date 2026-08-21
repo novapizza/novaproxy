@@ -25,6 +25,7 @@ import {
   mcpLabel,
   toastDuration,
 } from "./filter";
+import { Dropdown, type DropdownItem } from "./Dropdown";
 import { Icon, type IconName } from "./icons";
 import {
   flowStats,
@@ -497,6 +498,14 @@ export function App() {
 
   // Distinct originating apps observed in captured traffic, for the app filter.
   const apps = useMemo(() => distinctApps(flows), [flows]);
+  // A filter set from the palette (or from a flow that has since been evicted)
+  // may name an app no longer in the capture; keep it listed so the dropdown
+  // shows the filter that is actually in force.
+  const appFilterItems = useMemo(
+    () => (appFilter && !apps.includes(appFilter) ? [appFilter, ...apps] : apps)
+      .map((a) => ({ value: a, label: a, icon: "app-window" as const })),
+    [apps, appFilter],
+  );
 
   return (
     <div className="nova">
@@ -539,16 +548,18 @@ export function App() {
               Clear
             </div>
             {section === "flows" && (
-              <select
-                className="app-filter"
+              <Dropdown
+                className="dd-app"
+                label="Filter by app"
+                title="Show only requests from the selected app"
                 value={appFilter}
-                onChange={(e) => setAppFilter(e.target.value)}
-                title="Capture only requests from the selected app"
-              >
-                <option value="">All apps</option>
-                {appFilter && !apps.includes(appFilter) && <option value={appFilter}>{appFilter}</option>}
-                {apps.map((a) => <option key={a} value={a}>{a}</option>)}
-              </select>
+                placeholder="All apps"
+                emptyLabel="No app captured yet"
+                items={appFilterItems}
+                onChange={setAppFilter}
+                clearLabel="All apps"
+                onClear={appFilter ? () => setAppFilter("") : undefined}
+              />
             )}
             <div className="spacer" />
             <div className="cmd-btn" onClick={openPalette}>
@@ -2063,6 +2074,16 @@ export NODE_EXTRA_CA_CERTS="${ca?.cert_path ?? "<ca.pem path>"}"`}
  * The defaults a session starts from, plus the one piece of machinery that
  * decides whether changing the system proxy costs a password.
  */
+const GROUPING_ITEMS: DropdownItem[] = [
+  { value: "grouped", label: "Grouped by host", icon: "globe" },
+  { value: "flat", label: "Flat", icon: "list" },
+];
+
+const LAUNCH_ITEMS: DropdownItem[] = [
+  { value: "none", label: "None — leave the OS alone", icon: "circle" },
+  { value: "system", label: "System proxy — capture everything", icon: "power" },
+];
+
 function GeneralTab({
   prefs, setPrefs, helper, setHelper, showToast,
 }: {
@@ -2075,36 +2096,30 @@ function GeneralTab({
   return (
     <>
       <h3>Flow list</h3>
-      <label className="pref-row">
+      <div className="pref-row">
         <span className="k">Default grouping</span>
-        <select
-          className="rule-input"
+        <Dropdown
+          label="Default grouping"
           value={prefs.flowGrouping}
-          onChange={(e) => setPrefs({ ...prefs, flowGrouping: e.target.value as Prefs["flowGrouping"] })}
-        >
-          <option value="grouped">Grouped by host</option>
-          <option value="flat">Flat</option>
-        </select>
-      </label>
+          items={GROUPING_ITEMS}
+          onChange={(v) => setPrefs({ ...prefs, flowGrouping: v as Prefs["flowGrouping"] })}
+        />
+      </div>
       <p>
         How the list opens. The <b>grouped / flat</b> control above the list still switches the
         current session without changing this default.
       </p>
 
       <h3>System proxy</h3>
-      <label className="pref-row">
+      <div className="pref-row">
         <span className="k">At launch</span>
-        <select
-          className="rule-input"
+        <Dropdown
+          label="System proxy at launch"
           value={prefs.systemProxyAtLaunch}
-          onChange={(e) =>
-            setPrefs({ ...prefs, systemProxyAtLaunch: e.target.value as Prefs["systemProxyAtLaunch"] })
-          }
-        >
-          <option value="none">None — leave the OS alone</option>
-          <option value="system">System proxy — capture everything</option>
-        </select>
-      </label>
+          items={LAUNCH_ITEMS}
+          onChange={(v) => setPrefs({ ...prefs, systemProxyAtLaunch: v as Prefs["systemProxyAtLaunch"] })}
+        />
+      </div>
       <p>
         <b>None</b> is the default: pointing the OS at NovaProxy rewrites a setting the whole
         machine depends on for working internet, so it should be a deliberate act.

@@ -76,7 +76,8 @@ if the design system ever specifies them, replace these values.
 ```
 radius     --r-tag 8  --r-field 12  --r-card 16  --r-panel 20  --r-pill 999
 elevation  --e-xs 0 2px 6px  ·  --e-sm 0 6px 18px  ·  --e-md 0 8px 24px  ·  --e-lg 0 24px 60px
-           (all rgba(27,26,61,·)), plus --e-accent for green buttons
+           --e-pop 0 14px 34px (dropdown panels), all rgba(27,26,61,·),
+           plus --e-accent for green buttons
 spacing    4 icon→label · 8 chip gaps · 12 card gaps · 24 panel padding · 48 section breaks
 motion     --t-micro 120ms · --t-base 200ms · --t-page 360ms, all on --ease
            cubic-bezier(.2,.8,.2,1)
@@ -237,6 +238,25 @@ solid accent with white text. Semantic chips (`.chip`) are pill-shaped, coloured
 Inputs sit on `--input` with an 11–12px radius. Focus is
 `border-color: rgba(62,181,109,.45)` plus `box-shadow: 0 0 0 3px rgba(62,181,109,.12)` —
 a ring, not a colour swap.
+
+### Dropdown
+Not a native `<select>` — the design gives every row an icon, washes the selected row and ends
+the panel with a destructive row, none of which a native control can carry. `src/Dropdown.tsx`
+owns it; the price of leaving the native control is that its keyboard behaviour is written out
+there (↑/↓/Home/End over the rows *including* the clear row, Enter/Space to pick, Esc to close
+and hand focus back, click-outside to dismiss).
+
+- **Trigger** — the search field's twin: 36px, 11px radius, `--input` on a `--border` hairline,
+  12.5px/500 label that ellipsises, `chevron-down` 14px in `--muted`. Hover darkens the border
+  to `rgba(27,26,61,.22)`; **open** swaps to `--card` with a `rgba(62,181,109,.45)` border and
+  rotates the chevron 180° over `--t-base`. Disabled drops to 55% opacity.
+- **Panel** — 42px below the trigger, 14px radius, `--card`, hairline, `--e-pop`; 6px padding,
+  `max-height:300px` and its own scroll so a long list (every captured app) cannot outgrow the
+  window.
+- **Rows** — `8px 10px`, 9px radius, 14px icon in `--muted`; hover is `--bg`. **Selected** is
+  the mint wash `rgba(62,181,109,.10)` with the icon and a trailing `check` in `--accent`.
+- **Clear row** — a hairline separator, then `x` + label in `--c-red-deep` over a
+  `rgba(216,134,137,.12)` hover. Rendered only when there is a filter to clear.
 
 ### Code surfaces
 `--code-bg` (`#F7FAF8`), hairline border, 14px radius, 12px mono, `line-height:1.7`,

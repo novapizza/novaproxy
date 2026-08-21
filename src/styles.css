@@ -96,6 +96,7 @@ input, textarea, select { font-family: inherit; }
   --e-sm: 0 6px 18px rgba(27,26,61,.10);
   --e-md: 0 8px 24px rgba(27,26,61,.14);
   --e-lg: 0 24px 60px rgba(27,26,61,.18);
+  --e-pop: 0 14px 34px rgba(27,26,61,.14);
   --e-accent: 0 6px 16px rgba(62,181,109,.30);
 
   /* motion */
@@ -226,13 +227,59 @@ input, textarea, select { font-family: inherit; }
 .search .clear { color: var(--muted); cursor: pointer; display: flex; flex: none; }
 .search .clear:hover { color: var(--text); }
 
-.app-filter {
-  background: var(--card); border: 1px solid var(--border2);
-  border-radius: var(--r-pill); height: 34px; padding: 0 12px; color: var(--text2);
-  font: 500 12.5px var(--font-ui);
-  cursor: pointer; max-width: 200px; box-shadow: var(--e-xs);
+/* dropdown — design.md §Dropdown. The trigger is the search field's twin:
+   36px tall, 11px radius, hairline border; open lifts the panel to --e-pop. */
+.dd { position: relative; }
+.dd-trigger {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  height: 36px; padding: 0 11px 0 13px; border-radius: 11px;
+  background: var(--input); border: 1px solid var(--border);
+  color: var(--text); font: 500 12.5px var(--font-ui); cursor: pointer;
+  transition: border-color var(--t-micro) var(--ease), background var(--t-micro) var(--ease),
+    box-shadow var(--t-micro) var(--ease);
 }
-.app-filter:focus { outline: none; border-color: var(--accent); }
+.dd-trigger:hover { border-color: rgba(27,26,61,.22); }
+.dd-trigger:focus-visible {
+  outline: none; border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12);
+}
+.dd.open .dd-trigger { background: var(--card); border-color: rgba(62,181,109,.45); }
+.dd-trigger:disabled { opacity: .55; cursor: not-allowed; }
+.dd-label {
+  flex: 1; min-width: 0; text-align: left;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dd-chev { display: flex; flex: none; color: var(--muted); transition: transform var(--t-base) var(--ease); }
+.dd.open .dd-chev { transform: rotate(180deg); }
+
+.dd-panel {
+  position: absolute; top: 42px; left: 0; right: 0; z-index: 20;
+  max-height: 300px; overflow-y: auto; padding: 6px;
+  border-radius: 14px; background: var(--card); border: 1px solid var(--border);
+  box-shadow: var(--e-pop);
+  animation: novaflow var(--t-micro) var(--ease);
+}
+.dd-opt, .dd-clear {
+  display: flex; align-items: center; gap: 9px;
+  padding: 8px 10px; border-radius: 9px; cursor: pointer;
+  font: 400 12.5px var(--font-ui); color: var(--text);
+  transition: background var(--t-micro) var(--ease);
+}
+.dd-opt:hover, .dd-opt.active { background: var(--bg); }
+.dd-opt.sel { background: rgba(62,181,109,.10); }
+.dd-icon { display: flex; flex: none; color: var(--muted); }
+.dd-opt.sel .dd-icon { color: var(--accent); }
+.dd-opt-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dd-check { display: flex; flex: none; color: var(--accent); }
+.dd-sep { height: 1px; margin: 5px 8px; background: var(--border); }
+.dd-clear { color: var(--c-red-deep); }
+.dd-clear .dd-icon { color: var(--c-red-deep); }
+.dd-clear:hover, .dd-clear.active { background: rgba(216,134,137,.12); }
+.dd-empty { padding: 10px; font: 400 12.5px var(--font-ui); color: var(--faint); }
+
+/* the app filter in the toolbar sits at the design's 208px, and the settings
+   rows hand it the rest of the row */
+.dd-app { width: 208px; flex: none; }
+.pref-row .dd { flex: 1; min-width: 0; }
 
 .spacer { flex: 1; }
 
@@ -900,7 +947,6 @@ input, textarea, select { font-family: inherit; }
   font: 600 10.5px var(--font-ui);
   letter-spacing: .09em; text-transform: uppercase; color: var(--faint);
 }
-.pref-row .rule-input { flex: 1; min-width: 0; }
 .warn-note { color: var(--c-amber) !important; }
 .warn-note code { font: 400 12px var(--font-mono); }
 .btn-primary.disabled { opacity: .45; pointer-events: none; }
