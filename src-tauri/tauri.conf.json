@@ -25,6 +25,9 @@
   },
   "bundle": {
     "active": true,
+    "resources": {
+      "../target/release/nova-helper": "nova-helper"
+    },
     "targets": [
       "app",
       "dmg"
