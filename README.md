@@ -95,6 +95,51 @@ curl -x http://127.0.0.1:9090 --cacert "<ca.pem>" https://example.com
 
 Flows stream into the list in real time.
 
+## Updates
+
+Released builds check for a new version themselves. **Settings → General →
+Updates** shows the current version, checks on demand, and installs; the check
+also runs once at launch (switchable there) but only ever *reports* — installing
+replaces a binary that holds a root CA and closes the window (an exec into the
+new build on macOS, an exit into the NSIS installer on Windows), so it stays a
+click.
+
+The plumbing:
+
+```
+tag push → CI builds + signs → NovaProxy_<ver>_<arch>.app.tar.gz + .sig
+                             → latest.json on R2  ← tauri-plugin-updater polls
+                             → latest.yml  on R2  ← download page reads
+```
+
+`crates/nova-proto` carries `UpdateStatus` / `UpdateProgress`, `src-tauri/src/update.rs`
+owns the two commands, and `src/update.ts` holds the card's state machine (tested
+in `src/update.test.ts`).
+
+A development build has **no** updater endpoint — the endpoint and public key are
+injected at release time — and Settings says so rather than offering a button
+that can only fail.
+
+### Releasing an updatable build
+
+One-time, to create the signing keypair:
+
+```bash
+npx tauri signer generate -w ~/.tauri/novaproxy.key
+```
+
+Then set, in the repo's `Production` environment:
+
+| Secret | What |
+|---|---|
+| `TAURI_SIGNING_PRIVATE_KEY` | contents of the private key file |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | its password |
+| `TAURI_UPDATER_PUBKEY` | the public key printed by `signer generate` |
+| `R2_PUBLIC_BASE_URL` | where the manifests are served, e.g. the bucket's `r2.dev` domain |
+
+Miss any of them and the release still builds — it just cannot be an update
+source, which CI says with a warning rather than a failure.
+
 ## Verify
 
 ```bash

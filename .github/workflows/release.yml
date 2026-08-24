@@ -137,6 +137,43 @@ jobs:
           ' "$CONF"
           echo "config=--config $CONF" >> "$GITHUB_OUTPUT"
 
+      # The updater endpoint and its public key are injected here rather than
+      # committed, so a development build has no updater configuration at all and
+      # says so in Settings instead of failing a check. createUpdaterArtifacts
+      # makes the bundler emit the .app.tar.gz (macOS) and the detached .sig
+      # files that latest.json is built from.
+      #
+      # Needs TAURI_UPDATER_PUBKEY (the verifier half of the signing keypair) and
+      # R2_PUBLIC_BASE_URL (where latest.json is served). Missing either builds a
+      # release that simply cannot self-update.
+      - name: Prepare updater config
+        id: updater
+        shell: bash
+        env:
+          TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+        run: |
+          if [ -z "$TAURI_UPDATER_PUBKEY" ] || [ -z "$R2_PUBLIC_BASE_URL" ]; then
+            echo "::warning::updater not configured (TAURI_UPDATER_PUBKEY or R2_PUBLIC_BASE_URL missing) — this release cannot self-update"
+            echo "config=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CONF=src-tauri/tauri.updater.conf.json
+          node -e '
+            const fs = require("fs");
+            const base = process.env.R2_PUBLIC_BASE_URL.replace(/\/+$/, "");
+            fs.writeFileSync(process.argv[1], JSON.stringify({
+              bundle: { createUpdaterArtifacts: true },
+              plugins: {
+                updater: {
+                  endpoints: [`${base}/latest.json`],
+                  pubkey: process.env.TAURI_UPDATER_PUBKEY,
+                },
+              },
+            }, null, 2));
+          ' "$CONF"
+          echo "config=--config $CONF" >> "$GITHUB_OUTPUT"
+
       # tauri.conf.json's beforeBuildCommand runs `npm run build`
       # (tsc --noEmit && vite build) plus a release build of the helper, so the
       # frontend and the helper are produced by this step.
@@ -194,6 +231,26 @@ jobs:
             --target ${{ matrix.target }}
             --bundles ${{ matrix.bundles }}
             ${{ runner.os == 'macOS' && '--config src-tauri/tauri.macos.release.conf.json' || steps.winsign.outputs.config }}
+            ${{ steps.updater.outputs.config }}
+
+      # The bundler names the macOS updater artifact after the product alone —
+      # NovaProxy.app.tar.gz — so every release and every arch would collide on
+      # one key in a flat bucket, and the pruner (which deletes by version) could
+      # never tell them apart. Rename to match the .dmg convention.
+      - name: Version the macOS updater artifact
+        if: runner.os == 'macOS' && steps.updater.outputs.config != ''
+        run: |
+          cd "target/${{ matrix.target }}/release/bundle/macos"
+          VERSION=$(node -p "require('$GITHUB_WORKSPACE/src-tauri/tauri.conf.json').version")
+          ARCH=$([ "${{ matrix.target }}" = "aarch64-apple-darwin" ] && echo aarch64 || echo x64)
+          for f in *.app.tar.gz *.app.tar.gz.sig; do
+            [ -e "$f" ] || continue
+            case "$f" in
+              *_"$VERSION"_*) continue ;;  # already renamed
+            esac
+            mv -v "$f" "NovaProxy_${VERSION}_${ARCH}.${f#*.app.}"
+          done
+          ls -lh
 
       # Collected by the r2 job, and the only output of a dry run.
       - name: Upload installers as run artifacts
@@ -206,6 +263,10 @@ jobs:
             target/${{ matrix.target }}/release/bundle/dmg/*.dmg
             target/${{ matrix.target }}/release/bundle/nsis/*.exe
             target/${{ matrix.target }}/release/bundle/msi/*.msi
+            target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
+            target/${{ matrix.target }}/release/bundle/nsis/*.sig
+            target/${{ matrix.target }}/release/bundle/msi/*.sig
 
   # R2 is the download host: mirror every installer there, then keep only the
   # newest two versions. Runs on ubuntu because that image has the AWS CLI, and
@@ -244,7 +305,8 @@ jobs:
       - name: Flatten downloaded installers
         run: |
           find installers -mindepth 2 -type f \
-            \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \) \
+            \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \
+               -o -name '*.tar.gz' -o -name '*.sig' \) \
             -exec mv -f -t installers/ {} +
           find installers -mindepth 1 -type d -empty -delete
           ls -lh installers
@@ -291,13 +353,35 @@ jobs:
             --cache-control "no-cache, must-revalidate" \
             --no-progress
 
-      # Also on the release itself, so the manifest is readable without R2
+      # latest.json is the updater endpoint, so it lands last and uncached for the
+      # same reason latest.yml does: it must never name a bundle that is not up
+      # yet. Absent when the release was built unsigned — in which case the
+      # previous manifest stays in place and installed apps keep pointing at the
+      # last update they can actually verify.
+      - name: Publish updater manifest to R2
+        run: |
+          if [ ! -f manifest/latest.json ]; then
+            echo "::warning::no latest.json — this release is not an update source"
+            exit 0
+          fi
+          aws s3 cp manifest/latest.json "s3://${R2_RELEASES_BUCKET}/latest.json" \
+            --endpoint-url "https://${R2_RELEASES_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --checksum-algorithm CRC32 \
+            --content-type "application/json; charset=utf-8" \
+            --cache-control "no-cache, must-revalidate" \
+            --no-progress
+
+      # Also on the release itself, so the manifests are readable without R2
       # credentials or a custom domain.
-      - name: Attach manifest to the release
+      - name: Attach manifests to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-        run: gh release upload "$GITHUB_REF_NAME" manifest/latest.yml --clobber
+        run: |
+          gh release upload "$GITHUB_REF_NAME" manifest/latest.yml --clobber
+          if [ -f manifest/latest.json ]; then
+            gh release upload "$GITHUB_REF_NAME" manifest/latest.json --clobber
+          fi
 
       # KEEP=2 leaves the previous version in place as a rollback target (and as
       # the delta source once an updater exists). Flip DRY_RUN to '1' for the

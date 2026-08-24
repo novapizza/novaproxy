@@ -5,6 +5,7 @@
 pub mod commands;
 pub mod mcp;
 pub mod state;
+pub mod update;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -67,7 +68,11 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Configured only in release builds, where the workflow injects the
+        // endpoint and the public key; see `update.rs`.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state)
+        .manage(update::PendingUpdate::default())
         .setup(|app| {
             use tauri::Manager;
             let st: Arc<AppState> = (*app.state::<Arc<AppState>>()).clone();
@@ -191,6 +196,8 @@ pub fn run() {
             commands::install_ca,
             commands::uninstall_ca,
             commands::regenerate_ca,
+            update::check_update,
+            update::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running NovaProxy");

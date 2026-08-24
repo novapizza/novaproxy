@@ -12,6 +12,8 @@ import type { WsMessage } from "./bindings/WsMessage";
 import type { TlsScope } from "./bindings/TlsScope";
 import type { McpStatus } from "./bindings/McpStatus";
 import type { HelperStatus } from "./bindings/HelperStatus";
+import type { UpdateStatus } from "./bindings/UpdateStatus";
+import type { UpdateProgress } from "./bindings/UpdateProgress";
 
 /** Thin typed wrappers over the Tauri command surface. */
 export const api = {
@@ -98,6 +100,19 @@ export const api = {
   installCa: (allUsers = false) => invoke<CaStatus>("install_ca", { allUsers }),
   uninstallCa: () => invoke<CaStatus>("uninstall_ca"),
   regenerateCa: () => invoke<CaStatus>("regenerate_ca"),
+
+  /**
+   * Ask the release endpoint whether a newer build exists. Resolves with
+   * `configured: false` in a build that has no updater endpoint rather than
+   * rejecting, since that is a normal state for a development tree.
+   */
+  checkUpdate: () => invoke<UpdateStatus>("check_update"),
+  /**
+   * Download and install the update the last check found, streaming progress.
+   * On success the app relaunches, so nothing after this resolves.
+   */
+  installUpdate: (channel: Channel<UpdateProgress>) =>
+    invoke<void>("install_update", { channel }),
 };
 
 export { Channel };
@@ -115,4 +130,6 @@ export type {
   TlsScope,
   McpStatus,
   HelperStatus,
+  UpdateStatus,
+  UpdateProgress,
 };

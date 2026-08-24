@@ -369,3 +369,40 @@ pub struct CaStatus {
     /// covers browsers only — so the UI phrases them accordingly.
     pub platform: String,
 }
+
+/// What an update check found.
+///
+/// `configured` is the honest answer to "can this build update itself at all":
+/// the updater endpoint and public key are injected at release time, so a
+/// development build has neither. Reporting it lets the UI say so instead of
+/// offering a button that can only fail.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub struct UpdateStatus {
+    /// Version this build reports, i.e. what an update would replace.
+    pub current_version: String,
+    /// Whether this build has an updater endpoint and a signing key to verify
+    /// against.
+    pub configured: bool,
+    /// A newer version is published and passes signature verification.
+    pub available: bool,
+    /// Version on offer, when one is.
+    pub version: Option<String>,
+    /// Release notes from the manifest.
+    pub notes: Option<String>,
+    /// Publication date from the manifest, as the manifest spelled it.
+    pub date: Option<String>,
+}
+
+/// Progress of an update download, streamed while it runs.
+///
+/// `total` is optional because it comes from a `Content-Length` the server is
+/// not obliged to send; the UI shows a determinate bar only when it is present.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub struct UpdateProgress {
+    pub downloaded: u64,
+    pub total: Option<u64>,
+    /// The bytes are in; installing (and then restarting) is next.
+    pub done: bool,
+}
