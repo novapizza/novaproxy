@@ -12,9 +12,9 @@
 #   NovaProxy_<ver>_aarch64.dmg / _x64.dmg        (macOS)
 #   NovaProxy_<ver>_x64-setup.exe                 (Windows NSIS)
 #   NovaProxy_<ver>_x64_en-US.msi                 (Windows MSI)
-# Keys with no extractable X.Y.Z are NEVER touched. That is the safety net: it
-# is what protects an updater manifest (latest.json) or any hand-uploaded file
-# from being swept up by a version-based rule.
+# Keys with no extractable X.Y.Z are NEVER touched. That is the safety net, and
+# it is what keeps latest.yml — the release manifest, whose key never carries a
+# version — from being swept up by a version-based rule.
 #
 # Env (set by CI):
 #   R2_RELEASES_ACCOUNT_ID, R2_RELEASES_BUCKET

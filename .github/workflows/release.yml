@@ -243,14 +243,51 @@ jobs:
           merge-multiple: true
           path: installers
 
-      - name: Upload to R2
+      # latest.yml is what a download page or an update check reads: current
+      # version plus a URL, size and sha256 per platform. Built from the files
+      # actually downloaded above, so it can never advertise a bundle this run
+      # did not produce.
+      - name: Write release manifest
+        env:
+          TAG: ${{ github.ref_name }}
+          # Public download prefix. Set R2_PUBLIC_BASE_URL to the bucket's
+          # r2.dev domain or a custom domain to serve installers from R2;
+          # without it the manifest points at the GitHub release assets, which
+          # are public either way.
+          RELEASE_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+        run: |
+          mkdir -p manifest
+          node scripts/write-release-manifest.mjs installers manifest/latest.yml
+
+      - name: Upload installers to R2
         run: |
           ls -lh installers
           aws s3 cp installers/ "s3://${R2_RELEASES_BUCKET}/" \
             --recursive \
             --endpoint-url "https://${R2_RELEASES_ACCOUNT_ID}.r2.cloudflarestorage.com" \
             --checksum-algorithm CRC32 \
+            --cache-control "public, max-age=31536000, immutable" \
             --no-progress
+
+      # After the installers, never before: the manifest is the switch that makes
+      # a release visible, so every URL in it must already resolve. Uncached
+      # because it is the only file whose content changes at the same key.
+      - name: Publish manifest to R2
+        run: |
+          aws s3 cp manifest/latest.yml "s3://${R2_RELEASES_BUCKET}/latest.yml" \
+            --endpoint-url "https://${R2_RELEASES_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --checksum-algorithm CRC32 \
+            --content-type "text/yaml; charset=utf-8" \
+            --cache-control "no-cache, must-revalidate" \
+            --no-progress
+
+      # Also on the release itself, so the manifest is readable without R2
+      # credentials or a custom domain.
+      - name: Attach manifest to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$GITHUB_REF_NAME" manifest/latest.yml --clobber
 
       # KEEP=2 leaves the previous version in place as a rollback target (and as
       # the delta source once an updater exists). Flip DRY_RUN to '1' for the
