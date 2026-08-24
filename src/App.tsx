@@ -48,6 +48,9 @@ import {
 } from "./stats";
 import { formatDuration, formatMs, timingBreakdown } from "./timing";
 import { sliceGroups } from "./virtual";
+import { trustHint, trustLabel } from "./trust";
+import { launchDecision } from "./onboarding";
+import { Coachmark, OnboardingWizard, type CoachTarget } from "./Walkthrough";
 import {
   clampListWidth,
   DEFAULT_PREFS,
@@ -259,6 +262,19 @@ export function App() {
   const [update, setUpdate] = useState<UpdateState>(INITIAL_UPDATE_STATE);
   const [restoreHidden, setRestoreHidden] = useState(false);
 
+  // First-run walkthrough. `coach` runs after it closes and points at the two
+  // controls the wizard just talked about; both anchors have to be refs because
+  // one of them lives two components down.
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [coach, setCoach] = useState<CoachTarget>(null);
+  // Set once the CA and helper statuses have settled. The walkthrough decides
+  // from them, and deciding early would flash a wizard over a working install
+  // or open it on a step that is already done.
+  const [statusProbed, setStatusProbed] = useState(false);
+  const recBtnRef = useRef<HTMLDivElement | null>(null);
+  const flowListRef = useRef<HTMLDivElement | null>(null);
+  const onboardingDecided = useRef(false);
+
   const saveNet = (next: NetworkConditions) => {
     setNet(next);
     api.setNetworkConditions(next).catch((e) => showToast(String(e)));
@@ -380,12 +396,17 @@ export function App() {
     api.subscribeWs(wsChannel);
 
     api.proxyStatus().then((p) => useStore.getState().setProxy(p));
-    api.caStatus().then((c) => useStore.getState().setCa(c)).catch(() => {});
     api.getRules().then(setRulesState).catch(() => {});
     api.getScript().then((s) => { if (s.trim()) setScriptSource(s); }).catch(() => {});
     api.getNetworkConditions().then(setNet).catch(() => {});
     api.mcpStatus().then(setMcp).catch(() => {});
-    api.helperStatus().then(setHelper).catch(() => {});
+    // These two together decide the walkthrough, so they are awaited as a pair
+    // — a rejection still counts as settled, since a CA that cannot be read is
+    // exactly the install that needs the walkthrough most.
+    void Promise.allSettled([
+      api.caStatus().then((c) => useStore.getState().setCa(c)),
+      api.helperStatus().then(setHelper),
+    ]).then(() => setStatusProbed(true));
 
     return () => {
       if (frame) cancelAnimationFrame(frame);
@@ -436,6 +457,28 @@ export function App() {
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // Show the walkthrough to someone who has not seen it — unless their CA is
+  // already trusted, which means they were using NovaProxy before this existed
+  // and do not need to be taught it. That case records the flag silently rather
+  // than greeting every upgrading user with a wizard.
+  useEffect(() => {
+    if (!statusProbed || onboardingDecided.current) return;
+    onboardingDecided.current = true;
+    const decision = launchDecision(prefs, useStore.getState().ca);
+    if (decision === "open") setOnboardingOpen(true);
+    else if (decision === "mark-done") setPrefs({ ...prefs, onboardingDone: true });
+    // Launch-only, and `prefs` is read once at mount by design (see above).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusProbed]);
+
+  // Walk the coachmarks forward on their own: once recording is armed the
+  // "press Record" bubble has nothing left to say, and once a flow lands the
+  // list has explained itself better than a bubble could.
+  useEffect(() => {
+    if (coach === "record" && recording) setCoach(flows.length === 0 ? "list" : null);
+    else if (coach === "list" && flows.length > 0) setCoach(null);
+  }, [coach, recording, flows.length]);
 
   // Refresh the captured counter while running.
   useEffect(() => {
@@ -502,6 +545,7 @@ export function App() {
       { id: "rules", icon: "git-branch", label: "Open Rules", run: () => setSection("rules") },
       { id: "scripts", icon: "braces", label: "Open Scripts", run: () => setSection("scripts") },
       { id: "certs", icon: "shield-check", label: "Open Certificate", run: () => setSection("certs") },
+      { id: "walkthrough", icon: "play", label: "Show the getting-started walkthrough", run: () => { setSettingsOpen(false); setCoach(null); setOnboardingOpen(true); } },
     ],
     [recording, proxy.running, proxy.system_proxy, chip, selected],
   );
@@ -576,7 +620,11 @@ export function App() {
               <div className="hd-sub">default workspace · {proxy.host}:{proxy.port}</div>
             </div>
             <div className="tool-sep" />
-            <div className={`tool-btn rec-btn ${recording ? "on" : ""}`} onClick={() => setRecording(!recording)}>
+            <div
+              ref={recBtnRef}
+              className={`tool-btn rec-btn ${recording ? "on" : ""}`}
+              onClick={() => setRecording(!recording)}
+            >
               <span className="rec-dot" />
               {recording ? "Recording" : "Paused"}
             </div>
@@ -638,6 +686,7 @@ export function App() {
               groupByHost={groupByHost}
               toggleGroup={() => setGroupByHost((v) => !v)}
               recording={recording}
+              listRef={flowListRef}
               selected={selected}
               select={select}
               detailTab={detailTab}
@@ -729,6 +778,7 @@ export function App() {
           prefs={prefs} setPrefs={setPrefs}
           showToast={showToast}
           onClose={() => setSettingsOpen(false)}
+          onWalkthrough={() => { setSettingsOpen(false); setCoach(null); setOnboardingOpen(true); }}
         />
       )}
 
@@ -741,6 +791,44 @@ export function App() {
             setIntercept(null);
             showToast(cont ? "Request continued" : "Request aborted");
           }}
+        />
+      )}
+
+      {/* first-run walkthrough */}
+      {onboardingOpen && (
+        <OnboardingWizard
+          helper={helper} setHelper={setHelper}
+          ca={ca} proxy={proxy}
+          recording={recording} flowCount={flows.length}
+          setRecording={setRecording}
+          showToast={showToast}
+          onDismiss={(withCoach) => {
+            setOnboardingOpen(false);
+            if (!prefs.onboardingDone) setPrefs({ ...prefs, onboardingDone: true });
+            // Only coach someone who still has nothing captured — pointing at an
+            // empty list is help; pointing at a full one is noise.
+            if (withCoach && flows.length === 0) setCoach(recording ? "list" : "record");
+          }}
+        />
+      )}
+
+      {/* walkthrough coachmarks — no scrim: the point is that the control below
+          them stays clickable */}
+      {coach === "record" && !recording && (
+        <Coachmark
+          anchor={recBtnRef}
+          text="Capture is paused. Press here and NovaProxy starts recording what your apps request."
+          cta="Got it"
+          onDismiss={() => setCoach(null)}
+        />
+      )}
+      {coach === "list" && flows.length === 0 && (
+        <Coachmark
+          anchor={flowListRef}
+          placement="right"
+          text="Requests land here as they happen. Click one to read its headers, body and timings."
+          cta="Got it"
+          onDismiss={() => setCoach(null)}
         />
       )}
 
@@ -766,6 +854,8 @@ function FlowsSection(props: {
   groupByHost: boolean;
   toggleGroup: () => void;
   recording: boolean;
+  /** Anchor for the walkthrough's second coachmark. */
+  listRef: React.RefObject<HTMLDivElement | null>;
   selected: Flow | null;
   select: (id: string | null) => void;
   detailTab: DetailTab;
@@ -828,7 +918,7 @@ function FlowsSection(props: {
       : flows.length === 0
       ? props.recording
         ? { icon: "activity", msg: "Waiting for traffic…", hint: "Flows land here as your apps make requests." }
-        : { icon: "circle-pause", msg: "Recording paused", hint: "Nothing is being captured right now." }
+        : { icon: "circle-pause", msg: "Recording paused", hint: "Press Recording in the toolbar to start capturing." }
       : filtering
       ? { icon: "search-x", msg: "No flows match", hint: `${flows.length} captured, none matching. Try a shorter filter.` }
       : { icon: "search-x", msg: "Nothing to show", hint: "Every captured flow is hidden." };
@@ -936,7 +1026,7 @@ function FlowsSection(props: {
       </div>
 
       <div className="flows">
-      <div className="flow-list" style={{ width: props.listWidth }}>
+      <div ref={props.listRef} className="flow-list" style={{ width: props.listWidth }}>
         <div className="flow-list-head">
           <div className="search">
             <span className="mag"><Icon name="search" /></span>
@@ -1804,46 +1894,6 @@ function ScriptsSection({
 
 /* ------------------------------ certificate section ------------------------------ */
 
-/**
- * Human-readable trust state. Four states are reachable because the CA can be
- * trusted for this user, for the whole machine, both, or neither.
- */
-/**
- * What the user trust domain actually covers, which differs by platform: on
- * Linux there is no per-user OpenSSL store, so a user-domain install reaches
- * browsers only and `curl`/Python/Go still reject our leaf certs.
- */
-export function userDomainLabel(platform: string | undefined): string {
-  return platform === "linux" ? "browsers" : "this user";
-}
-
-export function trustLabel(ca: CaStatus | null): { text: string; kind: "trusted" | "untrusted" } {
-  if (!ca?.trusted) return { text: "Not installed", kind: "untrusted" };
-  const user = userDomainLabel(ca.platform);
-  if (ca.trusted_user && ca.trusted_system) return { text: `Trusted · ${user} + all users`, kind: "trusted" };
-  if (ca.trusted_system) return { text: "Trusted · all users", kind: "trusted" };
-  return { text: `Trusted · ${user}`, kind: "trusted" };
-}
-
-/** How each platform describes the no-admin install and what it costs. */
-export function trustHint(ca: CaStatus): string {
-  if (ca.trusted && ca.trusted_system) {
-    return "Trusted machine-wide: every user account, command-line tool and root-owned daemon accepts it.";
-  }
-  if (ca.trusted) {
-    return ca.platform === "linux"
-      ? "Trusted in your browser certificate databases only — no password was needed. Command-line tools (curl, Python, Go) will still reject it until you install for all users."
-      : "Trusted for your login only — no administrator password was needed. Other user accounts and root-owned daemons will not accept it.";
-  }
-  if (ca.platform === "windows") {
-    return "Installing for you writes your personal certificate store and needs no prompt at all. Choose “all users” (one UAC prompt) if other accounts or services need to trust it.";
-  }
-  if (ca.platform === "linux") {
-    return "Installing for you adds the CA to your browser certificate databases (Chrome, Firefox) — no password needed, but command-line tools are not covered. Choose “all users” (one polkit prompt) to add a system trust anchor.";
-  }
-  return "Installing for your user only needs a keychain confirmation, not an administrator password. Choose “all users” if you need root-owned daemons or other accounts to trust it too.";
-}
-
 function CertsSection({ ca, showToast }: { ca: CaStatus | null; showToast: (t: string) => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const setCa = useStore.getState().setCa;
@@ -2007,7 +2057,7 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
 
 function SettingsModal({
   port, ca, net, setNet, mcp, setMcp,
-  helper, setHelper, update, setUpdate, prefs, setPrefs, showToast, onClose,
+  helper, setHelper, update, setUpdate, prefs, setPrefs, showToast, onClose, onWalkthrough,
 }: {
   port: number;
   ca: CaStatus | null;
@@ -2023,6 +2073,8 @@ function SettingsModal({
   setPrefs: (p: Prefs) => void;
   showToast: (t: string) => void;
   onClose: () => void;
+  /** Re-open the first-run walkthrough; closes Settings on the way. */
+  onWalkthrough: () => void;
 }) {
   const [tab, setTab] = useState<SettingsTab>("general");
   return (
@@ -2097,6 +2149,17 @@ function SettingsModal({
           </>)}
 
           {tab === "setup" && (<>
+            <h3>Guided setup</h3>
+            <p>
+              The four things a new install needs — the privileged helper, a trusted root
+              certificate, the system proxy, and a first captured request — in order.
+            </p>
+            <div className="cert-actions">
+              <div className="btn-primary" onClick={onWalkthrough}>
+                <Icon name="play" />Run the walkthrough
+              </div>
+            </div>
+
             <h3>1. Route traffic through the proxy</h3>
             <CodeSnippet text={`curl -x http://127.0.0.1:${port} https://example.com`} />
 
