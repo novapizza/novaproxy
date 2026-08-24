@@ -39,7 +39,12 @@ const PLATFORMS = [
   { re: /_x64(_[a-z]{2}-[A-Z]{2})?\.msi$/, key: "windows-x86_64-msi", kind: "msi" },
 ];
 
-const files = readdirSync(dir).filter((f) => /\.(dmg|exe|msi)$/i.test(f));
+// Recursive: upload-artifact roots an artifact at the least-common-ancestor of
+// the files it matched, so a leg that produced both an NSIS installer and an MSI
+// arrives as nsis/… and msi/… rather than as two files at the top level.
+const files = readdirSync(dir, { recursive: true, withFileTypes: true })
+  .filter((e) => e.isFile() && /\.(dmg|exe|msi)$/i.test(e.name))
+  .map((e) => (e.parentPath ?? e.path) === dir ? e.name : join(e.parentPath ?? e.path, e.name).slice(dir.length + 1));
 if (files.length === 0) {
   console.error(`no installers found in ${dir}`);
   process.exit(1);
@@ -48,7 +53,10 @@ if (files.length === 0) {
 const sha256 = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
 
 const entries = [];
-for (const file of files.sort()) {
+for (const rel of files.sort()) {
+  // Only the basename goes in the manifest: every installer is uploaded to the
+  // bucket root, so whatever directory it arrived in is not part of its URL.
+  const file = rel.split(/[\\/]/).pop();
   const match = PLATFORMS.find((p) => p.re.test(file));
   if (!match) {
     // Loud, not silent: an unrecognised artifact means the manifest would be
@@ -56,7 +64,7 @@ for (const file of files.sort()) {
     console.warn(`::warning::unrecognised installer name, not in manifest: ${file}`);
     continue;
   }
-  const path = join(dir, file);
+  const path = join(dir, rel);
   entries.push({
     key: match.key,
     kind: match.kind,
@@ -68,7 +76,7 @@ for (const file of files.sort()) {
 
 // Version comes from the tag when CI provides one, else from the bundle names,
 // so the script is runnable by hand against a local build.
-const fromName = files.map((f) => f.match(/_(\d+\.\d+\.\d+)_/)?.[1]).find(Boolean);
+const fromName = entries.map((e) => e.file.match(/_(\d+\.\d+\.\d+)_/)?.[1]).find(Boolean);
 const tag = process.env.TAG || (fromName ? `v${fromName}` : "");
 const version = tag.replace(/^v/, "") || fromName;
 if (!version) {
