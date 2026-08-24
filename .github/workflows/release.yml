@@ -55,10 +55,6 @@ jobs:
             os: macos-14
             target: aarch64-apple-darwin
             bundles: app,dmg
-          - name: macOS (Intel)
-            os: macos-13
-            target: x86_64-apple-darwin
-            bundles: app,dmg
           - name: Windows (x64)
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -185,7 +181,7 @@ jobs:
           releaseBody: |
             Download the installer for your platform below.
 
-            - macOS: `.dmg` (Apple silicon and Intel are separate builds)
+            - macOS: `.dmg` (Apple silicon only)
             - Windows: `.exe` (NSIS installer) or `.msi`
 
             See the [changelog](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}).
