@@ -35,6 +35,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 tower-service = "0.3"
 schemars = "1"
 rmcp = { version = "3.0.0", features = ["server", "macros", "transport-streamable-http-server", "transport-streamable-http-server-session", "server-side-http"] }
+tauri-plugin-updater = "2.10.1"
 
 [dev-dependencies]
 # The MCP e2e test speaks JSON-RPC to the endpoint over HTTP.

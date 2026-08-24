@@ -993,3 +993,28 @@ input, textarea, select { font-family: inherit; }
 /* MCP-tagged flow rows */
 .fmcp { color: var(--c-indigo); font-weight: 500; }
 .fdim { color: var(--muted); }
+
+/* Update download progress. Indeterminate when the server sent no length —
+   a bar stuck at 0% reads as broken, a sliding one reads as working. */
+.upd-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--input);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  margin: 10px 0 4px;
+}
+.upd-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width .2s ease;
+}
+.upd-fill.indeterminate {
+  width: 35%;
+  animation: upd-slide 1.1s ease-in-out infinite;
+}
+@keyframes upd-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(285%); }
+}

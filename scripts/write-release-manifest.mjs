@@ -1,6 +1,14 @@
-// Writes latest.yml — the manifest that says which version is current and where
-// each installer lives. It is the one file a download page, a shell script, or
-// an update check has to read; everything else in the bucket is an artifact.
+// Writes the two manifests a release needs:
+//
+//   latest.yml   — human-facing: which version is current, and the installer URL,
+//                  size and sha256 for each platform. What a download page reads.
+//   latest.json  — machine-facing: the endpoint tauri-plugin-updater polls. Only
+//                  written when signed updater artifacts are present, because an
+//                  entry without its signature is one the app must reject anyway.
+//
+// The two exist separately because they point at different files: a human wants
+// the .dmg, the updater wants the .app.tar.gz that it can unpack over the
+// installed bundle.
 //
 // Usage:
 //   node scripts/write-release-manifest.mjs <installer-dir> [out-file]
@@ -39,12 +47,28 @@ const PLATFORMS = [
   { re: /_x64(_[a-z]{2}-[A-Z]{2})?\.msi$/, key: "windows-x86_64-msi", kind: "msi" },
 ];
 
+// What the updater downloads, which is not always what a human downloads: on
+// macOS it is the .app.tar.gz it can unpack in place, never the .dmg. Keys are
+// the platform identifiers tauri-plugin-updater looks itself up by.
+const UPDATER_PLATFORMS = [
+  { re: /_universal\.app\.tar\.gz$/i, key: "darwin-universal" },
+  { re: /_aarch64\.app\.tar\.gz$/i, key: "darwin-aarch64" },
+  { re: /_x64\.app\.tar\.gz$/i, key: "darwin-x86_64" },
+  { re: /_x64-setup\.exe$/i, key: "windows-x86_64" },
+  { re: /_arm64-setup\.exe$/i, key: "windows-aarch64" },
+];
+
 // Recursive: upload-artifact roots an artifact at the least-common-ancestor of
 // the files it matched, so a leg that produced both an NSIS installer and an MSI
 // arrives as nsis/… and msi/… rather than as two files at the top level.
-const files = readdirSync(dir, { recursive: true, withFileTypes: true })
-  .filter((e) => e.isFile() && /\.(dmg|exe|msi)$/i.test(e.name))
-  .map((e) => (e.parentPath ?? e.path) === dir ? e.name : join(e.parentPath ?? e.path, e.name).slice(dir.length + 1));
+const all = readdirSync(dir, { recursive: true, withFileTypes: true })
+  .filter((e) => e.isFile())
+  .map((e) =>
+    (e.parentPath ?? e.path) === dir
+      ? e.name
+      : join(e.parentPath ?? e.path, e.name).slice(dir.length + 1),
+  );
+const files = all.filter((f) => /\.(dmg|exe|msi)$/i.test(f));
 if (files.length === 0) {
   console.error(`no installers found in ${dir}`);
   process.exit(1);
@@ -124,3 +148,45 @@ const yaml = lines.join("\n") + "\n";
 writeFileSync(out, yaml);
 console.log(yaml);
 console.log(`wrote ${out} (${entries.length} platform(s))`);
+
+// ── latest.json: the updater endpoint ──────────────────────────────────────
+//
+// An entry needs its detached signature, which the bundler writes next to the
+// artifact as <artifact>.sig when TAURI_SIGNING_PRIVATE_KEY is set. A missing
+// .sig means the release was built unsigned, and the app would refuse the
+// update anyway — so the platform is skipped rather than advertised.
+const updater = {};
+for (const rel of all.sort()) {
+  const file = rel.split(/[\\/]/).pop();
+  if (file.endsWith(".sig")) continue;
+  const match = UPDATER_PLATFORMS.find((p) => p.re.test(file));
+  if (!match) continue;
+  const sigPath = join(dir, `${rel}.sig`);
+  let signature;
+  try {
+    signature = readFileSync(sigPath, "utf8").trim();
+  } catch {
+    console.warn(`::warning::no signature for ${file} — not offered to the updater`);
+    continue;
+  }
+  updater[match.key] = { signature, url: `${base}/${encodeURIComponent(file)}` };
+}
+
+const updaterOut = join(out, "..", "latest.json");
+if (Object.keys(updater).length === 0) {
+  // Not an error: an unsigned build is a valid build, it just cannot be an
+  // update source. Publishing an empty manifest would break clients that can
+  // currently update.
+  console.warn("::warning::no signed updater artifacts — latest.json not written");
+} else {
+  const json = {
+    version,
+    // Tauri shows this in the update prompt; the release page is more useful
+    // than a commit range the user cannot read from inside the app.
+    notes: notes || `NovaProxy ${version}`,
+    pub_date: releasedAt,
+    platforms: updater,
+  };
+  writeFileSync(updaterOut, JSON.stringify(json, null, 2) + "\n");
+  console.log(`wrote ${updaterOut} (${Object.keys(updater).join(", ")})`);
+}

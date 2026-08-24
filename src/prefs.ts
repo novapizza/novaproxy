@@ -26,12 +26,20 @@ export interface Prefs {
   systemProxyAtLaunch: LaunchProxyMode;
   /** Width of the flow list, in px, when the splitter has been dragged. */
   flowListWidth: number;
+  /**
+   * Look for a new version at launch. On by default: a debugging proxy holds a
+   * root CA and a TLS stack, so running an old build is a security decision the
+   * user should have to make deliberately. The check only ever *reports* —
+   * nothing installs without a click.
+   */
+  autoCheckUpdates: boolean;
 }
 
 export const DEFAULT_PREFS: Prefs = {
   flowGrouping: "grouped",
   systemProxyAtLaunch: "none",
   flowListWidth: 412,
+  autoCheckUpdates: true,
 };
 
 /** Bounds for the flow list, so a stale or hand-edited width cannot hide a pane. */
@@ -49,6 +57,9 @@ export function normalizePrefs(raw: unknown): Prefs {
     flowListWidth: clampListWidth(
       typeof v.flowListWidth === "number" ? v.flowListWidth : DEFAULT_PREFS.flowListWidth,
     ),
+    // Only an explicit `false` opts out, so a pref file written by an older
+    // build keeps the safer default.
+    autoCheckUpdates: v.autoCheckUpdates !== false,
   };
 }
 

@@ -14,7 +14,17 @@ import {
   type McpStatus,
   type HelperStatus,
   type BodyPreview,
+  type UpdateProgress,
 } from "./api";
+import {
+  INITIAL_UPDATE_STATE,
+  afterCheck,
+  afterProgress,
+  canAct as canActOnUpdate,
+  progressPercent,
+  updateSummary,
+  type UpdateState,
+} from "./update";
 import { MAX_WS_FRAMES, useStore } from "./store";
 import { exportSession, exportHar, importSession } from "./session";
 import {
@@ -246,6 +256,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mcp, setMcp] = useState<McpStatus | null>(null);
   const [helper, setHelper] = useState<HelperStatus | null>(null);
+  const [update, setUpdate] = useState<UpdateState>(INITIAL_UPDATE_STATE);
   const [restoreHidden, setRestoreHidden] = useState(false);
 
   const saveNet = (next: NetworkConditions) => {
@@ -379,6 +390,31 @@ export function App() {
     return () => {
       if (frame) cancelAnimationFrame(frame);
     };
+  }, []);
+
+  // Look for a new version once, at launch. Reports only: a found update waits
+  // in Settings until the user clicks install, because replacing the binary ends
+  // in a relaunch that would drop whatever is being captured.
+  useEffect(() => {
+    if (!prefs.autoCheckUpdates) return;
+    let cancelled = false;
+    api
+      .checkUpdate()
+      .then((status) => {
+        if (cancelled) return;
+        setUpdate(afterCheck(status));
+        if (status.available) {
+          showToast(`NovaProxy ${status.version} is available — install it in Settings › General`);
+        }
+      })
+      // A failed check at launch is not worth a toast: the network is often not
+      // up yet, and the user did not ask for this. Settings shows the reason.
+      .catch((e) => !cancelled && setUpdate({ ...INITIAL_UPDATE_STATE, phase: "error", error: String(e) }));
+    return () => {
+      cancelled = true;
+    };
+    // Launch-only: re-running on every pref flip would check again mid-session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // "System proxy at launch" — off unless the user asked for it, because it
@@ -689,6 +725,7 @@ export function App() {
           net={net} setNet={saveNet}
           mcp={mcp} setMcp={setMcp}
           helper={helper} setHelper={setHelper}
+          update={update} setUpdate={setUpdate}
           prefs={prefs} setPrefs={setPrefs}
           showToast={showToast}
           onClose={() => setSettingsOpen(false)}
@@ -1970,7 +2007,7 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
 
 function SettingsModal({
   port, ca, net, setNet, mcp, setMcp,
-  helper, setHelper, prefs, setPrefs, showToast, onClose,
+  helper, setHelper, update, setUpdate, prefs, setPrefs, showToast, onClose,
 }: {
   port: number;
   ca: CaStatus | null;
@@ -1980,6 +2017,8 @@ function SettingsModal({
   setMcp: (m: McpStatus) => void;
   helper: HelperStatus | null;
   setHelper: (h: HelperStatus) => void;
+  update: UpdateState;
+  setUpdate: (u: UpdateState) => void;
   prefs: Prefs;
   setPrefs: (p: Prefs) => void;
   showToast: (t: string) => void;
@@ -2007,7 +2046,12 @@ function SettingsModal({
           </div>
           <div className="modal-body">
           {tab === "general" && (
-            <GeneralTab prefs={prefs} setPrefs={setPrefs} helper={helper} setHelper={setHelper} showToast={showToast} />
+            <GeneralTab
+              prefs={prefs} setPrefs={setPrefs}
+              helper={helper} setHelper={setHelper}
+              update={update} setUpdate={setUpdate}
+              showToast={showToast}
+            />
           )}
 
           {tab === "network" && (<>
@@ -2086,12 +2130,14 @@ const LAUNCH_ITEMS: DropdownItem[] = [
 ];
 
 function GeneralTab({
-  prefs, setPrefs, helper, setHelper, showToast,
+  prefs, setPrefs, helper, setHelper, update, setUpdate, showToast,
 }: {
   prefs: Prefs;
   setPrefs: (p: Prefs) => void;
   helper: HelperStatus | null;
   setHelper: (h: HelperStatus) => void;
+  update: UpdateState;
+  setUpdate: (u: UpdateState) => void;
   showToast: (t: string) => void;
 }) {
   return (
@@ -2131,6 +2177,12 @@ function GeneralTab({
       </p>
 
       {helper?.supported && <HelperCard helper={helper} setHelper={setHelper} showToast={showToast} />}
+
+      <UpdateCard
+        update={update} setUpdate={setUpdate}
+        prefs={prefs} setPrefs={setPrefs}
+        showToast={showToast}
+      />
     </>
   );
 }
@@ -2203,6 +2255,134 @@ function HelperCard({
         <p className="warn-note">
           No helper binary was found next to the app. In a development tree, build it first:
           <code> cargo build -p nova-helper</code>.
+        </p>
+      )}
+    </>
+  );
+}
+
+/**
+ * Check for a new version, and install it.
+ *
+ * Installing is always a click, never automatic: replacing a binary that holds
+ * a root CA and proxies the machine's traffic is not something to do behind the
+ * user's back, and on macOS it ends in a relaunch that would drop a capture
+ * session. The launch check only ever reports.
+ */
+function UpdateCard({
+  update, setUpdate, prefs, setPrefs, showToast,
+}: {
+  update: UpdateState;
+  setUpdate: (u: UpdateState) => void;
+  prefs: Prefs;
+  setPrefs: (p: Prefs) => void;
+  showToast: (t: string) => void;
+}) {
+  const pct = progressPercent(update.progress);
+  const acting = !canActOnUpdate(update);
+
+  async function check() {
+    setUpdate({ ...update, phase: "checking", error: null });
+    try {
+      const status = await api.checkUpdate();
+      setUpdate(afterCheck(status));
+      if (status.configured && !status.available) showToast("NovaProxy is up to date");
+    } catch (e) {
+      setUpdate({ ...update, phase: "error", error: String(e) });
+    }
+  }
+
+  async function install() {
+    // A channel rather than a promise chain: the download is the one operation
+    // here long enough that silence reads as a hang.
+    const channel = new Channel<UpdateProgress>();
+    let state: UpdateState = { ...update, phase: "downloading", progress: null, error: null };
+    setUpdate(state);
+    channel.onmessage = (p) => {
+      state = afterProgress(state, p);
+      setUpdate(state);
+    };
+    try {
+      await api.installUpdate(channel);
+      // Only reached if the installer returned without relaunching.
+      showToast("Update installed — restart NovaProxy to finish");
+    } catch (e) {
+      setUpdate({ ...state, phase: "error", error: String(e) });
+    }
+  }
+
+  return (
+    <>
+      <h3>Updates</h3>
+      <div className="field-group">
+        <span
+          className={`dot ${
+            update.phase === "error"
+              ? "warn"
+              : update.phase === "available"
+                ? "warn"
+                : update.phase === "current"
+                  ? "ok"
+                  : ""
+          }`}
+        />
+        <span style={{ color: "var(--text2)" }}>{updateSummary(update)}</span>
+      </div>
+
+      {(update.phase === "downloading" || update.phase === "installing") && (
+        <div className="upd-bar" title={pct == null ? "Downloading" : `${pct}%`}>
+          <div
+            className={`upd-fill ${pct == null ? "indeterminate" : ""}`}
+            style={pct == null ? undefined : { width: `${pct}%` }}
+          />
+        </div>
+      )}
+      {update.phase === "downloading" && update.progress?.total != null && (
+        <p>
+          {formatBytes(update.progress.downloaded)} of {formatBytes(update.progress.total)}
+        </p>
+      )}
+
+      {update.phase === "available" && update.status?.notes && (
+        <p style={{ whiteSpace: "pre-wrap" }}>{update.status.notes}</p>
+      )}
+
+      <div className="pref-row">
+        <span className="k">Check at launch</span>
+        <div
+          className={`switch ${prefs.autoCheckUpdates ? "on" : ""}`}
+          onClick={() => setPrefs({ ...prefs, autoCheckUpdates: !prefs.autoCheckUpdates })}
+        >
+          <span className="knob" />
+        </div>
+      </div>
+      <p>
+        A debugging proxy carries its own root CA and TLS stack, so staying current matters more
+        here than in most apps. Found versions are only ever reported — installing is this card's
+        button, and nothing else.
+      </p>
+
+      <div className="cert-actions">
+        <div
+          className={`btn-neutral ${acting ? "disabled" : ""}`}
+          onClick={() => !acting && void check()}
+        >
+          Check now
+        </div>
+        {update.phase === "available" && (
+          <div
+            className={`btn-primary ${acting ? "disabled" : ""}`}
+            onClick={() => !acting && void install()}
+          >
+            Install {update.status?.version ?? "update"} and restart
+          </div>
+        )}
+      </div>
+
+      {update.phase === "unconfigured" && (
+        <p className="warn-note">
+          Development builds have no update endpoint. Released builds check
+          <code> latest.json</code> published alongside the installers.
         </p>
       )}
     </>
