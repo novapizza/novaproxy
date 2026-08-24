@@ -243,6 +243,23 @@ jobs:
           merge-multiple: true
           path: installers
 
+      # upload-artifact roots each artifact at the least-common-ancestor of the
+      # files it matched, so the Windows leg (which matches both bundle/nsis and
+      # bundle/msi) arrives as subdirectories while the macOS leg arrives flat.
+      # The bucket is flat, so flatten here — and fail loudly on an empty
+      # download rather than publishing a manifest with a missing platform.
+      - name: Flatten downloaded installers
+        run: |
+          find installers -mindepth 2 -type f \
+            \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \) \
+            -exec mv -f -t installers/ {} +
+          find installers -mindepth 1 -type d -empty -delete
+          ls -lh installers
+          COUNT=$(find installers -maxdepth 1 -type f \
+            \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \) | wc -l)
+          [ "$COUNT" -gt 0 ] || { echo "::error::no installers were downloaded"; exit 1; }
+          echo "$COUNT installer(s) ready to publish."
+
       # latest.yml is what a download page or an update check reads: current
       # version plus a URL, size and sha256 per platform. Built from the files
       # actually downloaded above, so it can never advertise a bundle this run
