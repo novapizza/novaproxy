@@ -2483,7 +2483,7 @@ dependencies = [
 
 [[package]]
 name = "nova-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2512,7 +2512,7 @@ dependencies = [
 
 [[package]]
 name = "nova-helper"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "nova-os",
@@ -2522,7 +2522,7 @@ dependencies = [
 
 [[package]]
 name = "nova-os"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "libc",
@@ -2533,7 +2533,7 @@ dependencies = [
 
 [[package]]
 name = "nova-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "ts-rs",
@@ -2541,7 +2541,7 @@ dependencies = [
 
 [[package]]
 name = "novaproxy"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
