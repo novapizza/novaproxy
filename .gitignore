@@ -4,3 +4,6 @@
 src-tauri/target
 *.log
 .DS_Store
+
+# CI stages the privileged helper here as a Tauri sidecar (see release.yml).
+src-tauri/bin/
