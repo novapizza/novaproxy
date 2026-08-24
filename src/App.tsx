@@ -2266,8 +2266,9 @@ function HelperCard({
  *
  * Installing is always a click, never automatic: replacing a binary that holds
  * a root CA and proxies the machine's traffic is not something to do behind the
- * user's back, and on macOS it ends in a relaunch that would drop a capture
- * session. The launch check only ever reports.
+ * user's back, and it ends with the window going away — a relaunch on macOS, an
+ * exit into the installer on Windows — which drops the capture session either
+ * way. The launch check only ever reports.
  */
 function UpdateCard({
   update, setUpdate, prefs, setPrefs, showToast,
@@ -2304,8 +2305,9 @@ function UpdateCard({
     };
     try {
       await api.installUpdate(channel);
-      // Only reached if the installer returned without relaunching.
-      showToast("Update installed — restart NovaProxy to finish");
+      // Reached only if the process is still alive: on Windows the command
+      // returns after handing off to the installer, which closes this build.
+      showToast("Installer running — NovaProxy will close to finish");
     } catch (e) {
       setUpdate({ ...state, phase: "error", error: String(e) });
     }
@@ -2374,7 +2376,7 @@ function UpdateCard({
             className={`btn-primary ${acting ? "disabled" : ""}`}
             onClick={() => !acting && void install()}
           >
-            Install {update.status?.version ?? "update"} and restart
+            Install {update.status?.version ?? "update"}
           </div>
         )}
       </div>

@@ -100,7 +100,8 @@ Flows stream into the list in real time.
 Released builds check for a new version themselves. **Settings → General →
 Updates** shows the current version, checks on demand, and installs; the check
 also runs once at launch (switchable there) but only ever *reports* — installing
-replaces a binary that holds a root CA and ends in a relaunch, so it stays a
+replaces a binary that holds a root CA and closes the window (an exec into the
+new build on macOS, an exit into the NSIS installer on Windows), so it stays a
 click.
 
 The plumbing:

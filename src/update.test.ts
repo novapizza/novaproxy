@@ -67,7 +67,7 @@ describe("update", () => {
     const installing = afterProgress(downloading, { downloaded: 0n, total: null, done: true });
     expect(installing.phase).toBe("installing");
     expect(progressPercent(installing.progress)).toBe(90);
-    expect(updateSummary(installing)).toContain("restart");
+    expect(updateSummary(installing)).toContain("close to finish");
   });
 
   it("locks the button only while work is in flight", () => {

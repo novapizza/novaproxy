@@ -116,6 +116,25 @@ pub async fn install_update(
         .await
         .map_err(|e| e.to_string())?;
 
-    tracing::info!("update installed; restarting");
-    app.restart();
+    // How the process leaves is platform-specific, because what "installed"
+    // means is:
+    //
+    // macOS — the plugin has already replaced the .app in place, so the new
+    // build is on disk and `restart` exec's straight into it.
+    //
+    // Windows — NSIS cannot overwrite an executable that is still running, and
+    // the installer we just launched is waiting for exactly that. Restarting
+    // would race the swap and surface as "file in use" or a half-installed app,
+    // so this process exits and lets the installer finish and relaunch.
+    #[cfg(target_os = "windows")]
+    {
+        tracing::info!("installer launched; exiting so it can replace this build");
+        app.exit(0);
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        tracing::info!("update installed; restarting");
+        app.restart();
+    }
 }

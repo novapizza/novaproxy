@@ -21,7 +21,7 @@ export type UpdatePhase =
   | "available"
   /** Downloading the new bundle. */
   | "downloading"
-  /** Bytes are in; the installer is running and a restart follows. */
+  /** Bytes are in; the installer is running and the app is about to close. */
   | "installing"
   /** This build has no updater endpoint (a development build). */
   | "unconfigured"
@@ -57,7 +57,7 @@ export function afterCheck(status: UpdateStatus): UpdateState {
  *
  * `done` arrives when the download finishes and the installer takes over, which
  * is a different sentence from "downloading" because it cannot be cancelled and
- * ends in a relaunch.
+ * ends with this window gone.
  */
 export function afterProgress(state: UpdateState, progress: UpdateProgress): UpdateState {
   return {
@@ -114,7 +114,7 @@ export function updateSummary(state: UpdateState): string {
       return pct == null ? `Downloading — ${done}` : `Downloading — ${pct}%`;
     }
     case "installing":
-      return "Installing — NovaProxy will restart";
+      return "Installing — NovaProxy will close to finish";
     case "error":
       return state.error ?? "Update check failed";
     default:
