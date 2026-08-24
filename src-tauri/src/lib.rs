@@ -66,13 +66,23 @@ pub fn run() {
     // do — one flow store, one rule set, one engine handle.
     let state = Arc::new(AppState::new(data_dir()));
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        // Configured only in release builds, where the workflow injects the
-        // endpoint and the public key; see `update.rs`.
-        .plugin(tauri_plugin_updater::Builder::new().build())
+    // Configured only in release builds, where the workflow injects the endpoint
+    // and the public key; see `update.rs`. The plugin's initializer rejects a
+    // missing `plugins.updater` outright — registering it unconditionally takes
+    // down every build without that injection, dev and unsigned release alike —
+    // so registration follows the configuration.
+    let context = tauri::generate_context!();
+    let updater_configured = context.config().plugins.0.contains_key("updater");
+
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    if updater_configured {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+
+    builder
         .manage(state)
         .manage(update::PendingUpdate::default())
+        .manage(update::UpdaterConfigured(updater_configured))
         .setup(|app| {
             use tauri::Manager;
             let st: Arc<AppState> = (*app.state::<Arc<AppState>>()).clone();
@@ -199,6 +209,6 @@ pub fn run() {
             update::check_update,
             update::install_update,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running NovaProxy");
 }

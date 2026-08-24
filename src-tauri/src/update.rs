@@ -18,6 +18,14 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
+/// Whether this build was compiled with a `plugins.updater` section, and so
+/// whether the updater plugin is registered at all (see `lib.rs`).
+///
+/// The check matters because [`UpdaterExt::updater`] reaches for plugin state
+/// that only exists once the plugin is registered, and panics without it. An
+/// unconfigured build has to answer "cannot update itself", not abort.
+pub struct UpdaterConfigured(pub bool);
+
 /// The update found by the last check, kept so that installing it does not have
 /// to re-fetch and re-verify the manifest.
 ///
@@ -39,11 +47,17 @@ fn current_version(app: &AppHandle) -> String {
 pub async fn check_update(
     app: AppHandle,
     pending: State<'_, PendingUpdate>,
+    configured: State<'_, UpdaterConfigured>,
 ) -> Result<UpdateStatus, String> {
     let mut status = UpdateStatus {
         current_version: current_version(&app),
         ..Default::default()
     };
+
+    if !configured.0 {
+        tracing::info!("updater not configured in this build");
+        return Ok(status);
+    }
 
     // `updater()` fails only on configuration: no endpoints, or no public key to
     // verify a manifest against.
