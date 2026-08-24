@@ -33,7 +33,13 @@ bản thứ hai (`*-small.svg`): wire thành nét đặc, chữ N to hơn, ngôi
 Cùng một mark, khác mức chi tiết — như cách một typeface có optical size.
 
 `icon.ico` và `icon.icns` đã tự nhúng đúng bản cho từng slot (16/24/32 và
-`icp4` / `icp5` / `ic11` lấy bản nhỏ), không cần làm gì thêm.
+`ic04` / `ic05` / `ic11` lấy bản nhỏ), không cần làm gì thêm.
+
+Hai slot 1x của `.icns` — `ic04` (16) và `ic05` (32) — là **ARGB thô**, không
+phải PNG. Format có sẵn `icp4` / `icp5` / `icp6` để chứa PNG, nhưng macOS vẫn
+giải mã chúng như ARGB, nên PNG nhét vào đó hiện ra thành nhiễu ở mọi chỗ hệ
+thống hỏi icon nhỏ: title bar Finder, dialog copy/replace. `icns.py` viết đúng
+bộ slot mà `iconutil -c icns` của Apple sinh ra.
 
 `novaproxy-tray-node-*.svg` bỏ hẳn wire, chỉ còn N + ngôi sao — an toàn nhất ở
 16px nếu menu bar trông rối.
@@ -61,7 +67,7 @@ assets/logo/
 
 src-tauri/icons/
   icon.png            1024 master
-  icon.icns           macOS — 11 slot (icp4 icp5 icp6 ic07..ic14)
+  icon.icns           macOS — 10 slot (ic04 ic05 ARGB + ic07..ic14 PNG)
   icon.ico            Windows — 256 128 64 48 32 24 16
   32x32.png  128x128.png  128x128@2x.png
   Square{30,44,71,89,107,142,150,284,310}x*Logo.png  StoreLogo.png   MSIX / Store tiles
