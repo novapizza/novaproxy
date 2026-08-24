@@ -248,7 +248,10 @@ jobs:
             case "$f" in
               *_"$VERSION"_*) continue ;;  # already renamed
             esac
-            mv -v "$f" "NovaProxy_${VERSION}_${ARCH}.${f#*.app.}"
+            # Keep the .app: `write-release-manifest.mjs` finds the updater
+            # artifact by `_<arch>.app.tar.gz`, and drops macOS from
+            # latest.json when the suffix does not match.
+            mv -v "$f" "NovaProxy_${VERSION}_${ARCH}.app.${f#*.app.}"
           done
           ls -lh
 

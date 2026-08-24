@@ -138,6 +138,20 @@ No `.sig` files or no `latest.json` means the updater secrets were missing. The
 build is still installable; it just cannot update itself, and the *next* release
 will not reach these users automatically.
 
+**Then open `latest.json` and count the platforms** — its presence is not enough:
+
+```sh
+gh release download v<version> -p latest.json -D /tmp/rel --clobber
+python3 -c "import json;print(list(json.load(open('/tmp/rel/latest.json'))['platforms']))"
+```
+
+Every platform with an installer needs an entry. `v0.1.1` and `v0.2.0` both
+published `windows-x86_64` alone: the macOS updater artifact was being renamed
+out of the `_<arch>.app.tar.gz` pattern the manifest writer matches on, so macOS
+was silently skipped and never offered an update. The writer now emits a
+`::warning::` for a platform that ships an installer but no update, so check the
+`Mirror to R2` job's log for warnings even when it is green.
+
 ## 8. If the run fails
 
 Fix forward on a branch, merge, then move the tag:
