@@ -36,6 +36,12 @@ export const api = {
   /** Drop every retained flow in the engine (paired with the UI's Clear). */
   clearFlows: () => invoke<void>("clear_flows"),
 
+  /**
+   * Every flow the engine still retains, newest first — bodies included.
+   * The list keeps no body bytes, so exports read them from here.
+   */
+  retainedFlows: () => invoke<Flow[]>("retained_flows"),
+
   /** State of the MCP endpoint that exposes captured traffic to AI tooling. */
   mcpStatus: () => invoke<McpStatus>("mcp_status"),
   /** Start or stop that endpoint; the choice is remembered across launches. */
@@ -46,9 +52,10 @@ export const api = {
   setTlsScope: (scope: TlsScope) => invoke<void>("set_tls_scope", { scope }),
 
   /**
-   * Fetch a large body in full from the on-disk body store. Only meaningful when
-   * the preview reports `spilled`; `mediaType`/`encoding` come from that preview
-   * so the stored bytes decode the same way they did live.
+   * Fetch a body the list is not holding: from the on-disk body store when the
+   * preview reports `spilled`, otherwise from the flow the engine retains.
+   * `mediaType`/`encoding` come from that preview so the stored bytes decode the
+   * same way they did live.
    */
   readBody: (
     flowId: string,

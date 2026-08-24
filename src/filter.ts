@@ -33,12 +33,46 @@ export function mcpLabel(f: Flow): string {
   return method ?? "mcp";
 }
 
+/**
+ * The one-click filters above the list. Mutually exclusive — they answer
+ * "which slice am I looking at", not "which flags are set".
+ */
+export type FlowChip = "all" | "errors" | "slow" | "mcp";
+
+export const FLOW_CHIPS: { id: FlowChip; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "errors", label: "Errors" },
+  { id: "slow", label: "Slow" },
+  { id: "mcp", label: "MCP" },
+];
+
+/** Above this, a request is worth a second look. */
+export const SLOW_MS = 300;
+
+/**
+ * A flow still in flight has no duration and no status yet, so it cannot be
+ * called slow or failed — it is excluded from both slices rather than assumed
+ * healthy.
+ */
+export function matchChip(f: Flow, chip: FlowChip): boolean {
+  switch (chip) {
+    case "errors":
+      return f.error != null || (f.status != null && f.status >= 400);
+    case "slow":
+      return f.duration_ms != null && f.duration_ms >= SLOW_MS;
+    case "mcp":
+      return f.mcp != null;
+    default:
+      return true;
+  }
+}
+
 /** Which flows the list shows. */
 export interface ViewFilters {
   /** Exact app/process name from the dropdown; empty means all. */
   app?: string;
-  /** Show only Model Context Protocol exchanges. */
-  mcpOnly?: boolean;
+  /** Active one-click filter; defaults to `all`. */
+  chip?: FlowChip;
   /** Show NovaProxy's own traffic (its MCP endpoint and replays it issued). */
   includeInternal?: boolean;
 }
@@ -53,7 +87,7 @@ export interface ViewFilters {
 export function filterFlows(flows: Flow[], query: string, filters: ViewFilters = {}): Flow[] {
   return flows.filter((f) => {
     if (f.internal && !filters.includeInternal) return false;
-    if (filters.mcpOnly && !f.mcp) return false;
+    if (filters.chip && !matchChip(f, filters.chip)) return false;
     if (filters.app && f.process !== filters.app) return false;
     return matchQuery(f, query);
   });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Flow } from "./api";
-import { distinctApps, filterFlows, matchQuery, mcpLabel, toastDuration } from "./filter";
+import { distinctApps, filterFlows, matchChip, matchQuery, mcpLabel, SLOW_MS, toastDuration } from "./filter";
 
 // Minimal Flow factory — only the fields the filter helpers touch matter here.
 function mkFlow(over: Partial<Flow> = {}): Flow {
@@ -33,6 +33,42 @@ function mkFlow(over: Partial<Flow> = {}): Flow {
     ...over,
   } as Flow;
 }
+
+describe("matchChip", () => {
+  it("`all` lets everything through", () => {
+    expect(matchChip(mkFlow({ status: 500 }), "all")).toBe(true);
+    expect(matchChip(mkFlow({ status: 200 }), "all")).toBe(true);
+  });
+
+  it("`errors` takes 4xx, 5xx and transport failures, but not 3xx", () => {
+    expect(matchChip(mkFlow({ status: 404 }), "errors")).toBe(true);
+    expect(matchChip(mkFlow({ status: 500 }), "errors")).toBe(true);
+    expect(matchChip(mkFlow({ status: null, error: "refused" }), "errors")).toBe(true);
+    expect(matchChip(mkFlow({ status: 304 }), "errors")).toBe(false);
+    expect(matchChip(mkFlow({ status: 200 }), "errors")).toBe(false);
+  });
+
+  it("`slow` takes durations at or over the threshold", () => {
+    expect(matchChip(mkFlow({ duration_ms: SLOW_MS }), "slow")).toBe(true);
+    expect(matchChip(mkFlow({ duration_ms: SLOW_MS - 1 }), "slow")).toBe(false);
+  });
+
+  it("in-flight flows are neither slow nor failed — they are simply not done", () => {
+    const pending = mkFlow({ status: null, duration_ms: null, error: null });
+    expect(matchChip(pending, "slow")).toBe(false);
+    expect(matchChip(pending, "errors")).toBe(false);
+    expect(matchChip(pending, "all")).toBe(true);
+  });
+
+  it("composes with the query rather than replacing it", () => {
+    const flows = [
+      mkFlow({ id: "a", status: 500, host: "api.example.com" }),
+      mkFlow({ id: "b", status: 500, host: "cdn.example.com" }),
+      mkFlow({ id: "c", status: 200, host: "api.example.com" }),
+    ];
+    expect(filterFlows(flows, "host:api", { chip: "errors" }).map((f) => f.id)).toEqual(["a"]);
+  });
+});
 
 describe("matchQuery", () => {
   it("matches everything on an empty or whitespace query", () => {
@@ -147,9 +183,9 @@ describe("MCP filtering", () => {
     expect(mcpLabel(mkFlow({ id: "c" }))).toBe("");
   });
 
-  it("mcpOnly keeps just the MCP exchanges", () => {
+  it("the MCP chip keeps just the MCP exchanges", () => {
     const flows = [mcp("a", "tools/call", "read_file"), mkFlow({ id: "b" })];
-    expect(filterFlows(flows, "", { mcpOnly: true }).map((f) => f.id)).toEqual(["a"]);
+    expect(filterFlows(flows, "", { chip: "mcp" }).map((f) => f.id)).toEqual(["a"]);
     expect(filterFlows(flows, "").map((f) => f.id)).toEqual(["a", "b"]);
   });
 
@@ -159,9 +195,9 @@ describe("MCP filtering", () => {
     const flows = [mcp("own", "tools/call", "list_flows", { internal: true }), mkFlow({ id: "b" })];
     expect(filterFlows(flows, "").map((f) => f.id)).toEqual(["b"]);
     expect(filterFlows(flows, "", { includeInternal: true }).map((f) => f.id)).toEqual(["own", "b"]);
-    // Still hidden under mcpOnly, which is the case that matters when debugging
+    // Still hidden under the MCP chip, which is the case that matters when debugging
     // someone else's MCP server.
-    expect(filterFlows(flows, "", { mcpOnly: true })).toHaveLength(0);
+    expect(filterFlows(flows, "", { chip: "mcp" })).toHaveLength(0);
   });
 
   it("mcp: query matches any MCP flow, or a method/tool substring", () => {
@@ -182,6 +218,6 @@ describe("MCP filtering", () => {
       mcp("a", "tools/call", "read_file", { process: "node" }),
       mcp("b", "tools/call", "read_file", { process: "Claude" }),
     ];
-    expect(filterFlows(flows, "", { mcpOnly: true, app: "node" }).map((f) => f.id)).toEqual(["a"]);
+    expect(filterFlows(flows, "", { chip: "mcp", app: "node" }).map((f) => f.id)).toEqual(["a"]);
   });
 });

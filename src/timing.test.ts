@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Flow } from "./api";
 import type { Timings } from "./bindings/Timings";
-import { formatMs, timingBreakdown } from "./timing";
+import { formatDuration, formatMs, timingBreakdown } from "./timing";
 
 const noTimings: Timings = {
   dns_ms: null,
@@ -120,5 +120,18 @@ describe("formatMs", () => {
     expect(formatMs(0.42)).toBe("0.42ms");
     expect(formatMs(12.34)).toBe("12.3ms");
     expect(formatMs(1234.6)).toBe("1235ms");
+  });
+});
+
+describe("formatDuration", () => {
+  it("is formatMs without the unit, for callers that print their own", () => {
+    expect(formatDuration(0.42)).toBe("0.42");
+    expect(formatDuration(12.34)).toBe("12.3");
+    expect(formatDuration(1234.6)).toBe("1235");
+  });
+
+  it("never leaks a raw float — the case that overran the median card", () => {
+    expect(formatDuration(248.46826171875)).toBe("248");
+    expect(formatDuration(99.99999)).toBe("100.0");
   });
 });

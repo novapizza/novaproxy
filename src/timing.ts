@@ -71,9 +71,19 @@ export function timingBreakdown(flow: Flow): TimingBreakdown {
   };
 }
 
+/**
+ * Millisecond value with no unit, for the places that print the unit
+ * themselves. Durations arrive as f64 from the engine, so every one of them has
+ * to pass through here — printed raw, a median of 248.46826171875 overruns the
+ * card it sits in.
+ */
+export function formatDuration(ms: number): string {
+  if (ms < 1) return ms.toFixed(2);
+  if (ms < 100) return ms.toFixed(1);
+  return `${Math.round(ms)}`;
+}
+
 /** Compact millisecond label: sub-millisecond values keep a decimal. */
 export function formatMs(ms: number): string {
-  if (ms < 1) return `${ms.toFixed(2)}ms`;
-  if (ms < 100) return `${ms.toFixed(1)}ms`;
-  return `${Math.round(ms)}ms`;
+  return `${formatDuration(ms)}ms`;
 }

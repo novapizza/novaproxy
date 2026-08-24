@@ -174,6 +174,7 @@ pub fn run() {
             commands::write_file,
             commands::read_file,
             commands::read_body,
+            commands::retained_flows,
             commands::clear_flows,
             commands::mcp_status,
             commands::set_mcp_enabled,

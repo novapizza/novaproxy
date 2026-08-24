@@ -153,12 +153,15 @@ fn mcp_status_of(state: &AppState) -> McpStatus {
 /// the truncation.
 const MAX_READ_BODY: u64 = 16 * 1024 * 1024;
 
-/// Fetch a spilled body in full (up to [`MAX_READ_BODY`]).
+/// Fetch a body the UI is not holding: from the on-disk store when it spilled,
+/// otherwise from the retained flow itself.
 ///
-/// Large bodies keep only a capped preview on the [`Flow`], with the complete
-/// bytes in the on-disk body store — this is how the Inspector shows the rest on
-/// demand. `media_type` and `encoding` come from the flow's own preview so the
-/// stored (still-compressed) bytes are decoded exactly as they were live.
+/// Two things ask for this. Large bodies keep only a capped preview on the
+/// [`Flow`] with the complete bytes on disk, and the Inspector shows the rest on
+/// demand. Smaller bodies never spill — but the UI does not keep every preview
+/// in the webview either (that is what made a long capture exhaust its memory),
+/// so it comes back here for those too. `media_type` and `encoding` come from
+/// the flow's own preview, so stored bytes are decoded exactly as they were live.
 #[tauri::command]
 pub fn read_body(
     state: State<'_, Arc<AppState>>,
@@ -167,19 +170,68 @@ pub fn read_body(
     media_type: Option<String>,
     encoding: Option<String>,
 ) -> Result<nova_proto::BodyPreview, String> {
-    let side = match side.as_str() {
+    read_body_from(&state, &flow_id, &side, media_type, encoding)
+}
+
+/// The body of `read_body`, taking `&AppState` so it is reachable from tests.
+pub fn read_body_from(
+    state: &AppState,
+    flow_id: &str,
+    side: &str,
+    media_type: Option<String>,
+    encoding: Option<String>,
+) -> Result<nova_proto::BodyPreview, String> {
+    let which = match side {
         "request" => nova_core::flow::Side::Request,
         "response" => nova_core::flow::Side::Response,
         other => return Err(format!("unknown body side {other:?}")),
     };
-    let (bytes, total, truncated) = state
-        .bodies
-        .read(&flow_id, side, MAX_READ_BODY)
-        .map_err(|e| e.to_string())?;
-    let mut preview = nova_core::flow::build_preview(bytes, total, truncated, media_type, encoding);
-    // The body is still on disk; the UI can ask again.
-    preview.spilled = true;
-    Ok(preview)
+    match state.bodies.read(flow_id, which, MAX_READ_BODY) {
+        Ok((bytes, total, truncated)) => {
+            let mut preview =
+                nova_core::flow::build_preview(bytes, total, truncated, media_type, encoding);
+            // The body is still on disk; the UI can ask again.
+            preview.spilled = true;
+            Ok(preview)
+        }
+        // Nothing on disk: the body was small enough to stay inline, so the copy
+        // the retained flow carries *is* the whole body. Reported as unspilled,
+        // because it is — the UI must not offer to "load the full body" from a
+        // store that does not have it.
+        Err(disk_err) => {
+            // Only "there is nothing on disk" may fall through to the inline
+            // preview. A body that spilled but failed to read back must stay an
+            // error: the preview is capped, and handing it out here would pass
+            // off a truncated body as the whole thing.
+            let nothing_stored = disk_err
+                .downcast_ref::<std::io::Error>()
+                .map_or(true, |io| io.kind() == std::io::ErrorKind::NotFound);
+            if !nothing_stored {
+                return Err(format!(
+                    "reading the stored {side} body of flow {flow_id}: {disk_err:#}"
+                ));
+            }
+            let flow = state
+                .flows
+                .get(flow_id)
+                .ok_or_else(|| format!("flow {flow_id} is no longer retained: {disk_err}"))?;
+            let body = match which {
+                nova_core::flow::Side::Request => flow.request_body,
+                nova_core::flow::Side::Response => flow.response_body,
+            };
+            body.ok_or_else(|| format!("flow {flow_id} has no {side} body"))
+        }
+    }
+}
+
+/// Every flow the engine still retains, newest first.
+///
+/// The UI drops body previews it is not showing, so anything that needs *all* of
+/// them — saving a session, exporting HAR — asks for this rather than reading its
+/// own list.
+#[tauri::command]
+pub fn retained_flows(state: State<'_, Arc<AppState>>) -> Vec<Flow> {
+    state.flows.newest_first()
 }
 
 /* ------------------------------- scripts ------------------------------- */
@@ -381,8 +433,29 @@ pub async fn uninstall_helper() -> Result<HelperStatus, String> {
 /// Replay a captured flow by re-issuing it *through* the proxy, so it is
 /// recaptured as a fresh flow (tagged `resent` via the `x-nova-resend` header).
 #[tauri::command]
-pub async fn resend_flow(state: State<'_, Arc<AppState>>, flow: Flow) -> Result<(), String> {
+pub async fn resend_flow(state: State<'_, Arc<AppState>>, mut flow: Flow) -> Result<(), String> {
+    hydrate_request_body(&state, &mut flow);
     replay(&state, flow, false).await
+}
+
+/// Put the request body back on a flow that arrived without one.
+///
+/// The UI sends the flow it holds, and it does not hold body previews for flows
+/// it is not showing — replaying one must still send the body that was captured,
+/// so it is taken from the retained flow here.
+pub fn hydrate_request_body(state: &AppState, flow: &mut Flow) {
+    let missing = match &flow.request_body {
+        None => false, // no body was captured at all: nothing to put back
+        Some(b) => b.text.is_none() && b.base64.is_none() && b.size > 0,
+    };
+    if !missing {
+        return;
+    }
+    let media = flow.request_body.as_ref().and_then(|b| b.media_type.clone());
+    let encoding = flow.request_body.as_ref().and_then(|b| b.decoded_from.clone());
+    if let Ok(body) = read_body_from(state, &flow.id, "request", media, encoding) {
+        flow.request_body = Some(body);
+    }
 }
 
 /// Re-issue `flow` through the proxy.

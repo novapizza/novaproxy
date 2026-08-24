@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   Channel,
@@ -13,11 +13,31 @@ import {
   type TlsScope,
   type McpStatus,
   type HelperStatus,
+  type BodyPreview,
 } from "./api";
-import { useStore } from "./store";
+import { MAX_WS_FRAMES, useStore } from "./store";
 import { exportSession, exportHar, importSession } from "./session";
-import { distinctApps, filterFlows, mcpLabel, toastDuration } from "./filter";
-import { formatMs, timingBreakdown } from "./timing";
+import {
+  distinctApps,
+  filterFlows,
+  FLOW_CHIPS,
+  type FlowChip,
+  mcpLabel,
+  toastDuration,
+} from "./filter";
+import { Brandmark } from "./Brandmark";
+import { Dropdown, type DropdownItem } from "./Dropdown";
+import { Icon, type IconName } from "./icons";
+import {
+  flowStats,
+  formatRate,
+  sparkPath,
+  SPARK_WINDOW_MS,
+  throughputRate,
+  throughputSeries,
+} from "./stats";
+import { formatDuration, formatMs, timingBreakdown } from "./timing";
+import { sliceGroups } from "./virtual";
 import {
   clampListWidth,
   DEFAULT_PREFS,
@@ -67,6 +87,72 @@ function buildCurl(f: Flow): string {
   return s;
 }
 
+/**
+ * Whether a preview describes bytes the list is not holding: the metadata says
+ * there is content, but neither the text nor the base64 came with it. The store
+ * drops body bytes on ingest (see `withoutBodies`); the engine keeps them.
+ */
+function bytesMissing(body: Flow["request_body"]): boolean {
+  return !!body && body.text == null && body.base64 == null && Number(body.size) > 0;
+}
+
+/** Put a flow's request body back, for the paths that need the bytes themselves. */
+async function withRequestBody(flow: Flow): Promise<Flow> {
+  const body = flow.request_body;
+  if (!bytesMissing(body)) return flow;
+  try {
+    return {
+      ...flow,
+      request_body: await api.readBody(flow.id, "request", body!.media_type, body!.decoded_from),
+    };
+  } catch {
+    return flow; // a cURL without its body still beats no cURL
+  }
+}
+
+/**
+ * A body preview with its bytes, fetched when the list is not holding them.
+ *
+ * The fetched copy is tagged with the flow and side it belongs to, so switching
+ * flows can never show one flow's body under another's headers while the next
+ * fetch is in flight.
+ */
+function useBodyBytes(
+  flowId: string,
+  side: "request" | "response",
+  body: Flow["request_body"],
+  onError?: (m: string) => void,
+) {
+  const [fetched, setFetched] = useState<{ key: string; body: BodyPreview } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const key = `${flowId}:${side}`;
+  const current = fetched?.key === key ? fetched.body : null;
+  const missing = bytesMissing(body);
+
+  useEffect(() => {
+    if (!missing) return;
+    let alive = true;
+    setLoading(true);
+    api
+      .readBody(flowId, side, body!.media_type, body!.decoded_from)
+      .then((p) => alive && setFetched({ key, body: p }))
+      .catch((e) => alive && onError?.(String(e)))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+    // `key` covers flowId and side; the rest of `body` is metadata for the fetch.
+  }, [key, missing]);
+
+  return {
+    shown: current ?? body,
+    fetched: current,
+    loading,
+    put: (p: BodyPreview) => setFetched({ key, body: p }),
+    setLoading,
+  };
+}
+
 function bodyToText(body: Flow["request_body"]): string | null {
   if (!body || body.text == null) return null;
   const ct = (body.media_type ?? "").toLowerCase();
@@ -83,15 +169,22 @@ function bodyToText(body: Flow["request_body"]): string | null {
 type Section = "flows" | "rules" | "break" | "scripts" | "certs";
 type DetailTab = "overview" | "request" | "response" | "timing" | "curl" | "ws";
 
-const RAIL: { id: Section; icon: string; label: string }[] = [
-  { id: "flows", icon: "≋", label: "Flows" },
-  { id: "rules", icon: "⤳", label: "Rules" },
-  { id: "break", icon: "⏸", label: "Break" },
-  { id: "scripts", icon: "{ }", label: "Scripts" },
-  { id: "certs", icon: "🔒", label: "Certs" },
+const RAIL: { id: Section; icon: IconName; label: string }[] = [
+  { id: "flows", icon: "activity", label: "Flows" },
+  { id: "rules", icon: "git-branch", label: "Rules" },
+  { id: "break", icon: "circle-pause", label: "Break" },
+  { id: "scripts", icon: "braces", label: "Scripts" },
+  { id: "certs", icon: "shield-check", label: "Certs" },
 ];
 
-const ACCENTS = ["#7c6cff", "#2b8fff", "#12b886", "#f2622a"];
+/** Header caption per section, so the bar always says where you are. */
+const SECTION_TITLE: Record<Section, string> = {
+  flows: "Traffic inspector",
+  rules: "Rules",
+  break: "Breakpoints",
+  scripts: "Scripts",
+  certs: "Certificate",
+};
 
 const DEFAULT_SCRIPT = `// Runs against every intercepted flow.
 // Edit flow.headers, or call flow.abort() to block the request.
@@ -128,13 +221,11 @@ export function App() {
   };
 
   const [section, setSection] = useState<Section>("flows");
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
-  const [accent, setAccent] = useState(ACCENTS[1]);
   const [query, setQuery] = useState("");
   const [appFilter, setAppFilter] = useState("");
-  // MCP view filters: isolate MCP traffic, and (separately) show or hide
-  // NovaProxy's own MCP/replay traffic.
-  const [mcpOnly, setMcpOnly] = useState(false);
+  // Which slice of the capture the list shows, and (separately) whether
+  // NovaProxy's own MCP/replay traffic is part of it.
+  const [chip, setChip] = useState<FlowChip>("all");
   const [showInternal, setShowInternal] = useState(false);
   const [groupByHost, setGroupByHost] = useState(prefs.flowGrouping === "grouped");
   const [detailTab, setDetailTab] = useState<DetailTab>("overview");
@@ -162,14 +253,33 @@ export function App() {
     api.setNetworkConditions(next).catch((e) => showToast(String(e)));
   };
 
+  /**
+   * The flows to write out, with their bodies.
+   *
+   * The list itself keeps no body bytes (see `withoutBodies`), so an export takes
+   * the engine's retained copies and falls back to the list for anything the
+   * engine does not have — flows imported from a session file exist only here.
+   */
+  async function flowsForExport(): Promise<Flow[]> {
+    const listed = useStore.getState().flows;
+    try {
+      const retained = new Map((await api.retainedFlows()).map((f) => [f.id, f]));
+      return listed.map((f) => retained.get(f.id) ?? f);
+    } catch (e) {
+      // The export still has every flow, just not the bodies the list dropped —
+      // said out loud, because a silently body-less export looks complete.
+      showToast(`Couldn't read bodies from the engine — exporting without them (${e})`);
+      return listed;
+    }
+  }
   async function doExportSession() {
     try {
-      if (await exportSession(useStore.getState().flows)) showToast("Session saved");
+      if (await exportSession(await flowsForExport())) showToast("Session saved");
     } catch (e) { showToast(String(e)); }
   }
   async function doExportHar() {
     try {
-      if (await exportHar(useStore.getState().flows)) showToast("HAR exported");
+      if (await exportHar(await flowsForExport())) showToast("HAR exported");
     } catch (e) { showToast(String(e)); }
   }
   async function doImportSession() {
@@ -211,8 +321,37 @@ export function App() {
 
   // Wire the streaming channel + initial status once.
   useEffect(() => {
+    /**
+     * Snapshots and frames arrive several times per flow and, under load,
+     * hundreds of times a second. Each one used to be its own store update —
+     * one re-render of the whole list per message, which is what made a busy
+     * capture unusable. Coalescing a frame's worth into a single update caps the
+     * render rate at the display's, however fast traffic is.
+     */
+    let flowQueue: Flow[] = [];
+    let wsQueue: WsMessage[] = [];
+    let frame = 0;
+    // One flush for both channels, snapshots first: the store drops frames of
+    // flows it does not hold, so a socket's first frames must never be applied
+    // ahead of the snapshot that introduces their flow.
+    const flush = () => {
+      frame = 0;
+      const flows = flowQueue;
+      const ws = wsQueue;
+      flowQueue = [];
+      wsQueue = [];
+      if (flows.length) useStore.getState().upsertFlows(flows);
+      if (ws.length) useStore.getState().addWsMessages(ws);
+    };
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(flush);
+    };
+
     const channel = new Channel<Flow>();
-    channel.onmessage = (flow) => useStore.getState().upsertFlow(flow);
+    channel.onmessage = (flow) => {
+      flowQueue.push(flow);
+      schedule();
+    };
     api.subscribeFlows(channel);
 
     const bpChannel = new Channel<Interception>();
@@ -223,7 +362,10 @@ export function App() {
     api.subscribeBreakpoints(bpChannel);
 
     const wsChannel = new Channel<WsMessage>();
-    wsChannel.onmessage = (m) => useStore.getState().addWsMessage(m);
+    wsChannel.onmessage = (m) => {
+      wsQueue.push(m);
+      schedule();
+    };
     api.subscribeWs(wsChannel);
 
     api.proxyStatus().then((p) => useStore.getState().setProxy(p));
@@ -233,6 +375,10 @@ export function App() {
     api.getNetworkConditions().then(setNet).catch(() => {});
     api.mcpStatus().then(setMcp).catch(() => {});
     api.helperStatus().then(setHelper).catch(() => {});
+
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+    };
   }, []);
 
   // "System proxy at launch" — off unless the user asked for it, because it
@@ -296,31 +442,32 @@ export function App() {
 
   const selected = useMemo(() => flows.find((f) => f.id === selectedId) ?? null, [flows, selectedId]);
 
-  function copyCurl() {
+  async function copyCurl() {
     if (!selected) return showToast("No flow selected");
-    navigator.clipboard.writeText(buildCurl(selected));
+    // The list holds no body bytes, so the request body is fetched before the
+    // command is written out — a cURL without its `--data` is not the request.
+    navigator.clipboard.writeText(buildCurl(await withRequestBody(selected)));
     showToast("cURL copied to clipboard");
   }
 
   /* command palette */
-  const commands = useMemo(
+  const commands: { id: string; icon: IconName; label: string; kbd?: string; run: () => void }[] = useMemo(
     () => [
-      { id: "rec", icon: "⏺", label: recording ? "Pause capture" : "Resume capture", run: () => setRecording(!recording) },
-      { id: "clear", icon: "🗑", label: "Clear all flows", run: () => clear() },
-      { id: "proxy", icon: "⇄", label: proxy.system_proxy ? "Disable system proxy" : "Enable system proxy", run: () => void toggleProxy() },
-      { id: "resend", icon: "↻", label: "Resend selected flow", run: () => void resendSelected() },
-      { id: "curl", icon: "⌗", label: "Copy selected as cURL", kbd: "↵", run: () => copyCurl() },
-      { id: "save", icon: "⇩", label: "Save session (.nova)", run: () => void doExportSession() },
-      { id: "open", icon: "⇧", label: "Open session (.nova)", run: () => void doImportSession() },
-      { id: "har", icon: "⤓", label: "Export as HAR", run: () => void doExportHar() },
-      { id: "mcponly", icon: "⌗", label: mcpOnly ? "Show all traffic (clear MCP filter)" : "Show only MCP traffic", run: () => { setMcpOnly((v) => !v); setSection("flows"); } },
-      { id: "bp", icon: "⏸", label: "Arm breakpoint on next request", run: () => { armBreakpoint(true); setSection("break"); showToast("Breakpoint armed"); } },
-      { id: "rules", icon: "⤳", label: "Open Rules", run: () => setSection("rules") },
-      { id: "scripts", icon: "{ }", label: "Open Scripts", run: () => setSection("scripts") },
-      { id: "certs", icon: "🔒", label: "Open Certificate", run: () => setSection("certs") },
-      { id: "theme", icon: "◑", label: theme === "dark" ? "Switch to light theme" : "Switch to dark theme", run: () => setTheme(theme === "dark" ? "light" : "dark") },
+      { id: "rec", icon: recording ? "circle-pause" : "circle-dot", label: recording ? "Pause capture" : "Resume capture", run: () => setRecording(!recording) },
+      { id: "clear", icon: "eraser", label: "Clear all flows", run: () => clear() },
+      { id: "proxy", icon: "power", label: proxy.system_proxy ? "Disable system proxy" : "Enable system proxy", run: () => void toggleProxy() },
+      { id: "resend", icon: "repeat", label: "Resend selected flow", run: () => void resendSelected() },
+      { id: "curl", icon: "copy", label: "Copy selected as cURL", kbd: "↵", run: () => void copyCurl() },
+      { id: "save", icon: "download", label: "Save session (.nova)", run: () => void doExportSession() },
+      { id: "open", icon: "upload", label: "Open session (.nova)", run: () => void doImportSession() },
+      { id: "har", icon: "file-down", label: "Export as HAR", run: () => void doExportHar() },
+      { id: "mcponly", icon: "plug", label: chip === "mcp" ? "Show all traffic (clear MCP filter)" : "Show only MCP traffic", run: () => { setChip((c) => (c === "mcp" ? "all" : "mcp")); setSection("flows"); } },
+      { id: "bp", icon: "circle-pause", label: "Arm breakpoint on next request", run: () => { armBreakpoint(true); setSection("break"); showToast("Breakpoint armed"); } },
+      { id: "rules", icon: "git-branch", label: "Open Rules", run: () => setSection("rules") },
+      { id: "scripts", icon: "braces", label: "Open Scripts", run: () => setSection("scripts") },
+      { id: "certs", icon: "shield-check", label: "Open Certificate", run: () => setSection("certs") },
     ],
-    [recording, proxy.running, proxy.system_proxy, theme, selected],
+    [recording, proxy.running, proxy.system_proxy, chip, selected],
   );
   const palFiltered = useMemo(() => {
     const q = paletteQuery.toLowerCase();
@@ -352,26 +499,21 @@ export function App() {
 
   // Distinct originating apps observed in captured traffic, for the app filter.
   const apps = useMemo(() => distinctApps(flows), [flows]);
+  // A filter set from the palette (or from a flow that has since been evicted)
+  // may name an app no longer in the capture; keep it listed so the dropdown
+  // shows the filter that is actually in force.
+  const appFilterItems = useMemo(
+    () => (appFilter && !apps.includes(appFilter) ? [appFilter, ...apps] : apps)
+      .map((a) => ({ value: a, label: a, icon: "app-window" as const })),
+    [apps, appFilter],
+  );
 
   return (
-    <div className="nova" data-nova-theme={theme} style={{ ["--accent" as string]: accent }}>
-      {/* titlebar */}
-      <div className="titlebar">
-        <div className="traffic">
-          <span style={{ background: "#ff5f57" }} />
-          <span style={{ background: "#febc2e" }} />
-          <span style={{ background: "#28c840" }} />
-        </div>
-        <div className="tb-title">
-          <span className="tb-logo" />
-          NovaProxy <span className="tb-sub">— default workspace</span>
-        </div>
-        <div className="tb-spacer" />
-      </div>
-
+    <div className="nova">
       <div className="body">
         {/* rail */}
         <div className="rail">
+          <Brandmark className="rail-logo" />
           {RAIL.map((r) => (
             <div
               key={r.id}
@@ -379,75 +521,71 @@ export function App() {
               title={r.label}
               onClick={() => setSection(r.id)}
             >
-              <span className="icon">{r.icon}</span>
+              <span className="icon"><Icon name={r.icon} size={19} /></span>
               <span className="label">{r.label}</span>
             </div>
           ))}
           <div className="spacer" />
-          <div className="rail-gear" title="Settings" onClick={() => setSettingsOpen(true)}>⚙</div>
+          <div className="rail-gear" title="Settings" onClick={() => setSettingsOpen(true)}>
+            <Icon name="settings" size={18} />
+          </div>
         </div>
 
         {/* content */}
         <div className="content">
-          {/* toolbar */}
+          {/* header */}
           <div className="toolbar">
+            <div className="hd-name">
+              <div className="hd-title">{SECTION_TITLE[section]}</div>
+              <div className="hd-sub">default workspace · {proxy.host}:{proxy.port}</div>
+            </div>
+            <div className="tool-sep" />
             <div className={`tool-btn rec-btn ${recording ? "on" : ""}`} onClick={() => setRecording(!recording)}>
               <span className="rec-dot" />
               {recording ? "Recording" : "Paused"}
             </div>
-            <div className="tool-btn" onClick={() => void clearAll()}>Clear</div>
-            <div className="tool-sep" />
-            <div className="search">
-              <span className="mag">⌕</span>
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Filter by host, path, method:GET, status:401…"
-              />
-              {query && <span className="clear" onClick={() => setQuery("")}>✕</span>}
+            <div className="tool-btn" onClick={() => void clearAll()}>
+              <Icon name="eraser" />
+              Clear
             </div>
             {section === "flows" && (
-              <div
-                className={`tool-btn ${mcpOnly ? "on" : ""}`}
-                title="Show only Model Context Protocol traffic (JSON-RPC over HTTP/SSE)"
-                onClick={() => setMcpOnly((v) => !v)}
-              >
-                ⌗ MCP only
-              </div>
-            )}
-            {section === "flows" && (
-              <select
-                className="app-filter"
+              <Dropdown
+                className="dd-app"
+                label="Filter by app"
+                title="Show only requests from the selected app"
                 value={appFilter}
-                onChange={(e) => setAppFilter(e.target.value)}
-                title="Capture only requests from the selected app"
-              >
-                <option value="">All apps</option>
-                {appFilter && !apps.includes(appFilter) && <option value={appFilter}>{appFilter}</option>}
-                {apps.map((a) => <option key={a} value={a}>{a}</option>)}
-              </select>
+                placeholder="All apps"
+                emptyLabel="No app captured yet"
+                items={appFilterItems}
+                onChange={setAppFilter}
+                clearLabel="All apps"
+                onClear={appFilter ? () => setAppFilter("") : undefined}
+              />
             )}
             <div className="spacer" />
             <div className="cmd-btn" onClick={openPalette}>
+              <Icon name="command" size={13} />
               <span>Commands</span>
               <span className="kbd">⌘K</span>
             </div>
             <div className="proxy-toggle" onClick={() => void toggleProxy()}>
+              <span>System proxy</span>
               <span className={`switch sm ${proxy.system_proxy ? "on" : ""}`}><span className="knob" /></span>
-              System Proxy
             </div>
           </div>
 
           {proxy.pending_restore && !restoreHidden && (
             <div className="restore-bar">
-              <span className="rb-icon">⚠</span>
+              <span className="rb-icon"><Icon name="triangle-alert" size={15} /></span>
               <span>
                 Your system proxy still points at NovaProxy from a session that ended
                 unexpectedly{helper?.supported && !helper.running ? " — restoring it needs your password once" : ""}.
               </span>
               <span className="spacer" />
               <button className="tool-btn" onClick={() => void restorePrevious()}>Restore settings</button>
-              <span className="rb-x" title="Dismiss" onClick={() => setRestoreHidden(true)}>✕</span>
+              <span className="rb-x" title="Dismiss" onClick={() => setRestoreHidden(true)}>
+                <Icon name="x" size={15} />
+              </span>
             </div>
           )}
 
@@ -455,8 +593,10 @@ export function App() {
             <FlowsSection
               flows={flows}
               query={query}
+              setQuery={setQuery}
               appFilter={appFilter}
-              mcpOnly={mcpOnly}
+              chip={chip}
+              setChip={setChip}
               showInternal={showInternal}
               toggleInternal={() => setShowInternal((v) => !v)}
               groupByHost={groupByHost}
@@ -497,7 +637,7 @@ export function App() {
       {/* status bar */}
       <div className="statusbar">
         <span className={`live ${recording && proxy.running ? "on" : ""}`}>
-          {!proxy.running ? "❚❚ stopped" : recording ? "● live" : "❚❚ paused"}
+          {!proxy.running ? "stopped" : recording ? "recording" : "paused"}
         </span>
         <span>{flows.length} flows · {hostCount} hosts</span>
         <span className="spacer" />
@@ -512,7 +652,7 @@ export function App() {
           <div className="scrim" onClick={closePalette} />
           <div className="palette">
             <div className="palette-input">
-              <span className="glyph">⌘</span>
+              <span className="glyph"><Icon name="search" size={15} /></span>
               <input
                 autoFocus
                 value={paletteQuery}
@@ -522,7 +662,9 @@ export function App() {
               <span className="esc">ESC</span>
             </div>
             <div className="palette-list">
-              {palFiltered.length === 0 && <div className="palette-empty">No commands match</div>}
+              {palFiltered.length === 0 && (
+                <div className="palette-empty">No command matches “{paletteQuery}”</div>
+              )}
               {palFiltered.map((c, i) => (
                 <button
                   key={c.id}
@@ -530,9 +672,9 @@ export function App() {
                   onMouseEnter={() => setPalIndex(i)}
                   onClick={() => runCommand(c)}
                 >
-                  <span className="picon">{c.icon}</span>
+                  <span className="picon"><Icon name={c.icon} size={15} /></span>
                   <span className="plabel">{c.label}</span>
-                  {"kbd" in c && c.kbd && <span className="pkbd">{c.kbd}</span>}
+                  {c.kbd && <span className="pkbd">{c.kbd}</span>}
                 </button>
               ))}
             </div>
@@ -543,8 +685,6 @@ export function App() {
       {/* settings modal */}
       {settingsOpen && (
         <SettingsModal
-          theme={theme} setTheme={setTheme}
-          accent={accent} setAccent={setAccent}
           port={proxy.port ?? 9090} ca={ca}
           net={net} setNet={saveNet}
           mcp={mcp} setMcp={setMcp}
@@ -569,7 +709,7 @@ export function App() {
 
       {/* toast */}
       {toast && (
-        <div className="toast"><span className="ok">✓</span>{toast}</div>
+        <div className="toast"><span className="ok"><Icon name="check" size={16} /></span>{toast}</div>
       )}
     </div>
   );
@@ -580,8 +720,10 @@ export function App() {
 function FlowsSection(props: {
   flows: Flow[];
   query: string;
+  setQuery: (q: string) => void;
   appFilter: string;
-  mcpOnly: boolean;
+  chip: FlowChip;
+  setChip: (c: FlowChip) => void;
   showInternal: boolean;
   toggleInternal: () => void;
   groupByHost: boolean;
@@ -601,18 +743,26 @@ function FlowsSection(props: {
   openPalette: () => void;
   showToast: (t: string) => void;
 }) {
-  const { flows, query, appFilter, mcpOnly, showInternal, groupByHost, selected, select } = props;
+  const { flows, query, appFilter, chip, showInternal, groupByHost, selected, select } = props;
   const splitRef = useRef<HTMLDivElement | null>(null);
 
   const filtered = useMemo(
     () =>
       filterFlows(flows, query, {
         app: appFilter,
-        mcpOnly,
+        chip,
         includeInternal: showInternal,
       }),
-    [flows, query, appFilter, mcpOnly, showInternal],
+    [flows, query, appFilter, chip, showInternal],
   );
+
+  const stats = useMemo(() => flowStats(flows, filtered), [flows, filtered]);
+  // Recomputed whenever the capture changes rather than on a timer: an idle
+  // proxy should not repaint the sparkline once a second forever.
+  const spark = useMemo(() => {
+    const series = throughputSeries(flows, Date.now());
+    return { ...sparkPath(series, 220, 46), rate: throughputRate(series, SPARK_WINDOW_MS) };
+  }, [flows]);
   // How much of the capture is NovaProxy's own doing, so the count can be
   // surfaced rather than silently swallowed.
   const internalCount = useMemo(() => flows.filter((f) => f.internal).length, [flows]);
@@ -631,25 +781,39 @@ function FlowsSection(props: {
     }));
   }, [filtered, groupByHost]);
 
-  const emptyMsg =
-    flows.length === 0
-      ? props.recording ? "Waiting for traffic…" : "Recording paused — no flows captured"
-      : "No flows match your filter";
+  // An empty list has three causes, and they want three different sentences —
+  // telling someone to loosen a filter they never set is worse than saying
+  // nothing.
+  const filtering = query.trim() !== "" || chip !== "all" || appFilter !== "";
+  const empty: { icon: IconName; msg: string; hint: string } | null =
+    filtered.length > 0
+      ? null
+      : flows.length === 0
+      ? props.recording
+        ? { icon: "activity", msg: "Waiting for traffic…", hint: "Flows land here as your apps make requests." }
+        : { icon: "circle-pause", msg: "Recording paused", hint: "Nothing is being captured right now." }
+      : filtering
+      ? { icon: "search-x", msg: "No flows match", hint: `${flows.length} captured, none matching. Try a shorter filter.` }
+      : { icon: "search-x", msg: "Nothing to show", hint: "Every captured flow is hidden." };
 
   /**
    * Drag the divider. Pointer capture (rather than window listeners) is what
-   * keeps the drag alive when the cursor outruns the 1px handle or leaves the
+   * keeps the drag alive when the cursor outruns the handle or leaves the
    * window, and it releases itself if the pointer is lost.
    */
   const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
-    const container = splitRef.current?.parentElement;
-    if (!container) return;
-    const left = container.getBoundingClientRect().left;
+    const handle = splitRef.current;
+    const listEl = handle?.previousElementSibling as HTMLElement | null;
+    const detailEl = handle?.nextElementSibling as HTMLElement | null;
+    if (!handle || !listEl || !detailEl) return;
+    // Measure from the list's own edge, not the row's: the row is padded, so
+    // the two are not the same point and the cursor would drift off the handle.
+    const left = listEl.getBoundingClientRect().left;
     // Never let the inspector be squeezed out of existence, however wide the
     // list is allowed to be in isolation.
-    const roomForDetail = container.clientWidth - 360;
-    const handle = splitRef.current!;
+    const roomForDetail =
+      detailEl.getBoundingClientRect().right - left - handle.offsetWidth - 360;
     handle.setPointerCapture(e.pointerId);
 
     const onMove = (ev: PointerEvent) =>
@@ -678,62 +842,114 @@ function FlowsSection(props: {
   };
 
   return (
-    <div className="flows">
+    <div className="flows-wrap">
+      <div className="stat-row">
+        <div className="stat">
+          <div className="k"><span className="icon"><Icon name="list" size={15} /></span>Flows</div>
+          <div className="row">
+            <span className="v">{stats.visible}</span>
+            <span className="u">of {stats.total}</span>
+          </div>
+        </div>
+        <div className="stat green">
+          <div className="k"><span className="icon"><Icon name="gauge" size={15} /></span>Median</div>
+          <div className="row">
+            <span className="v">{stats.medianMs != null ? formatDuration(stats.medianMs) : "—"}</span>
+            <span className="u">ms</span>
+          </div>
+        </div>
+        <div className="stat red">
+          <div className="k"><span className="icon"><Icon name="triangle-alert" size={15} /></span>Failed</div>
+          <div className="row">
+            <span className="v">{stats.failed}</span>
+            <span className="u">4xx / 5xx</span>
+          </div>
+        </div>
+        <div className="stat violet">
+          <div className="k"><span className="icon"><Icon name="plug" size={15} /></span>MCP calls</div>
+          <div className="row">
+            <span className="v">{stats.mcp}</span>
+            <span className="u">tool traffic</span>
+          </div>
+        </div>
+        <div className="stat spark">
+          <div className="k">
+            <span>Throughput</span>
+            <span className="rate">{formatRate(spark.rate)}</span>
+          </div>
+          <svg viewBox="0 0 220 46" preserveAspectRatio="none" aria-hidden>
+            <defs>
+              <linearGradient id="npSpark" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.32" />
+                <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+              </linearGradient>
+            </defs>
+            <path d={spark.area} fill="url(#npSpark)" />
+            <path
+              d={spark.line}
+              fill="none"
+              stroke="var(--accent)"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <circle cx={spark.last.x} cy={spark.last.y} r={3.5} fill="var(--accent)" />
+          </svg>
+        </div>
+      </div>
+
+      <div className="flows">
       <div className="flow-list" style={{ width: props.listWidth }}>
         <div className="flow-list-head">
-          <span>{filtered.length} flow{filtered.length === 1 ? "" : "s"}</span>
-          {internalCount > 0 && (
-            <span
-              className="grouptog"
-              title="NovaProxy's own MCP endpoint calls and replays"
-              onClick={props.toggleInternal}
-            >
-              {showInternal ? "◉" : "○"} {internalCount} own
+          <div className="search">
+            <span className="mag"><Icon name="search" /></span>
+            <input
+              value={query}
+              onChange={(e) => props.setQuery(e.target.value)}
+              placeholder="host, path, method:GET, status:401…"
+            />
+            {query && (
+              <span className="clear" title="Clear filter" onClick={() => props.setQuery("")}>
+                <Icon name="x" />
+              </span>
+            )}
+          </div>
+          <div className="chip-row">
+            {FLOW_CHIPS.map((c) => (
+              <div
+                key={c.id}
+                className={`fchip ${chip === c.id ? "on" : ""}`}
+                onClick={() => props.setChip(c.id)}
+              >
+                {c.label}
+              </div>
+            ))}
+          </div>
+          <div className="fl-meta">
+            <span>{filtered.length} flow{filtered.length === 1 ? "" : "s"}</span>
+            <span className="spacer" />
+            {internalCount > 0 && (
+              <span
+                className="grouptog"
+                title="NovaProxy's own MCP endpoint calls and replays"
+                onClick={props.toggleInternal}
+              >
+                <Icon name={showInternal ? "circle-dot" : "circle"} size={12} />
+                {internalCount} own
+              </span>
+            )}
+            <span className="grouptog" onClick={props.toggleGroup}>
+              <Icon name={groupByHost ? "chevron-down" : "list"} size={12} />
+              {groupByHost ? "grouped" : "flat"}
             </span>
-          )}
-          <span className="grouptog" onClick={props.toggleGroup}>{groupByHost ? "▾ grouped" : "≡ flat"}</span>
+          </div>
         </div>
-        <div className="flow-scroll">
-          {filtered.length === 0 && <div className="list-empty">{emptyMsg}</div>}
-          {groups.map((g) => (
-            <div key={g.key}>
-              {g.showHeader && (
-                <div className="group-head">
-                  <span className="hdot" />
-                  <span className="hname">{g.host}</span>
-                  {g.tls && <span className="tls-chip">TLS</span>}
-                  <span className="spacer" />
-                  <span className="hcount">{g.flows.length}</span>
-                </div>
-              )}
-              {g.flows.map((f) => (
-                <button
-                  key={f.id}
-                  className={`flow-row ${f.id === selected?.id ? "sel" : ""}`}
-                  onClick={() => select(f.id)}
-                >
-                  <span className={`badge ${methodClass(f.method)}`}>{f.method}</span>
-                  <span className="col">
-                    <div className="fpath">
-                      {f.mcp ? <span className="fmcp">⌗ {mcpLabel(f)}</span> : f.path}
-                    </div>
-                    <div className="fsub">
-                      {f.mapped_from && <span className="fmap">⤳ </span>}
-                      {f.host}
-                      {f.mcp && <span className="fdim"> · {f.path}</span>}
-                      {f.resent && <span className="fresent"> · resent</span>}
-                      {f.internal && <span className="fdim"> · NovaProxy</span>}
-                    </div>
-                  </span>
-                  <span className="fright">
-                    <div className={`fstatus ${statusClass(f.status, f.error)}`}>{statusText(f.status, f.error)}</div>
-                    <div className="ftime">{f.duration_ms != null ? `${Math.round(f.duration_ms)}ms` : "—"}</div>
-                  </span>
-                </button>
-              ))}
-            </div>
-          ))}
-        </div>
+        <FlowList
+          groups={groups}
+          selectedId={selected?.id ?? null}
+          select={select}
+          empty={empty}
+        />
       </div>
 
       <div
@@ -759,7 +975,7 @@ function FlowsSection(props: {
       <div className="detail">
         {!selected ? (
           <div className="detail-empty">
-            <div className="glyph">≋</div>
+            <div className="glyph"><Icon name="activity" size={21} /></div>
             <div className="big">Select a flow to inspect</div>
             <div className="hint">or press <span className="kbd">⌘K</span> for commands</div>
           </div>
@@ -774,9 +990,179 @@ function FlowsSection(props: {
           />
         )}
       </div>
+      </div>
     </div>
   );
 }
+
+/* ------------------------------ windowed list ------------------------------ */
+
+/** One host's flows, or all of them when the list is flat. */
+interface FlowGroup {
+  key: string;
+  host: string;
+  tls: boolean;
+  showHeader: boolean;
+  flows: Flow[];
+}
+
+/** Rows kept rendered beyond each viewport edge, so a fast flick stays covered. */
+const OVERSCAN = 8;
+/** First-frame estimates only — the real heights are measured from the DOM. */
+const ROW_H_GUESS = 54;
+const HEADER_H_GUESS = 33;
+
+/**
+ * The flow list, windowed.
+ *
+ * Retention allows `MAX_FLOWS` rows, and rendering them all put well over a
+ * hundred thousand nodes in the webview: scrolling stuttered, every snapshot
+ * walked the lot, and a long recording session ended with the renderer dying and
+ * the UI reloading itself. Only the rows overlapping the viewport are mounted
+ * now; `sliceGroups` holds the rest open with spacers so the scrollbar and the
+ * host headers behave exactly as they did.
+ */
+function FlowList({
+  groups,
+  selectedId,
+  select,
+  empty,
+}: {
+  groups: FlowGroup[];
+  selectedId: string | null;
+  select: (id: string) => void;
+  empty: { icon: IconName; msg: string; hint: string } | null;
+}) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(0);
+  const [rowH, setRowH] = useState(ROW_H_GUESS);
+  const [headerH, setHeaderH] = useState(HEADER_H_GUESS);
+
+  // Measure the viewport in a layout effect, so the first paint is already
+  // windowed, and observe it: a window resize or a divider drag changes how many
+  // rows fit.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const sync = () => {
+      setViewportH(el.clientHeight);
+      setScrollTop(el.scrollTop);
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  /**
+   * Row and header heights are read from the DOM rather than hard-coded: they
+   * follow the font, and a window whose arithmetic disagrees with the layout
+   * drifts. The fractional rect height is what makes the spacers add up exactly.
+   */
+  const measure = (current: number, set: (h: number) => void) => (el: HTMLElement | null) => {
+    if (!el) return;
+    const h = el.getBoundingClientRect().height;
+    if (h > 0 && Math.abs(h - current) > 0.5) set(h);
+  };
+
+  const hasHeaders = groups.length > 0 && groups[0].showHeader;
+  const slices = sliceGroups(
+    groups.map((g) => g.flows.length),
+    { rowH, headerH: hasHeaders ? headerH : 0, overscan: OVERSCAN },
+    scrollTop,
+    viewportH,
+  );
+  // Measure against the first group that is actually on screen.
+  const firstOnScreen = slices.findIndex((s) => s.onScreen);
+
+  return (
+    <div
+      className="flow-scroll"
+      ref={scrollRef}
+      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+    >
+      {empty && (
+        <div className="list-empty">
+          <div className="icon"><Icon name={empty.icon} size={26} /></div>
+          <div className="big">{empty.msg}</div>
+          <div>{empty.hint}</div>
+        </div>
+      )}
+      {groups.map((g, gi) => {
+        const s = slices[gi];
+        // An off-screen group is one spacer: no header, no rows, no cost.
+        if (!s.onScreen) return <div key={g.key} style={{ height: s.height }} />;
+        return (
+          <div key={g.key}>
+            {g.showHeader && (
+              <div
+                className="group-head"
+                ref={gi === firstOnScreen ? measure(headerH, setHeaderH) : undefined}
+              >
+                <span className="hdot" />
+                <span className="hname">{g.host}</span>
+                {g.tls && <span className="tls-chip">TLS</span>}
+                <span className="spacer" />
+                <span className="hcount">{g.flows.length}</span>
+              </div>
+            )}
+            {s.padTop > 0 && <div style={{ height: s.padTop }} />}
+            {g.flows.slice(s.from, s.to).map((f, i) => (
+              <FlowRow
+                key={f.id}
+                flow={f}
+                selected={f.id === selectedId}
+                select={select}
+                measure={gi === firstOnScreen && i === 0 ? measure(rowH, setRowH) : undefined}
+              />
+            ))}
+            {s.padBottom > 0 && <div style={{ height: s.padBottom }} />}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** One row. Memoised: a snapshot for one flow must not re-render its neighbours. */
+const FlowRow = memo(function FlowRow({
+  flow: f,
+  selected,
+  select,
+  measure,
+}: {
+  flow: Flow;
+  selected: boolean;
+  select: (id: string) => void;
+  measure?: (el: HTMLElement | null) => void;
+}) {
+  return (
+    <button
+      ref={measure}
+      className={`flow-row ${selected ? "sel" : ""}`}
+      onClick={() => select(f.id)}
+    >
+      <span className={`badge ${methodClass(f.method)}`}>{f.method}</span>
+      <span className="col">
+        <div className="fpath">{f.mcp ? <span className="fmcp">{mcpLabel(f)}</span> : f.path}</div>
+        <div className="fsub">
+          {f.mapped_from && <span className="fmap" title={`mapped from ${f.mapped_from}`}><Icon name="git-branch" size={11} /></span>}
+          {f.host}
+          {f.mcp && <span className="fdim"> · {f.path}</span>}
+          {f.resent && <span className="fresent"> · resent</span>}
+          {f.internal && <span className="fdim"> · NovaProxy</span>}
+        </div>
+      </span>
+      <span className="fright">
+        <div className={`fstatus ${statusClass(f.status, f.error)}`}>
+          {statusText(f.status, f.error)}
+        </div>
+        <div className="ftime">{f.duration_ms != null ? formatMs(f.duration_ms) : "—"}</div>
+      </span>
+    </button>
+  );
+});
 
 const DETAIL_TABS: { id: DetailTab; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -797,6 +1183,7 @@ function Detail({
   showToast: (t: string) => void;
 }) {
   const wsMessages = useStore((s) => s.wsMessages[flow.id]);
+  const wsDropped = useStore((s) => s.wsDropped[flow.id] ?? 0);
   const tabs = flow.is_websocket
     ? [...DETAIL_TABS, { id: "ws" as DetailTab, label: `WebSocket${wsMessages ? ` (${wsMessages.length})` : ""}` }]
     : DETAIL_TABS;
@@ -808,7 +1195,7 @@ function Detail({
     { k: "Scheme", v: flow.scheme.toUpperCase() },
     { k: "Remote host", v: flow.host },
     { k: "App", v: flow.process ? `${flow.process}${flow.pid != null ? ` (${flow.pid})` : ""}` : "—" },
-    { k: "Duration", v: flow.duration_ms != null ? `${Math.round(flow.duration_ms)} ms` : "—" },
+    { k: "Duration", v: flow.duration_ms != null ? `${formatDuration(flow.duration_ms)} ms` : "—" },
     { k: "Size", v: formatBytes(totalSize) },
     { k: "Started", v: formatAgo(flow.started_at) },
   ];
@@ -820,7 +1207,10 @@ function Detail({
           <span className={`badge ${methodClass(flow.method)}`}>{flow.method}</span>
           <span className="u">{flow.url}</span>
           <span className={`status-pill ${statusClass(flow.status, flow.error)}`}>{statusText(flow.status, flow.error)}</span>
-          <div className="resend" onClick={onResend}>↻ Resend</div>
+          <div className="resend" onClick={onResend}>
+            <Icon name="repeat" size={13} />
+            Resend
+          </div>
         </div>
         <div className="detail-tabs">
           {tabs.map((t) => (
@@ -850,18 +1240,18 @@ function Detail({
             )}
             <div className="chips">
               {flow.scheme === "https" ? (
-                <span className="chip green">🔒 TLS · decrypted</span>
+                <span className="chip green"><Icon name="lock" size={12} /> TLS · decrypted</span>
               ) : (
                 <span className="chip blue">plaintext</span>
               )}
               <span className="chip blue">{flow.http_version}</span>
-              {flow.is_websocket && <span className="chip cyan">≋ WebSocket</span>}
-              {flow.tunneled && <span className="chip amber">⇅ tunneled · not decrypted</span>}
-              {flow.mapped_from && <span className="chip violet">⤳ mapped from {flow.mapped_from}</span>}
-              {flow.mcp && <span className="chip violet">⌗ MCP · {mcpLabel(flow)}</span>}
+              {flow.is_websocket && <span className="chip cyan"><Icon name="activity" size={12} /> WebSocket</span>}
+              {flow.tunneled && <span className="chip amber"><Icon name="arrow-up-down" size={12} /> tunneled · not decrypted</span>}
+              {flow.mapped_from && <span className="chip violet"><Icon name="git-branch" size={12} /> mapped from {flow.mapped_from}</span>}
+              {flow.mcp && <span className="chip violet"><Icon name="plug" size={12} /> MCP · {mcpLabel(flow)}</span>}
               {flow.internal && <span className="chip amber">NovaProxy's own traffic</span>}
-              {flow.resent && <span className="chip cyan">↻ resent</span>}
-              {flow.error && <span className="chip red">⚠ {flow.error}</span>}
+              {flow.resent && <span className="chip cyan"><Icon name="repeat" size={12} /> resent</span>}
+              {flow.error && <span className="chip red"><Icon name="triangle-alert" size={12} /> {flow.error}</span>}
             </div>
           </>
         )}
@@ -869,10 +1259,15 @@ function Detail({
         {tab === "request" && (
           <>
             <div className="sec-label">Request headers</div>
-            {flow.request_headers.length === 0 && <div className="sec-label metaval">— no headers —</div>}
-            {flow.request_headers.map((h, i) => (
-              <div className="hrow" key={i}><span className="hk">{h.name}</span><span className="hv">{h.value}</span></div>
-            ))}
+            {flow.request_headers.length === 0 ? (
+              <div className="hlist-empty">— no headers —</div>
+            ) : (
+              <div className="hlist">
+                {flow.request_headers.map((h, i) => (
+                  <div className="hrow" key={i}><span className="hk">{h.name}</span><span className="hv">{h.value}</span></div>
+                ))}
+              </div>
+            )}
             <div className="sec-label">Body</div>
             <BodyBlock body={flow.request_body} kind="req" flowId={flow.id} showToast={showToast} />
           </>
@@ -881,10 +1276,15 @@ function Detail({
         {tab === "response" && (
           <>
             <div className="sec-label">Response headers</div>
-            {flow.response_headers.length === 0 && <div className="sec-label metaval">— no headers —</div>}
-            {flow.response_headers.map((h, i) => (
-              <div className="hrow" key={i}><span className="hk">{h.name}</span><span className="hv">{h.value}</span></div>
-            ))}
+            {flow.response_headers.length === 0 ? (
+              <div className="hlist-empty">— no headers —</div>
+            ) : (
+              <div className="hlist">
+                {flow.response_headers.map((h, i) => (
+                  <div className="hrow" key={i}><span className="hk">{h.name}</span><span className="hv">{h.value}</span></div>
+                ))}
+              </div>
+            )}
             <div className="sec-label meta">
               Body
               <span className="metaval">{(flow.content_type ?? "—")} · {formatBytes(flow.response_size)}</span>
@@ -895,17 +1295,9 @@ function Detail({
 
         {tab === "timing" && <TimingPanel flow={flow} />}
 
-        {tab === "curl" && (
-          <>
-            <div className="sec-label meta">
-              Export as cURL
-              <span className="copy" onClick={onCopyCurl}>Copy</span>
-            </div>
-            <pre className="code curl">{buildCurl(flow)}</pre>
-          </>
-        )}
+        {tab === "curl" && <CurlPanel flow={flow} onCopy={onCopyCurl} showToast={showToast} />}
 
-        {tab === "ws" && <WsPanel messages={wsMessages} />}
+        {tab === "ws" && <WsPanel key={flow.id} messages={wsMessages} dropped={wsDropped} />}
       </div>
     </>
   );
@@ -981,13 +1373,40 @@ function TimingPanel({ flow }: { flow: Flow }) {
   );
 }
 
-function WsPanel({ messages }: { messages: WsMessage[] | undefined }) {
+/**
+ * Frames rendered at once. A busy socket fills its retention window in seconds,
+ * and every frame is a DOM row — the rest stay one click away rather than being
+ * mounted where nobody is looking.
+ */
+const WS_PAGE = 400;
+
+function WsPanel({ messages, dropped }: { messages: WsMessage[] | undefined; dropped: number }) {
+  const [showAll, setShowAll] = useState(false);
   if (!messages || messages.length === 0) {
     return <pre className="code res">— no WebSocket frames captured yet —</pre>;
   }
+  // Newest frames are the ones being read, so the window is the tail.
+  const visible = showAll ? messages : messages.slice(Math.max(0, messages.length - WS_PAGE));
+  const earlier = messages.length - visible.length;
   return (
-    <div className="ws-log">
-      {messages.map((m) => {
+    <>
+      {(dropped > 0 || earlier > 0) && (
+        <div className="ws-note">
+          {dropped > 0 && (
+            <span>
+              {dropped.toLocaleString()} earlier frame{dropped === 1 ? "" : "s"} dropped at the{" "}
+              {MAX_WS_FRAMES.toLocaleString()}-frame cap.
+            </span>
+          )}
+          {earlier > 0 && (
+            <span className="ws-more" onClick={() => setShowAll(true)}>
+              Show {earlier.toLocaleString()} earlier retained frame{earlier === 1 ? "" : "s"}
+            </span>
+          )}
+        </div>
+      )}
+      <div className="ws-log">
+      {visible.map((m) => {
         const sent = m.direction === "Sent";
         const label = m.opcode.toLowerCase();
         const payload =
@@ -1000,14 +1419,45 @@ function WsPanel({ messages }: { messages: WsMessage[] | undefined }) {
             : "";
         return (
           <div className={`ws-frame ${sent ? "sent" : "recv"}`} key={m.flow_id + "-" + String(m.seq)}>
-            <span className={`ws-dir ${sent ? "sent" : "recv"}`}>{sent ? "▲ sent" : "▼ recv"}</span>
+            <span className={`ws-dir ${sent ? "sent" : "recv"}`}>
+              <Icon name={sent ? "arrow-up" : "arrow-down"} size={11} />
+              {sent ? "sent" : "recv"}
+            </span>
             <span className="ws-op">{label}</span>
             <span className="ws-payload">{payload}{m.truncated ? " …(truncated)" : ""}</span>
             <span className="ws-meta">{formatBytes(m.size)} · {formatAgo(m.at)}</span>
           </div>
         );
       })}
-    </div>
+      </div>
+    </>
+  );
+}
+
+/**
+ * The cURL tab. Its own component so the request body is fetched when the tab is
+ * actually open, rather than on every flow selection.
+ */
+function CurlPanel({
+  flow,
+  onCopy,
+  showToast,
+}: {
+  flow: Flow;
+  onCopy: () => void;
+  showToast: (t: string) => void;
+}) {
+  const { shown, loading, fetched } = useBodyBytes(flow.id, "request", flow.request_body, showToast);
+  return (
+    <>
+      <div className="sec-label meta">
+        Export as cURL
+        <span className="copy" onClick={onCopy}>Copy</span>
+      </div>
+      <pre className="code curl">
+        {buildCurl(loading && !fetched ? flow : { ...flow, request_body: shown })}
+      </pre>
+    </>
   );
 }
 
@@ -1020,26 +1470,24 @@ function BodyBlock({
   flowId: string;
   showToast?: (t: string) => void;
 }) {
-  // A body larger than the inline preview cap lives in the on-disk body store;
-  // it is fetched only when asked for, so opening a flow never pulls megabytes
-  // across the IPC boundary.
-  const [full, setFull] = useState<Flow["request_body"] | null>(null);
-  const [loading, setLoading] = useState(false);
-  useEffect(() => {
-    setFull(null);
-    setLoading(false);
-  }, [flowId, kind]);
+  // Bodies are not held in the list. The bytes of the one on screen are fetched
+  // here — from the on-disk store when the body was too large to preview in
+  // full, otherwise from the flow the engine retains.
+  const side = kind === "req" ? "request" : "response";
+  const { shown, fetched: full, loading, put, setLoading } = useBodyBytes(flowId, side, body, showToast);
 
-  const shown = full ?? body;
   if (!shown) {
     return <pre className={`code ${kind}`}>{status === 204 ? "— no content (204) —" : "— no body —"}</pre>;
+  }
+  if (loading && !full) {
+    return <pre className={`code ${kind}`}>Loading body ({formatBytes(shown.size)})…</pre>;
   }
 
   async function loadFull() {
     if (!body) return;
     setLoading(true);
     try {
-      setFull(await api.readBody(flowId, kind === "req" ? "request" : "response", body.media_type, body.decoded_from));
+      put(await api.readBody(flowId, side, body.media_type, body.decoded_from));
     } catch (e) {
       showToast?.(String(e));
     } finally {
@@ -1111,7 +1559,10 @@ function RulesSection({ rules, saveRules }: { rules: Rule[]; saveRules: (r: Rule
       <div className="page-inner w720">
         <div className="page-head">
           <h2 className="page-title">Rules</h2>
-          <div className="btn-primary" onClick={addRule}>+ New rule</div>
+          <div className="btn-primary" onClick={addRule}>
+            <Icon name="plus" />
+            New rule
+          </div>
         </div>
         <p className="page-sub">
           Map Remote, Map Local, Block and header Rewrite are applied to matching live traffic.
@@ -1127,7 +1578,7 @@ function RulesSection({ rules, saveRules }: { rules: Rule[]; saveRules: (r: Rule
               </select>
               <input className="rule-name-input" value={r.name} onChange={(e) => update(r.id, { name: e.target.value })} placeholder="rule name" />
               <span className="spacer" />
-              <span className="rule-del" onClick={() => del(r.id)}>🗑</span>
+              <span className="rule-del" title="Delete rule" onClick={() => del(r.id)}><Icon name="trash-2" size={15} /></span>
             </div>
             <div className="rule-body">
               <div className="rule-field">
@@ -1185,7 +1636,7 @@ function BreakSection({ armed, onArm }: { armed: boolean; onArm: (armed: boolean
           so you can edit its headers and continue — or abort it.
         </p>
         <div className="bp-card">
-          <div className={`bp-icon ${armed ? "armed" : ""}`}>⏸</div>
+          <div className={`bp-icon ${armed ? "armed" : ""}`}><Icon name="circle-pause" size={21} /></div>
           <div style={{ flex: 1 }}>
             <div className="t">{armed ? "Breakpoint armed" : "Breakpoint idle"}</div>
             <div className="s">
@@ -1259,7 +1710,7 @@ function InterceptModal({
         />
         <div className="intercept-actions">
           <div className="btn-neutral danger" onClick={() => onResume(false, [])}>Abort</div>
-          <div className="btn-primary" onClick={() => onResume(true, parseHeaders())}>Continue →</div>
+          <div className="btn-primary" onClick={() => onResume(true, parseHeaders())}>Continue<Icon name="arrow-right" size={13} /></div>
         </div>
       </div>
     </>
@@ -1298,7 +1749,10 @@ function ScriptsSection({
           <span className="mono">flow.headers</span> or call <span className="mono">flow.abort()</span>.
         </p>
         <div className="editor">
-          <div className="editor-tab">tamper.js</div>
+          <div className="editor-tab">
+            <span className="icon"><Icon name="file-code" /></span>
+            tamper.js
+          </div>
           <textarea
             className="editor-area"
             value={source}
@@ -1393,7 +1847,7 @@ function CertsSection({ ca, showToast }: { ca: CaStatus | null; showToast: (t: s
           ) : (
             <>
               <div className="cert-row">
-                <div className={`cert-icon ${trusted ? "trusted" : ""}`}>🔒</div>
+                <div className={`cert-icon ${trusted ? "trusted" : ""}`}><Icon name="shield-check" size={24} /></div>
                 <div style={{ flex: 1 }}>
                   <div className="cert-name">{ca.subject || "NovaProxy Root CA"}</div>
                   <div className="cert-fp">SHA-256 · {ca.fingerprint}</div>
@@ -1406,19 +1860,19 @@ function CertsSection({ ca, showToast }: { ca: CaStatus | null; showToast: (t: s
               <div className="cert-actions">
                 {!trusted ? (
                   <>
-                    <div className="btn-primary" onClick={() => !busy && run("install")}>{busy === "install" ? "Installing…" : "Install & trust"}</div>
-                    <div className="btn-neutral" onClick={() => !busy && run("install-all")}>{busy === "install-all" ? "Installing…" : "Install for all users"}</div>
+                    <div className="btn-primary" onClick={() => !busy && run("install")}><Icon name="shield-check" />{busy === "install" ? "Installing…" : "Install & trust"}</div>
+                    <div className="btn-neutral" onClick={() => !busy && run("install-all")}><Icon name="users" />{busy === "install-all" ? "Installing…" : "Install for all users"}</div>
                   </>
                 ) : (
                   <>
-                    <div className="btn-primary red" onClick={() => !busy && run("uninstall")}>{busy === "uninstall" ? "Removing…" : "Remove certificate"}</div>
+                    <div className="btn-primary red" onClick={() => !busy && run("uninstall")}><Icon name="trash-2" />{busy === "uninstall" ? "Removing…" : "Remove certificate"}</div>
                     {!ca.trusted_system && (
-                      <div className="btn-neutral" onClick={() => !busy && run("install-all")}>{busy === "install-all" ? "Installing…" : "Also trust for all users"}</div>
+                      <div className="btn-neutral" onClick={() => !busy && run("install-all")}><Icon name="users" />{busy === "install-all" ? "Installing…" : "Also trust for all users"}</div>
                     )}
                   </>
                 )}
-                <div className="btn-neutral" onClick={() => { navigator.clipboard.writeText(ca.cert_path); showToast("Certificate path copied"); }}>Export .pem</div>
-                <div className="btn-neutral" onClick={() => !busy && run("regen")}>{busy === "regen" ? "Regenerating…" : "Regenerate CA"}</div>
+                <div className="btn-neutral" onClick={() => { navigator.clipboard.writeText(ca.cert_path); showToast("Certificate path copied"); }}><Icon name="download" />Export .pem</div>
+                <div className="btn-neutral" onClick={() => !busy && run("regen")}><Icon name="refresh-cw" />{busy === "regen" ? "Regenerating…" : "Regenerate CA"}</div>
               </div>
               <div className="cert-hint">{trustHint(ca)}</div>
             </>
@@ -1460,11 +1914,11 @@ function TlsScopeCard({ showToast }: { showToast: (t: string) => void }) {
 
   return (
     <div className="cert-card" style={{ marginTop: 16 }}>
-      <div className="sec-label meta" style={{ margin: "2px 0 10px" }}>
+      <div className="sec-label meta">
         SSL Proxying scope
         {dirty && <span className="copy" onClick={save}>Save</span>}
       </div>
-      <p className="page-sub" style={{ margin: "0 0 12px" }}>
+      <p className="page-sub">
         Hosts that pin certificates or require client certs can't be decrypted — tunnel them so the app keeps working.
       </p>
       <div className="scope-toggle" onClick={() => update({ intercept_all: !scope.intercept_all })}>
@@ -1505,24 +1959,19 @@ function TlsScopeCard({ showToast }: { showToast: (t: string) => void }) {
 
 /* ------------------------------ settings modal ------------------------------ */
 
-type SettingsTab = "general" | "appearance" | "network" | "mcp" | "setup";
+type SettingsTab = "general" | "network" | "mcp" | "setup";
 
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "general", label: "General" },
-  { id: "appearance", label: "Appearance" },
   { id: "network", label: "Network" },
   { id: "mcp", label: "MCP" },
   { id: "setup", label: "Getting started" },
 ];
 
 function SettingsModal({
-  theme, setTheme, accent, setAccent, port, ca, net, setNet, mcp, setMcp,
+  port, ca, net, setNet, mcp, setMcp,
   helper, setHelper, prefs, setPrefs, showToast, onClose,
 }: {
-  theme: "dark" | "light";
-  setTheme: (t: "dark" | "light") => void;
-  accent: string;
-  setAccent: (a: string) => void;
   port: number;
   ca: CaStatus | null;
   net: NetworkConditions;
@@ -1543,7 +1992,7 @@ function SettingsModal({
         <div className="modal" onClick={(e) => e.stopPropagation()}>
           <div className="modal-head">
             <h2>Settings</h2>
-            <span className="modal-x" onClick={onClose}>✕</span>
+            <span className="modal-x" title="Close" onClick={onClose}><Icon name="x" size={16} /></span>
           </div>
           <div className="modal-tabs">
             {SETTINGS_TABS.map((t) => (
@@ -1560,24 +2009,6 @@ function SettingsModal({
           {tab === "general" && (
             <GeneralTab prefs={prefs} setPrefs={setPrefs} helper={helper} setHelper={setHelper} showToast={showToast} />
           )}
-
-          {tab === "appearance" && (<>
-            <h3>Appearance</h3>
-            <div className="field-group">
-              <div className={`switch ${theme === "light" ? "on" : ""}`} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}><span className="knob" /></div>
-              <span style={{ color: "var(--text2)" }}>{theme === "dark" ? "Dark theme" : "Light theme"}</span>
-            </div>
-            <div className="field-group">
-              {ACCENTS.map((a) => (
-                <span
-                  key={a}
-                  className={`swatch ${accent === a ? "sel" : ""}`}
-                  style={{ background: a }}
-                  onClick={() => setAccent(a)}
-                />
-              ))}
-            </div>
-          </>)}
 
           {tab === "network" && (<>
             <h3>Network conditions</h3>
@@ -1644,6 +2075,16 @@ export NODE_EXTRA_CA_CERTS="${ca?.cert_path ?? "<ca.pem path>"}"`}
  * The defaults a session starts from, plus the one piece of machinery that
  * decides whether changing the system proxy costs a password.
  */
+const GROUPING_ITEMS: DropdownItem[] = [
+  { value: "grouped", label: "Grouped by host", icon: "globe" },
+  { value: "flat", label: "Flat", icon: "list" },
+];
+
+const LAUNCH_ITEMS: DropdownItem[] = [
+  { value: "none", label: "None — leave the OS alone", icon: "circle" },
+  { value: "system", label: "System proxy — capture everything", icon: "power" },
+];
+
 function GeneralTab({
   prefs, setPrefs, helper, setHelper, showToast,
 }: {
@@ -1656,36 +2097,30 @@ function GeneralTab({
   return (
     <>
       <h3>Flow list</h3>
-      <label className="pref-row">
+      <div className="pref-row">
         <span className="k">Default grouping</span>
-        <select
-          className="rule-input"
+        <Dropdown
+          label="Default grouping"
           value={prefs.flowGrouping}
-          onChange={(e) => setPrefs({ ...prefs, flowGrouping: e.target.value as Prefs["flowGrouping"] })}
-        >
-          <option value="grouped">Grouped by host</option>
-          <option value="flat">Flat</option>
-        </select>
-      </label>
+          items={GROUPING_ITEMS}
+          onChange={(v) => setPrefs({ ...prefs, flowGrouping: v as Prefs["flowGrouping"] })}
+        />
+      </div>
       <p>
         How the list opens. The <b>grouped / flat</b> control above the list still switches the
         current session without changing this default.
       </p>
 
       <h3>System proxy</h3>
-      <label className="pref-row">
+      <div className="pref-row">
         <span className="k">At launch</span>
-        <select
-          className="rule-input"
+        <Dropdown
+          label="System proxy at launch"
           value={prefs.systemProxyAtLaunch}
-          onChange={(e) =>
-            setPrefs({ ...prefs, systemProxyAtLaunch: e.target.value as Prefs["systemProxyAtLaunch"] })
-          }
-        >
-          <option value="none">None — leave the OS alone</option>
-          <option value="system">System proxy — capture everything</option>
-        </select>
-      </label>
+          items={LAUNCH_ITEMS}
+          onChange={(v) => setPrefs({ ...prefs, systemProxyAtLaunch: v as Prefs["systemProxyAtLaunch"] })}
+        />
+      </div>
       <p>
         <b>None</b> is the default: pointing the OS at NovaProxy rewrites a setting the whole
         machine depends on for working internet, so it should be a deliberate act.
