@@ -11,3 +11,6 @@ src-tauri/target
 /assets/logo/icon-small.png
 /novaproxy-logo
 /novaproxy-logo.zip
+
+# CI stages the privileged helper here as a Tauri sidecar (see release.yml).
+src-tauri/bin/

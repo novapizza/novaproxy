@@ -1,0 +1,273 @@
+name: Release
+
+# Triggered by pushing a version tag, e.g.:
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Use the manual trigger for a dry run: it builds and signs every target, keeps
+# the installers as run artifacts, and touches neither GitHub Releases nor R2.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # A tag that disagrees with tauri.conf.json ships an installer whose in-app
+  # version is wrong. Cheap to check here, expensive to notice after release.
+  preflight:
+    name: Check tag matches version
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare tag with tauri.conf.json and package.json
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CONF=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          PKG=$(node -p "require('./package.json').version")
+          echo "tag=$TAG tauri.conf=$CONF package.json=$PKG"
+          [ "$TAG" = "$CONF" ] || { echo "::error::tag v$TAG != tauri.conf.json $CONF"; exit 1; }
+          [ "$TAG" = "$PKG" ]  || { echo "::error::tag v$TAG != package.json $PKG"; exit 1; }
+
+  build:
+    name: ${{ matrix.name }}
+    needs: [preflight]
+    # preflight is skipped on workflow_dispatch (no tag); don't let that skip us.
+    if: always() && needs.preflight.result != 'failure'
+    environment: Production
+    strategy:
+      # One platform failing should not throw away the others' artifacts.
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple silicon)
+            os: macos-14
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+          - name: macOS (Intel)
+            os: macos-13
+            target: x86_64-apple-darwin
+            bundles: app,dmg
+          - name: Windows (x64)
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis,msi
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # aws-lc-sys (rustls' backend, pulled in by hudsucker) assembles with NASM
+      # on Windows. Without it the build fails in the build script.
+      - uses: ilammy/setup-nasm@v1
+        if: runner.os == 'Windows'
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The app looks for the privileged helper next to its own executable
+      # (crates/nova-os/src/helper.rs), which inside a .app is Contents/MacOS —
+      # exactly where Tauri puts a sidecar. Staging it under src-tauri/bin lets
+      # tauri.macos.release.conf.json pick it up as externalBin, so the shipped
+      # bundle can actually install the helper. macOS-only: the helper is a
+      # launchd daemon and refuses to run anywhere else.
+      - name: Stage privileged helper as sidecar
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --release -p nova-helper --target ${{ matrix.target }}
+          mkdir -p src-tauri/bin
+          cp "target/${{ matrix.target }}/release/nova-helper" \
+             "src-tauri/bin/nova-helper-${{ matrix.target }}"
+
+      # Azure Trusted Signing has no first-class Tauri support, so it goes
+      # through bundle.windows.signCommand. Generated rather than committed for
+      # two reasons: the endpoint and account names are org secrets, and a
+      # committed signCommand would break every local `npm run tauri build` on a
+      # machine without the CLI or the credentials. If any of the four values is
+      # missing, no config is written and the build falls through unsigned.
+      - name: Configure Azure Trusted Signing
+        id: winsign
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_CODE_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
+          AZURE_CERT_PROFILE_NAME: ${{ secrets.AZURE_CERT_PROFILE_NAME }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        run: |
+          if [ -z "$AZURE_TRUSTED_SIGNING_ENDPOINT" ] || [ -z "$AZURE_CODE_SIGNING_ACCOUNT_NAME" ] \
+             || [ -z "$AZURE_CERT_PROFILE_NAME" ] || [ -z "$AZURE_CLIENT_ID" ]; then
+            echo "Azure signing secrets incomplete — building unsigned."
+            echo "config=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cargo install trusted-signing-cli --locked
+          CONF=src-tauri/tauri.windows.release.conf.json
+          # %1 is the placeholder Tauri substitutes with each file to sign.
+          node -e '
+            const fs = require("fs");
+            const cmd = [
+              "trusted-signing-cli",
+              "-e", process.env.AZURE_TRUSTED_SIGNING_ENDPOINT,
+              "-a", process.env.AZURE_CODE_SIGNING_ACCOUNT_NAME,
+              "-c", process.env.AZURE_CERT_PROFILE_NAME,
+              "%1",
+            ].join(" ");
+            fs.writeFileSync(process.argv[1],
+              JSON.stringify({ bundle: { windows: { signCommand: cmd } } }, null, 2));
+          ' "$CONF"
+          echo "config=--config $CONF" >> "$GITHUB_OUTPUT"
+
+      # tauri.conf.json's beforeBuildCommand runs `npm run build`
+      # (tsc --noEmit && vite build) plus a release build of the helper, so the
+      # frontend and the helper are produced by this step.
+      - name: Build, sign and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # ── Apple signing and notarization (macOS) ───────────────────────
+          # The org stores the Developer ID .p12 under electron-builder's names
+          # (CSC_LINK is its base64, CSC_KEY_PASSWORD its password); tauri-action
+          # reads APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD, so map them.
+          APPLE_CERTIFICATE: ${{ secrets.CSC_LINK }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          # Password for the throwaway keychain tauri-action creates — not a
+          # credential of ours, so a per-run value is fine.
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD || github.run_id }}
+          # e.g. "Developer ID Application: Acme Inc (TEAMID)". Without it the
+          # macOS bundle is built unsigned.
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+          # ── Azure auth for Trusted Signing (Windows) ─────────────────────
+          # Read by trusted-signing-cli through the Azure environment credential.
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_CORE_OUTPUT: none
+
+          # ── Updater artifact signing ─────────────────────────────────────
+          # Only used once tauri-plugin-updater and createUpdaterArtifacts
+          # exist; harmless while they don't.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          # Empty on a dry run, which makes the action build without releasing.
+          tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          releaseName: 'NovaProxy ${{ github.ref_name }}'
+          releaseBody: |
+            Download the installer for your platform below.
+
+            - macOS: `.dmg` (Apple silicon and Intel are separate builds)
+            - Windows: `.exe` (NSIS installer) or `.msi`
+
+            See the [changelog](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}).
+          # Stays a draft until every matrix leg has uploaded and R2 is in sync,
+          # so nobody downloads a release that is missing a platform.
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: false
+          args: >-
+            --target ${{ matrix.target }}
+            --bundles ${{ matrix.bundles }}
+            ${{ runner.os == 'macOS' && '--config src-tauri/tauri.macos.release.conf.json' || steps.winsign.outputs.config }}
+
+      # Collected by the r2 job, and the only output of a dry run.
+      - name: Upload installers as run artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: novaproxy-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            target/${{ matrix.target }}/release/bundle/msi/*.msi
+
+  # R2 is the download host: mirror every installer there, then keep only the
+  # newest two versions. Runs on ubuntu because that image has the AWS CLI, and
+  # after all platform builds so the bucket never holds a partial release.
+  r2:
+    name: Mirror to R2 and prune
+    needs: [build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    environment: Production
+    runs-on: ubuntu-latest
+    # Job-level, not workflow-level: the `secrets` context is not available in a
+    # workflow-level `env` block, and these live in the Production environment.
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_RELEASES_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_RELEASES_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      # R2 is S3-compatible; endpoint is
+      # https://<account>.r2.cloudflarestorage.com/<bucket>. Both are stored as
+      # secrets, so read them from there rather than hardcoding.
+      R2_RELEASES_ACCOUNT_ID: ${{ secrets.R2_RELEASES_ACCOUNT_ID }}
+      R2_RELEASES_BUCKET: ${{ secrets.R2_RELEASES_BUCKET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: novaproxy-*
+          merge-multiple: true
+          path: installers
+
+      - name: Upload to R2
+        run: |
+          ls -lh installers
+          aws s3 cp installers/ "s3://${R2_RELEASES_BUCKET}/" \
+            --recursive \
+            --endpoint-url "https://${R2_RELEASES_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --checksum-algorithm CRC32 \
+            --no-progress
+
+      # KEEP=2 leaves the previous version in place as a rollback target (and as
+      # the delta source once an updater exists). Flip DRY_RUN to '1' for the
+      # first run to read the deletion set in the logs before anything is gone.
+      - name: Prune old releases (keep newest 2)
+        run: bash scripts/prune-r2-releases.sh
+        env:
+          KEEP: '2'
+          DRY_RUN: '0'
+
+  # Everything is up: flip the draft. Separate job so a partial matrix or a
+  # failed mirror leaves the release invisible rather than half-published.
+  publish:
+    name: Publish release
+    needs: [build, r2]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Undraft and mark latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest
