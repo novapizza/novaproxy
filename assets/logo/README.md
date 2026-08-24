@@ -65,16 +65,23 @@ assets/logo/
   preview.html                         contact sheet: sizes, mock Dock / taskbar / menubar
   build.py render.py icns.py preview.py    generators
 
-src-tauri/icons/
-  icon.png            1024 master
+src-tauri/icons/                       chỉ những gì tauri.conf.json bundle
   icon.icns           macOS — 10 slot (ic04 ic05 ARGB + ic07..ic14 PNG)
-  icon.ico            Windows — 256 128 64 48 32 24 16
+  icon.ico            Windows — 256 PNG, 128..16 DIB
   32x32.png  128x128.png  128x128@2x.png
-  Square{30,44,71,89,107,142,150,284,310}x*Logo.png  StoreLogo.png   MSIX / Store tiles
-  tray/tray-{template,light,dark}[-22][@2x|@3x].png
-  tray/tray-node-{template,light,dark}[@2x|@3x].png
+  icon.png            1024 master (input quy ước của `tauri icon`)
+
+assets/logo/out/                       gitignore — chạy render.py là có lại
+  icons/Square{30,44,71,89,107,142,150,284,310}x*Logo.png  StoreLogo.png
+  icons/tray/tray-{template,light,dark}[-22][@2x|@3x].png
+  icons/tray/tray-node-{template,light,dark}[@2x|@3x].png
   web/favicon-{16,32,48,180,192,256,512}.png  favicon.ico  apple-touch-icon.png
 ```
+
+Tile MSIX/Store, tray và bộ web **không check-in**. Release Windows build
+`--bundles nsis,msi` nên không đụng tới tile MSIX; tray thì chưa có
+`TrayIconBuilder` nào trong `src-tauri/`; web icon chưa được reference
+(`index.html` dùng `/logo.svg`). Khi nào dùng thật thì copy từ `out/` sang.
 
 ## Regenerating
 
