@@ -84,6 +84,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Only icon.png is committed. tauri-build needs icons/icon.ico to emit the
+      # Windows resource file, and the macOS bundle wants icon.icns, so derive
+      # the whole set here. gen:icon runs first because `tauri icon` overwrites
+      # its own input with a 512px resize, and it wants a >=1024px source.
+      - name: Generate icon set
+        run: npm run gen:icons
+
       # The app looks for the privileged helper next to its own executable
       # (crates/nova-os/src/helper.rs), which inside a .app is Contents/MacOS —
       # exactly where Tauri puts a sidecar. Staging it under src-tauri/bin lets

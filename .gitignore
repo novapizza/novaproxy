@@ -7,3 +7,8 @@ src-tauri/target
 
 # CI stages the privileged helper here as a Tauri sidecar (see release.yml).
 src-tauri/bin/
+
+# `tauri icon` derives the whole set (.ico, .icns, store logos, mobile) from
+# icon.png, which `npm run gen:icon` draws. Only the source is committed.
+src-tauri/icons/*
+!src-tauri/icons/icon.png

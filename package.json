@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "gen:types": "cargo test -p nova-proto",
-    "gen:icon": "node scripts/gen-icon.mjs"
+    "gen:icon": "node scripts/gen-icon.mjs",
+    "gen:icons": "node scripts/gen-icon.mjs && tauri icon src-tauri/icons/icon.png"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

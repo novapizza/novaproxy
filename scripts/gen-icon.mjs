@@ -1,9 +1,15 @@
-// Generates src-tauri/icons/icon.png — a 512x512 NovaProxy mark (dark rounded
-// square, green disc, white play glyph) with no external deps. Run: node scripts/gen-icon.mjs
+// Generates src-tauri/icons/icon.png — the NovaProxy mark (dark rounded square,
+// green disc, play glyph) with no external deps. Run: node scripts/gen-icon.mjs
+//
+// 1024x1024 by default because `tauri icon`, which derives the .ico and .icns
+// the Windows and macOS bundles need, wants a source at least that large.
+// Geometry is expressed against a 512 grid and scaled, so ICON_SIZE=<n> still
+// produces the same mark.
 import { deflateSync } from "node:zlib";
 import { writeFileSync, mkdirSync } from "node:fs";
 
-const S = 512;
+const S = Number(process.env.ICON_SIZE ?? 1024);
+const k = S / 512; // every constant below was chosen on a 512 grid
 const buf = Buffer.alloc(S * S * 4);
 
 const set = (x, y, r, g, b, a) => {
@@ -20,7 +26,7 @@ const set = (x, y, r, g, b, a) => {
 };
 
 // rounded-square background
-const radius = 112;
+const radius = 112 * k;
 const inRounded = (x, y) => {
   const nx = Math.min(x, S - 1 - x);
   const ny = Math.min(y, S - 1 - y);
@@ -32,13 +38,13 @@ const inRounded = (x, y) => {
 
 const cx = S / 2;
 const cy = S / 2;
-const discR = 168;
+const discR = 168 * k;
 // white play triangle (pointing right), roughly centered
 const tri = (x, y) => {
-  const px = x - (cx - 42);
+  const px = x - (cx - 42 * k);
   const py = y - cy;
-  if (px < 0 || px > 150) return false;
-  const half = 120 * (1 - px / 150);
+  if (px < 0 || px > 150 * k) return false;
+  const half = 120 * k * (1 - px / (150 * k));
   return py >= -half && py <= half;
 };
 
@@ -97,4 +103,4 @@ const png = Buffer.concat([
 
 mkdirSync(new URL("../src-tauri/icons/", import.meta.url), { recursive: true });
 writeFileSync(new URL("../src-tauri/icons/icon.png", import.meta.url), png);
-console.log("wrote src-tauri/icons/icon.png", png.length, "bytes");
+console.log(`wrote src-tauri/icons/icon.png ${S}x${S}`, png.length, "bytes");
