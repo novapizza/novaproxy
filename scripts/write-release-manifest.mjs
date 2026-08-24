@@ -172,6 +172,19 @@ for (const rel of all.sort()) {
   updater[match.key] = { signature, url: `${base}/${encodeURIComponent(file)}` };
 }
 
+// A platform we ship an installer for but cannot update is the failure mode this
+// release process actually hit: the macOS artifact was renamed out of the
+// pattern above, so two releases went out offering Windows updates only and
+// nothing said so. The unmatched-installer case warns; this one has to as well.
+for (const e of entries) {
+  if (e.kind === "msi") continue; // never an update source, by design
+  if (!updater[e.key]) {
+    console.warn(
+      `::warning::${e.key} ships an installer but no update — is the updater artifact named _<arch>.app.tar.gz?`,
+    );
+  }
+}
+
 const updaterOut = join(out, "..", "latest.json");
 if (Object.keys(updater).length === 0) {
   // Not an error: an unsigned build is a valid build, it just cannot be an
