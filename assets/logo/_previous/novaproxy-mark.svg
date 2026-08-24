@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024"><defs>
+ <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+  <stop offset="0" stop-color="#8C78F3"/><stop offset=".28" stop-color="#7C5CE0"/>
+  <stop offset=".62" stop-color="#3FA9A0"/><stop offset="1" stop-color="#2E9A59"/></linearGradient>
+ <radialGradient id="bloom" cx=".80" cy=".10" r=".78">
+  <stop offset="0" stop-color="#9BE3B4" stop-opacity=".85"/><stop offset=".55" stop-color="#3EB56D" stop-opacity=".18"/>
+  <stop offset="1" stop-color="#3EB56D" stop-opacity="0"/></radialGradient>
+ <radialGradient id="bloom2" cx=".06" cy=".92" r=".70">
+  <stop offset="0" stop-color="#8C78F3" stop-opacity=".70"/><stop offset="1" stop-color="#8C78F3" stop-opacity="0"/></radialGradient>
+ <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+  <stop offset="0" stop-color="#FFFFFF" stop-opacity=".20"/><stop offset=".45" stop-color="#FFFFFF" stop-opacity=".02"/>
+  <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
+ <linearGradient id="gl" gradientUnits="userSpaceOnUse" x1="26.360000000000014" y1="170.00000000000006" x2="997.64" y2="854.0">
+  <stop offset="0" stop-color="#FFFFFF"/><stop offset=".58" stop-color="#FFFFFF"/><stop offset="1" stop-color="#DFF9E9"/></linearGradient>
+ <linearGradient id="mk" gradientUnits="userSpaceOnUse" x1="26.360000000000014" y1="170.00000000000006" x2="997.64" y2="854.0">
+  <stop offset="0" stop-color="#8C78F3"/><stop offset=".42" stop-color="#3FA9A0"/><stop offset="1" stop-color="#2E9A59"/></linearGradient>
+ <filter id="cast" x="-35%" y="-35%" width="170%" height="190%"><feGaussianBlur stdDeviation="20"/></filter>
+ <filter id="tsh" x="-25%" y="-25%" width="150%" height="160%"><feGaussianBlur stdDeviation="16"/></filter>
+</defs><g transform="translate(-11.4 0)"><path d="M 512.0 199.6 Q 550.3 449.5 703.5 512.0 Q 550.3 574.5 512.0 824.4 Q 473.7 574.5 320.5 512.0 Q 473.7 449.5 512.0 199.6 Z" fill="url(#mk)"/><path d="M 785.6 512.0 L 972.6 512.0" fill="none" stroke="url(#mk)" stroke-width="73.0" stroke-linecap="round" stroke-linejoin="round"/><path d="M 858.6 411.7 L 972.6 512.0 L 858.6 612.3" fill="none" stroke="url(#mk)" stroke-width="73.0" stroke-linecap="round" stroke-linejoin="round"/><path d="M 74.2 512.0 L 229.3 512.0" fill="none" stroke="url(#mk)" stroke-width="73.0" stroke-linecap="round" stroke-linejoin="round"/></g></svg>

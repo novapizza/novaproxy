@@ -1,24 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 300" width="1240" height="300">
 <defs>
- <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-  <stop offset="0" stop-color="#8C78F3"/><stop offset=".28" stop-color="#7C5CE0"/>
-  <stop offset=".62" stop-color="#3FA9A0"/><stop offset="1" stop-color="#2E9A59"/></linearGradient>
- <radialGradient id="bloom" cx=".80" cy=".10" r=".78">
-  <stop offset="0" stop-color="#9BE3B4" stop-opacity=".85"/><stop offset=".55" stop-color="#3EB56D" stop-opacity=".18"/>
-  <stop offset="1" stop-color="#3EB56D" stop-opacity="0"/></radialGradient>
- <radialGradient id="bloom2" cx=".06" cy=".92" r=".70">
-  <stop offset="0" stop-color="#8C78F3" stop-opacity=".70"/><stop offset="1" stop-color="#8C78F3" stop-opacity="0"/></radialGradient>
+ <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#F4FBF7"/></linearGradient>
+ <radialGradient id="bloom" cx=".24" cy=".14" r=".85">
+  <stop offset="0" stop-color="#9BE3B4" stop-opacity=".34"/>
+  <stop offset="1" stop-color="#9BE3B4" stop-opacity="0"/></radialGradient>
  <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-  <stop offset="0" stop-color="#FFFFFF" stop-opacity=".20"/><stop offset=".45" stop-color="#FFFFFF" stop-opacity=".02"/>
-  <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
- <linearGradient id="gl" gradientUnits="userSpaceOnUse" x1="358.64" y1="404.0" x2="665.36" y2="620.0">
-  <stop offset="0" stop-color="#FFFFFF"/><stop offset=".58" stop-color="#FFFFFF"/><stop offset="1" stop-color="#DFF9E9"/></linearGradient>
- <linearGradient id="mk" gradientUnits="userSpaceOnUse" x1="358.64" y1="404.0" x2="665.36" y2="620.0">
-  <stop offset="0" stop-color="#8C78F3"/><stop offset=".42" stop-color="#3FA9A0"/><stop offset="1" stop-color="#2E9A59"/></linearGradient>
- <filter id="cast" x="-35%" y="-35%" width="170%" height="190%"><feGaussianBlur stdDeviation="20"/></filter>
- <filter id="tsh" x="-25%" y="-25%" width="150%" height="160%"><feGaussianBlur stdDeviation="16"/></filter>
+  <stop offset="0" stop-color="#FFFFFF" stop-opacity="0"/>
+  <stop offset=".5" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
+ <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#CDEBDB"/><stop offset=".5" stop-color="#8FDCAC"/><stop offset="1" stop-color="#CDEBDB"/></linearGradient>
+ <linearGradient id="ng" gradientUnits="userSpaceOnUse"
+   x1="372.0" y1="248.0"
+   x2="652.0" y2="788.0">
+  <stop offset="0" stop-color="#3EB56D"/><stop offset="1" stop-color="#2E9A59"/></linearGradient>
+ <filter id="tsh" x="-25%" y="-25%" width="150%" height="160%">
+  <feGaussianBlur stdDeviation="16"/></filter>
 </defs>
-<g transform="translate(-365.6 -362.0)"><path d="M 512.0 413.4 Q 524.1 492.3 572.5 512.0 Q 524.1 531.7 512.0 610.6 Q 499.9 531.7 451.5 512.0 Q 499.9 492.3 512.0 413.4 Z" fill="url(#mk)"/><path d="M 598.4 512.0 L 657.4 512.0" fill="none" stroke="url(#mk)" stroke-width="23.0" stroke-linecap="round" stroke-linejoin="round"/><path d="M 621.4 480.3 L 657.4 512.0 L 621.4 543.7" fill="none" stroke="url(#mk)" stroke-width="23.0" stroke-linecap="round" stroke-linejoin="round"/><path d="M 373.8 512.0 L 422.7 512.0" fill="none" stroke="url(#mk)" stroke-width="23.0" stroke-linecap="round" stroke-linejoin="round"/></g>
-<text x="322" y="138" font-family="Petrona, Georgia, serif" font-size="112" letter-spacing="-2" fill="#1B1A3D" dominant-baseline="middle">Nova<tspan fill="#2E9A59">Proxy</tspan></text>
-<text x="326" y="210" font-family="JetBrains Mono, ui-monospace, monospace" font-size="26" letter-spacing="5.5" fill="#6B6A86">HTTPS DEBUGGING PROXY</text>
+<g transform="translate(-3.6 -3.6) scale(0.3)"><path d="M418.0 700.0L418.0 330.0L606.0 700.0L606.0 330.0" fill="none" stroke="url(#ng)" stroke-width="80.0" stroke-linecap="round" stroke-linejoin="round"/><path d="M188.0 515.0L352.0 515.0" fill="none" stroke="#79D3A0" stroke-width="34.0" stroke-linecap="round" stroke-linejoin="round" opacity=".95"/><path d="M672.0 515.0L836.0 515.0" fill="none" stroke="#79D3A0" stroke-width="34.0" stroke-linecap="round" stroke-linejoin="round" opacity=".95"/><circle cx="150.0" cy="515.0" r="38.0" fill="none" stroke="#79D3A0" stroke-width="26.0" opacity=".95"/><circle cx="874.0" cy="515.0" r="38.0" fill="none" stroke="#79D3A0" stroke-width="26.0" opacity=".95"/><path transform="translate(638.0,274.0) scale(58.0)" fill="#2E9A59" d="M0,-1 C.1,-.29 .29,-.1 1,0 .29,.1 .1,.29 0,1 -.1,.29 -.29,.1 -1,0 -.29,-.1 -.1,-.29 0,-1 Z"/></g>
+<text x="356" y="138" font-family="Petrona, Georgia, serif" font-size="112" letter-spacing="-2" fill="#0D1A14" dominant-baseline="middle">Nova<tspan fill="#2E9A59">Proxy</tspan></text>
+<text x="360" y="212" font-family="JetBrains Mono, ui-monospace, monospace" font-size="26" letter-spacing="5.5" fill="#6B7F74">HTTPS DEBUGGING PROXY</text>
 </svg>

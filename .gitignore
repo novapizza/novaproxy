@@ -14,3 +14,6 @@ src-tauri/target
 
 # CI stages the privileged helper here as a Tauri sidecar (see release.yml).
 src-tauri/bin/
+
+# logo generator output (sources are checked in, rasters are rebuilt)
+assets/logo/out/

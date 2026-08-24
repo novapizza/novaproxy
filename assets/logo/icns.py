@@ -1,6 +1,9 @@
 import struct, cairosvg, io
-BIG="out/svg/novaproxy-icon-macos.svg"
-SMALL="out/svg/novaproxy-icon-small-macos.svg"  # simplified glyph <=32px
+import os
+HERE=os.path.dirname(os.path.abspath(__file__))
+SVG=os.path.join(HERE,"out","svg")
+BIG=os.path.join(SVG,"novaproxy-icon-macos.svg")
+SMALL=os.path.join(SVG,"novaproxy-icon-small-macos.svg")  # simplified glyph <=32px
 # type -> pixel size (PNG payload). Covers every slot modern macOS asks for.
 TYPES=[("icp4",16),("icp5",32),("icp6",64),("ic07",128),("ic08",256),
        ("ic09",512),("ic10",1024),("ic11",32),("ic12",64),("ic13",256),("ic14",512)]
@@ -18,5 +21,6 @@ body=b"".join(t.encode()+struct.pack(">I", len(d)+8)+d for t,d in entries)
 toc = b"TOC "+struct.pack(">I", 8+8*len(entries))+b"".join(
       t.encode()+struct.pack(">I", len(d)+8) for t,d in entries)
 out = b"icns"+struct.pack(">I", 8+len(toc)+len(body))+toc+body
-open("out/icons/icon.icns","wb").write(out)
+os.makedirs(os.path.join(HERE,"out","icons"),exist_ok=True)
+open(os.path.join(HERE,"out","icons","icon.icns"),"wb").write(out)
 print("icns", len(out), "slots", len(entries))

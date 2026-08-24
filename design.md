@@ -259,20 +259,30 @@ and hand focus back, click-outside to dismiss).
   `rgba(216,134,137,.12)` hover. Rendered only when there is a filter to clear.
 
 ### Brandmark
-The mark is a **nova node** — a four-point star drawn as one filled path — with a relay
-reading across it: a wire in from the left, an arrow out to the right, all on one stroke
-weight with round caps so it sits with the Lucide set. Its gradient runs
-`--c-indigo → --c-cyan → --accent-hover` diagonally, with a `--mint` bloom top-right on the
-app tiles; this is the one place a second hue is allowed, and only here.
+The mark is **Intercept Node** — a transport axis running across the tile, broken in the
+middle, with the letter **N** standing in the break. The two ends are hollow rings (client
+and server); the N is the only solid mass on the axis, because the proxy is the only point
+that actually holds the data. A four-point nova star sits on the N's right shoulder, the
+same relationship NovaPad uses, so the two icons read as one family. Everything is one
+stroke family with round caps so it sits with the Lucide set. Its gradient runs
+`--accent → --accent-hover`, with a `--mint` bloom top-right on the app tiles. The mark
+uses **no second hue**: `--c-indigo` / `--c-violet` / `--c-cyan` are semantic tokens
+(status, method, protocol phase) and never brand.
 
-- **At or below 32px the wire and arrow are dropped** — they mush together — leaving the node
-  alone, scaled up. `src/Brandmark.tsx` is that node-only form, inline SVG so the gradient
-  runs on tokens; the rail is its only caller.
+- **At or below 32px the drawing changes** — the hollow rings bleed shut and the star
+  disappears, so the wire becomes a solid tick and the N grows. `src/Brandmark.tsx` is that
+  simplified form, inline SVG so the gradient runs on tokens; the rail is its only caller,
+  at 32px. Below 24px it drops the wire too, leaving the N and the star.
+- **The app defaults to light; the app icon does not.** Dock and taskbar icons sit on the
+  user's wallpaper, not on our UI, and a white tile disappears on a light wallpaper. So
+  `.icns` / `.ico` ship the dark tile, while the light tile (`novaproxy-icon-light.svg`) is
+  the default *inside* the app — splash, About, empty state — and on the web and in docs.
 - Sources and generators live in `assets/logo/` (`build.py` holds the geometry on a 1024
   grid; `render.py`, `icns.py`, `preview.py` cut the rasters). App-icon output is checked in
   under `src-tauri/icons/`, and `tauri.conf.json` bundles the 32/128/128@2x/`.icns`/`.ico`
-  set. `assets/logo/README.md` documents the full ladder, the tray template rule and the
-  clear-space rules.
+  set. `assets/logo/README.md` documents the full ladder, the tray template rule and which
+  variant goes where. The previous mark — nova node with wire and arrow, indigo→cyan tile —
+  is kept in `assets/logo/_previous/`.
 
 ### Code surfaces
 `--code-bg` (`#F7FAF8`), hairline border, 14px radius, 12px mono, `line-height:1.7`,
