@@ -1,6 +1,7 @@
 """SVG -> PNG / .ico. Run after build.py, from this directory."""
 import io, os, struct
 import cairosvg
+from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SVG = os.path.join(HERE, "out", "svg")
@@ -47,6 +48,29 @@ png(FULL, f"{ICO}/StoreLogo.png", 50)
 png(SMALL, f"{ICO}/icon-small.png", 512)
 
 # ---- Windows .ico ----------------------------------------------------------
+def dib(png_bytes, size):
+    """A 32-bit bottom-up DIB plus the 1-bit AND mask the format still asks for.
+
+    Only the 256 entry is PNG. Windows has read PNG at any size since Vista,
+    but plenty of shell surfaces and Win32 callers (LoadIcon, older installer
+    UI, remote sessions) still expect a DIB below that, and fall back to a
+    blank or a scaled neighbour when they do not get one.
+    """
+    px = Image.open(io.BytesIO(png_bytes)).convert("RGBA").load()
+    xor = bytearray()
+    for y in range(size - 1, -1, -1):          # DIB rows run bottom-up
+        for x in range(size):
+            r, g, b, a = px[x, y]
+            xor += bytes((b, g, r, a))
+    # Alpha carries the shape, so the mask is all-opaque — but its rows are
+    # 1bpp padded to 4 bytes, and the size has to be right or Windows reads
+    # the next entry as mask data.
+    mask = bytes(((size + 31) // 32) * 4 * size)
+    head = struct.pack("<IiiHHIIiiII", 40, size, size * 2, 1, 32, 0,
+                       len(xor) + len(mask), 0, 0, 0, 0)
+    return head + bytes(xor) + mask
+
+
 def ico_bytes(entries):
     hdr = struct.pack("<HHH", 0, 1, len(entries))
     off = 6 + 16 * len(entries)
@@ -59,14 +83,19 @@ def ico_bytes(entries):
     return hdr + dir_ + blob
 
 
+def ico_entry(src, size):
+    data = raw(src, size)
+    return (size, data if size >= 256 else dib(data, size))
+
+
 sizes = (256, 128, 64, 48, 32, 24, 16)
-open(f"{ICO}/icon.ico", "wb").write(ico_bytes([(s, raw(pick(s), s)) for s in sizes]))
+open(f"{ICO}/icon.ico", "wb").write(ico_bytes([ico_entry(pick(s), s) for s in sizes]))
 
 # ---- in-app / web / docs: the light tile is the default ---------------------
 for s in (16, 32, 48, 180, 192, 256, 512):
     png(pick(s, dark=False), f"{WEB}/favicon-{s}.png", s)
 open(f"{WEB}/favicon.ico", "wb").write(
-    ico_bytes([(s, raw(pick(s, dark=False), s)) for s in (48, 32, 16)]))
+    ico_bytes([ico_entry(pick(s, dark=False), s) for s in (48, 32, 16)]))
 for name, src in (("apple-touch-icon.png", LIGHT), ("maskable-512.png", LIGHT)):
     png(src, f"{WEB}/{name}", 512 if "512" in name else 180)
 png(LIGHT, f"{EX}/novaproxy-icon-light-512.png", 512)
