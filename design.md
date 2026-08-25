@@ -221,6 +221,16 @@ the path. Three empty states, per §8: nothing captured, capture paused, nothing
 > `sliceFlat` (`src/virtual.ts`): one height, one measurement, no per-group containing blocks.
 > Sticky *group* headers were the only reason that geometry was per-group.
 
+**Structured conditions.** Under the search box, hidden until asked for: rows of
+*field · operator · value*, each with its own switch, ANDing with each other and
+with everything else. The switch is the feature — "show me everything for a
+moment" without losing the row you spent a minute building — and the same idea at
+filter scale is `⌘B`, which turns every filter off without clearing one. A row
+that is off keeps its place at 50% opacity. The panel opens by itself whenever
+the active filter carries conditions, because a condition you cannot see is a
+filter you cannot read. **Save** turns the whole filter into a chip in the
+`Saved` group, named from its own parts.
+
 **Sorting, columns, marks.** A sortable header cycles ascending → descending →
 back to capture order, marked by a small `▲`/`▼` in `--accent`; capture order is a
 state you can return to, not the absence of one. A hover-only 1px grip on each

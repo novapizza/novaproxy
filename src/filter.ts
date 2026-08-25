@@ -2,6 +2,7 @@ import type { Flow } from "./api";
 import { protoOf, statusClassOf, typeOf, type Proto, type FlowType, type StatusClass } from "./classify";
 import { ALL_TRAFFIC, matchScope, type Scope, type ScopeContext } from "./scope";
 import { FLOW_TYPES, PROTOS, STATUS_CLASSES } from "./classify";
+import { clauseActive, describeClause, matchClauses, type Clause } from "./builder";
 
 /**
  * Match a flow against the search query. Supports `method:`, `status:`,
@@ -70,6 +71,11 @@ export interface FlowFilter {
   /** Show NovaProxy's own traffic (its MCP endpoint, and replays it issued). */
   includeInternal: boolean;
   /**
+   * Structured rows: field, operator, value. AND with everything else and with
+   * each other (`src/builder.ts`).
+   */
+  clauses: Clause[];
+  /**
    * Whether the narrowing above is in force.
    *
    * `⌘B` flips this rather than clearing anything: "show me everything for a
@@ -85,6 +91,7 @@ export const EMPTY_FILTER: FlowFilter = {
   status: new Set(),
   scope: ALL_TRAFFIC,
   query: "",
+  clauses: [],
   includeInternal: false,
   enabled: true,
 };
@@ -103,6 +110,9 @@ export function activeFilterCount(f: FlowFilter): number {
   if (f.status.size) n++;
   if (f.scope.kind !== "all") n++;
   if (f.query.trim()) n++;
+  // Rows count as one decision however many there are, like the chip groups:
+  // "Reset filters (7)" for one idea reads as a bug.
+  if (f.clauses.some(clauseActive)) n++;
   return n;
 }
 
@@ -122,6 +132,9 @@ export function isFiltering(f: FlowFilter): boolean {
  */
 export function buildPredicate(f: FlowFilter, ctx: ScopeContext = {}): (flow: Flow) => boolean {
   const { proto, type, status, scope, includeInternal } = f;
+  // Only rows that would narrow anything: an empty or switched-off row costs a
+  // function call per flow per frame otherwise.
+  const clauses = f.clauses.filter(clauseActive);
   // Switched off, everything shows — except NovaProxy's own traffic, which is
   // not a filter the user set but a default about whose capture this is.
   if (!f.enabled) return (flow) => includeInternal || !flow.internal;
@@ -142,6 +155,7 @@ export function buildPredicate(f: FlowFilter, ctx: ScopeContext = {}): (flow: Fl
     }
     if (!anyType && !type.has(typeOf(flow))) return false;
     if (!anyScope && !matchScope(flow, scope, ctx)) return false;
+    if (!matchClauses(flow, clauses)) return false;
     return query === "" || matchQuery(flow, query);
   };
 }
@@ -174,6 +188,7 @@ export interface FilterJson {
   status?: string[];
   scope?: Scope;
   query?: string;
+  clauses?: Clause[];
   includeInternal?: boolean;
 }
 
@@ -184,6 +199,7 @@ export function filterToJson(f: FlowFilter): FilterJson {
     status: [...f.status],
     scope: f.scope,
     query: f.query.trim(),
+    clauses: f.clauses.filter(clauseActive),
     includeInternal: f.includeInternal,
   };
 }
@@ -209,9 +225,22 @@ export function filterFromJson(raw: unknown): FlowFilter {
     status: known(j.status, STATUS_CLASSES),
     scope: scope as Scope,
     query: typeof j.query === "string" ? j.query : "",
+    clauses: Array.isArray(j.clauses) ? j.clauses.filter(isClause) : [],
     includeInternal: j.includeInternal === true,
     enabled: true,
   };
+}
+
+/** A stored row is trusted only as far as its shape can be checked. */
+function isClause(raw: unknown): raw is Clause {
+  if (!raw || typeof raw !== "object") return false;
+  const c = raw as Partial<Clause>;
+  return (
+    typeof c.id === "string" &&
+    typeof c.field === "string" &&
+    typeof c.op === "string" &&
+    typeof c.value === "string"
+  );
 }
 
 /**
@@ -233,6 +262,7 @@ export function describeFilter(f: FlowFilter): string {
   if (f.scope.kind === "host") parts.push(f.scope.host);
   if (f.scope.kind === "path") parts.push(`${f.scope.host}${f.scope.prefix}`);
   if (f.scope.kind === "pinned") parts.push("pinned");
+  for (const c of f.clauses.filter(clauseActive)) parts.push(describeClause(c));
   const q = f.query.trim();
   if (q) parts.push(`“${q}”`);
   return parts.length > 0 ? parts.join(" · ") : "everything";

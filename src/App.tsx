@@ -584,6 +584,8 @@ export function App() {
         showToast(filter.enabled ? "Filters off" : "Filters on");
       },
       "tree.toggle": () => setPrefs({ ...prefs, treeHidden: !prefs.treeHidden }),
+      "filter.newClause": () => { goSection("flows"); flowsRef.current?.addClause(); },
+      "filter.removeClause": () => flowsRef.current?.removeClause(),
       "flow.resend": () => void resendSelected(),
       "flow.curl": copyCurl,
       "row.selectAll": () => flowsRef.current?.markAll(),

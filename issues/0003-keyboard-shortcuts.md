@@ -131,7 +131,7 @@ webview; muốn lấy phải bỏ item đó, tức mất Select All trong mọi 
 | `⌘⇧F` | focus filter tree ở sidebar | `⌘⇧F` |
 | `Esc` | ẩn / bỏ focus filter bar | Hide: `ESC` |
 | `⌘B` | bật/tắt filter đang có (**không mất** filter) | On/Off: `⌘B` |
-| `⌘N` / `⌘⇧N` | thêm / bớt filter row (phase 9) | New / Remove |
+| `⌘N` / `⌘⇧N` | thêm / bớt filter row | New / Remove |
 | `⌘0` | ẩn/hiện sidebar | — (§10.3) |
 
 ### 4.4 Inspector

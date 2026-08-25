@@ -36,6 +36,8 @@ export type ShortcutId =
   | "filter.tree"
   | "filter.toggle"
   | "tree.toggle"
+  | "filter.newClause"
+  | "filter.removeClause"
   | "row.prev"
   | "row.next"
   | "row.first"
@@ -110,6 +112,20 @@ export const SHORTCUTS: Shortcut[] = [
     group: "Filter",
     label: "Turn the filters off and on",
     when: "keeps the filters — it does not clear them",
+  },
+  {
+    id: "filter.newClause",
+    scope: "global",
+    chord: "Mod+N",
+    group: "Filter",
+    label: "Add a filter condition",
+  },
+  {
+    id: "filter.removeClause",
+    scope: "global",
+    chord: "Mod+Shift+N",
+    group: "Filter",
+    label: "Remove the last condition",
   },
   { id: "tree.toggle", scope: "global", chord: "Mod+0", group: "Filter", label: "Show or hide the sidebar" },
 

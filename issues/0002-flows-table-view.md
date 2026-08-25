@@ -275,7 +275,7 @@ Column `#` có **sort arrow** → Proxyman cho sort mọi column (đã nằm ở
 | **6** | Table power: sort column, column picker/resize, keyboard nav, multi-select + `n/m rows selected`. Chord định nghĩa ở [0003](0003-keyboard-shortcuts.md) | — |
 | **7** | Rust: `Edits` trên `Flow` (rule/script/breakpoint, chỉ set khi *thật sự* đổi); icon app thật — không qua NSWorkspace mà qua `.icns` + `sips`, để không thêm dependency | `Edits.ts`, command `app_icon` |
 | **8** | Favorites: Pinned + Comment + Saved filter (saved → chip) | — |
-| **9** | Filter builder (field/operator/value, stackable, save, ⌘F/⌘N/⌘B) | — |
+| **9** | Filter builder (field/operator/value, stackable, save, ⌘N/⇧⌘N/⌘B). Không có field `Body`: list không giữ body bytes nên clause body sẽ match theo preview còn sót và tự mâu thuẫn | `src/builder.ts` |
 | **10** | Polish: README, design.md, test coverage | — |
 
 Phase 2 trước Phase 3 là có chủ ý: filter/scope là chỗ dễ sai và dễ test nhất; xong

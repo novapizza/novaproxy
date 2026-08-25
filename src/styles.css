@@ -391,8 +391,11 @@ input, textarea, select { font-family: inherit; }
 .s-pending { color: var(--faint); }
 
 /* empty state */
+/* 60px of top padding pushed the message out of sight whenever the table was
+   short — a filter bar with conditions open is exactly when an empty result
+   needs explaining. */
 .list-empty {
-  padding: 60px 24px; text-align: center; color: var(--muted);
+  padding: 28px 24px; text-align: center; color: var(--muted);
   font: 400 12.5px var(--font-ui);
   animation: novafade var(--t-page);
 }
@@ -1024,7 +1027,14 @@ input, textarea, select { font-family: inherit; }
 .fbar-search .reset, .fbar-search .save {
   flex: none; font: 500 11.5px var(--font-ui); color: var(--accent); cursor: pointer; white-space: nowrap;
 }
-.fbar-search .save { color: var(--muted); }
+.fbar-search .save, .fbar-search .build { color: var(--muted); }
+.fbar-search .build {
+  flex: none; display: flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: var(--r-pill); border: 1px solid transparent;
+  font: 500 11.5px var(--font-ui); cursor: pointer; white-space: nowrap;
+}
+.fbar-search .build:hover { color: var(--text2); background: var(--hover); }
+.fbar-search .build.on { color: var(--accent); border-color: rgba(62,181,109,.32); background: rgba(62,181,109,.08); }
 .fbar-search .reset:hover, .fbar-search .save:hover { color: var(--accent-hover); }
 
 /* A saved filter is a chip among the chips, with its own way out. */
@@ -1044,7 +1054,13 @@ input, textarea, select { font-family: inherit; }
 
 /* -------------------------------- the table ------------------------------- */
 
-.ftable { flex: 1; overflow: auto; min-height: 0; outline: none; }
+/* The table is the surface this section exists for, so it gets a floor: five
+   rows and a header. Without one, opening the filter conditions on a short
+   window squeezed it to a sliver and the inspector kept its 42%. */
+.ftable {
+  flex: 1 1 auto; overflow: auto; outline: none;
+  min-height: calc(var(--row-h) * 5 + var(--thead-h));
+}
 
 .ft-head, .ft-row { display: grid; align-items: center; gap: 0; padding: 0 14px; }
 
@@ -1142,8 +1158,10 @@ input, textarea, select { font-family: inherit; }
 
 /* 42% of the section, per the design. Fixed rather than a minimum so the table
    above it does not jump every time a taller body loads. */
+/* 42% by default, but it yields to the table's floor before the table does —
+   `flex: 0 1 auto` is what lets it shrink at all. */
 .insp-strip {
-  flex: none; height: 42%; min-height: 0;
+  flex: 0 1 auto; height: 42%; min-height: 96px; max-height: 60%;
   display: flex; flex-direction: column;
   border-top: 1px solid var(--border); background: rgba(255,255,255,.9);
 }
@@ -1332,3 +1350,39 @@ input, textarea, select { font-family: inherit; }
   font: 500 11.5px var(--font-ui); color: var(--accent); cursor: pointer;
 }
 .cp-reset:hover { color: var(--accent-hover); }
+
+
+/* --------------------------- structured filter ---------------------------- */
+
+.fbuild { display: flex; flex-direction: column; gap: 5px; padding: 2px 0 2px; }
+.fb-row { display: flex; align-items: center; gap: 7px; }
+/* A row switched off keeps its place and its value, and says so by fading. */
+.fb-row.off { opacity: .5; }
+
+.fb-check {
+  width: 16px; height: 16px; flex: none; border-radius: 5px;
+  border: 1px solid var(--border2); background: var(--card);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; cursor: pointer;
+}
+.fb-check.on { background: var(--accent); border-color: var(--accent); }
+
+.fb-sel, .fb-val {
+  height: 26px; border-radius: var(--r-tag);
+  border: 1px solid var(--border); background: var(--input);
+  font: 400 11.5px var(--font-ui); color: var(--text); outline: none;
+}
+.fb-sel { flex: none; padding: 0 6px; cursor: pointer; }
+.fb-val { flex: 1; min-width: 0; padding: 0 9px; font-family: var(--font-mono); }
+.fb-val:focus, .fb-sel:focus { border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12); }
+.fb-x { display: flex; flex: none; color: var(--faint); cursor: pointer; }
+.fb-x:hover { color: var(--c-red-deep); }
+
+.fb-add {
+  display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
+  padding: 4px 10px; border-radius: var(--r-pill);
+  border: 1px dashed var(--border2); color: var(--muted);
+  font: 500 11.5px var(--font-ui); cursor: pointer;
+}
+.fb-add:hover { color: var(--accent); border-color: rgba(62,181,109,.45); }
+.fb-add .kbd { font-size: 10px; }

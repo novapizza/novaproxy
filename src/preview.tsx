@@ -80,7 +80,13 @@ function Harness() {
     st.togglePin(FLOWS[2].id);
     st.setComment(FLOWS[2].id, "401 only for this tenant");
   }, []);
-  const [filter, setFilter] = useState<FlowFilter>(EMPTY_FILTER);
+  const [filter, setFilter] = useState<FlowFilter>({
+    ...EMPTY_FILTER,
+    clauses: [
+      { id: "c1", enabled: true, field: "header", op: "contains", value: "bearer" },
+      { id: "c2", enabled: false, field: "status", op: "gt", value: "400" },
+    ],
+  });
   const [selectedId, setSelectedId] = useState<string | null>(ROWS[REVERSED ? 0 : 3].id);
   const selected = ROWS.find((f) => f.id === selectedId) ?? null;
   return (

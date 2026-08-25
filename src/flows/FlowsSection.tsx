@@ -23,6 +23,7 @@ import { methodClass, statusClass, statusText } from "../badges";
 import { Icon } from "../icons";
 import { ScopeTree } from "./ScopeTree";
 import { FilterBar } from "./FilterBar";
+import { clauseActive, newClause } from "../builder";
 import { FlowTable } from "./FlowTable";
 import { ColumnPicker } from "./ColumnPicker";
 import { sortFlows, type Sort } from "./sort";
@@ -38,6 +39,9 @@ import { formatChord, shortcut } from "../shortcuts";
  * chord can reach them.
  */
 export interface FlowsHandle {
+  /** ⌘N / ⇧⌘N: add or drop a structured filter row. */
+  addClause: () => void;
+  removeClause: () => void;
   focusTable: () => void;
   focusInspector: () => void;
   paneTab: (delta: 1 | -1) => void;
@@ -93,6 +97,12 @@ export const FlowsSection = forwardRef<FlowsHandle, {
   const [panes, setPanes] = useState<PaneState>(INITIAL_PANES);
   const [sort, setSort] = useState<Sort | null>(null);
   /**
+   * Open when there is anything to see. A filter whose conditions are hidden is
+   * a filter the user cannot read — which matters most for a saved filter that
+   * carries rows, since nothing else on screen says they exist.
+   */
+  const [builderOpen, setBuilderOpen] = useState(() => filter.clauses.some(clauseActive));
+  /**
    * Rows marked for a bulk action, as ids rather than flows: a flow object is
    * replaced on every snapshot, and a set of objects would hold the stale ones
    * (and leak them past the retention cap).
@@ -126,6 +136,13 @@ export const FlowsSection = forwardRef<FlowsHandle, {
         collapsed: panes.collapsed === panes.active ? null : panes.active,
       }),
     markAll: () => setMarked(new Set(rows.map((f) => f.id))),
+    addClause: () => {
+      // Adding a row opens the builder: a chord that changes state you cannot
+      // see is a chord that looks broken.
+      setBuilderOpen(true);
+      props.patch({ clauses: [...filter.clauses, newClause()] });
+    },
+    removeClause: () => props.patch({ clauses: filter.clauses.slice(0, -1) }),
   }));
 
   /**
@@ -215,7 +232,11 @@ export const FlowsSection = forwardRef<FlowsHandle, {
           onChip={(id) => props.track?.("ui.flow.chip", id)}
           trailing={<ColumnPicker columns={props.columns} setColumns={props.setColumns} />}
           saved={props.saved}
-          applySaved={(sf) => props.patch(filterFromJson(sf.filter))}
+          applySaved={(sf) => {
+            const next = filterFromJson(sf.filter);
+            if (next.clauses.some(clauseActive)) setBuilderOpen(true);
+            props.patch(next);
+          }}
           saveCurrent={() => {
             const label = describeFilter(filter);
             // Saving the same filter twice is a no-op rather than a duplicate
@@ -228,6 +249,8 @@ export const FlowsSection = forwardRef<FlowsHandle, {
             ]);
           }}
           removeSaved={(id) => props.setSaved(props.saved.filter((s) => s.id !== id))}
+          builderOpen={builderOpen}
+          toggleBuilder={() => setBuilderOpen((v) => !v)}
         />
 
         <FlowTable

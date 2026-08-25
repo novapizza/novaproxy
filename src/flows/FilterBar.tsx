@@ -1,4 +1,6 @@
 import { Icon } from "../icons";
+import { clauseActive } from "../builder";
+import { FilterBuilder } from "./FilterBuilder";
 import { FLOW_TYPES, PROTOS, STATUS_CLASSES } from "../classify";
 import {
   activeFilterCount,
@@ -31,6 +33,8 @@ export function FilterBar({
   applySaved,
   saveCurrent,
   removeSaved,
+  builderOpen,
+  toggleBuilder,
 }: {
   filter: FlowFilter;
   patch: (p: Partial<FlowFilter>) => void;
@@ -50,8 +54,12 @@ export function FilterBar({
   applySaved: (s: SavedFilter) => void;
   saveCurrent: () => void;
   removeSaved: (id: string) => void;
+  /** Structured rows shown, and the toggle that shows them. */
+  builderOpen: boolean;
+  toggleBuilder: () => void;
 }) {
   const active = activeFilterCount(filter);
+  const rows = filter.clauses.filter(clauseActive).length;
 
   return (
     <div className="fbar">
@@ -80,8 +88,20 @@ export function FilterBar({
             </span>
           </>
         )}
+        <span
+          className={`build ${builderOpen || rows > 0 ? "on" : ""}`}
+          title="Filter by field, operator and value"
+          onClick={toggleBuilder}
+        >
+          <Icon name="sliders" size={13} />
+          {rows > 0 ? `${rows} condition${rows === 1 ? "" : "s"}` : "Conditions"}
+        </span>
         {trailing}
       </div>
+
+      {builderOpen && (
+        <FilterBuilder clauses={filter.clauses} setClauses={(c) => patch({ clauses: c })} />
+      )}
 
       <ChipGroup
         label="Proto"
