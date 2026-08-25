@@ -13,6 +13,7 @@
     "windows": [
       {
         "title": "NovaProxy",
+        "maximized": true,
         "width": 1320,
         "height": 860,
         "minWidth": 940,

@@ -301,6 +301,17 @@ uses **no second hue**: `--c-indigo` / `--c-violet` / `--c-cyan` are semantic to
   Search icon + input + `esc` keycap; rows are a 15px icon, a 12.5px/500 label, and a mono
   keycap, with the active row on `rgba(62,181,109,.10)` and its icon in accent.
 - **Settings modal (z40):** 560px, four tabs — General / Network / MCP / Getting started.
+- **Onboarding wizard (z40):** the settings shell at 680px — wider than Settings because the
+  pip rail carries four full step names — one step at a time. A pip rail
+  replaces the tab strip — numbered 18px marks that turn solid accent with a check once the
+  step is satisfied — over a fixed-height 210px body (fixed, not a minimum, so Next/Back
+  never moves the buttons), a 44px step icon, a live status line on a `.dot`, and a footer
+  carrying `Step n of m`, **Skip** and the step's own action. It reads status, never invents
+  it: every tick comes from `HelperStatus` / `CaStatus` / `ProxyStatus`.
+- **Coachmark (z55):** a 264px card pinned to a control that is already on screen — accent
+  border tint, a rotated 10px arrow, one sentence and a text-only **Got it**. The one overlay
+  with **no scrim**, because the whole point is that the control underneath stays clickable.
+  Positioned inside `.nova`, clamped 12px off either edge.
 - **Toast (z60):** bottom-centre white card, 14px radius, accent border tint, green check.
 
 ---

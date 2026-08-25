@@ -229,7 +229,11 @@ const emptyProxy: ProxyStatus = {
 
 export const useStore = create<Store>((set) => ({
   flows: [],
-  recording: true,
+  // Paused until asked. A fresh launch has no engine running and no proxy
+  // pointed at it, so "recording" would be a promise the app cannot keep —
+  // and the first thing the onboarding walkthrough does is hand the user the
+  // button that starts it.
+  recording: false,
   selectedId: null,
   proxy: emptyProxy,
   ca: null,

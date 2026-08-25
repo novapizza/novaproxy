@@ -57,6 +57,15 @@ describe("prefs", () => {
     );
   });
 
+  it("treats a pref blob without an onboarding flag as not yet onboarded", () => {
+    // The inverse of `autoCheckUpdates`: a blob written by 0.2.1 has no such
+    // field, and that has to mean "show the walkthrough", not "already done".
+    expect(DEFAULT_PREFS.onboardingDone).toBe(false);
+    expect(loadPrefs(fakeStore('{"flowGrouping":"flat"}')).onboardingDone).toBe(false);
+    expect(normalizePrefs({ onboardingDone: "yes" }).onboardingDone).toBe(false);
+    expect(normalizePrefs({ onboardingDone: true }).onboardingDone).toBe(true);
+  });
+
   it("does not throw when storage refuses to write", () => {
     const hostile = {
       setItem: () => {

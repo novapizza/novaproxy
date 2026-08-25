@@ -33,6 +33,15 @@ export interface Prefs {
    * nothing installs without a click.
    */
   autoCheckUpdates: boolean;
+  /**
+   * Whether the first-run walkthrough has been dealt with — finished *or*
+   * skipped. Unlike the other flags this one defaults to `false` on an
+   * unrecognised value rather than to the safe-looking `true`, because a pref
+   * blob written before this field existed genuinely means "never onboarded".
+   * The App tempers that for upgrades: a machine whose CA is already trusted is
+   * marked done without ever seeing the wizard.
+   */
+  onboardingDone: boolean;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -40,6 +49,7 @@ export const DEFAULT_PREFS: Prefs = {
   systemProxyAtLaunch: "none",
   flowListWidth: 412,
   autoCheckUpdates: true,
+  onboardingDone: false,
 };
 
 /** Bounds for the flow list, so a stale or hand-edited width cannot hide a pane. */
@@ -60,6 +70,10 @@ export function normalizePrefs(raw: unknown): Prefs {
     // Only an explicit `false` opts out, so a pref file written by an older
     // build keeps the safer default.
     autoCheckUpdates: v.autoCheckUpdates !== false,
+    // The mirror image of the line above: only an explicit `true` counts as
+    // done, so anything missing or corrupt shows the walkthrough rather than
+    // silently swallowing it.
+    onboardingDone: v.onboardingDone === true,
   };
 }
 
