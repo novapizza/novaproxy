@@ -260,6 +260,10 @@ export function App() {
   const [mcp, setMcp] = useState<McpStatus | null>(null);
   const [helper, setHelper] = useState<HelperStatus | null>(null);
   const [update, setUpdate] = useState<UpdateState>(INITIAL_UPDATE_STATE);
+  // True when Settings was opened *for* the Updates card — from the menu item,
+  // which is otherwise a click that appears to do nothing, because the card sits
+  // below three others. Reset when Settings is opened the ordinary way.
+  const [revealUpdates, setRevealUpdates] = useState(false);
   const [restoreHidden, setRestoreHidden] = useState(false);
 
   // First-run walkthrough. `coach` runs after it closes and points at the two
@@ -445,6 +449,48 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /**
+   * The check the user asked for — from the card's button or from the menu.
+   *
+   * Distinct from the launch check above: this one shows that it is working and
+   * says so when there is nothing to report, because a request with no visible
+   * answer reads as a broken button.
+   */
+  const checkForUpdates = async () => {
+    setUpdate((prev) => ({ ...prev, phase: "checking", error: null }));
+    try {
+      const status = await api.checkUpdate();
+      setUpdate(afterCheck(status));
+      if (status.configured && !status.available) showToast("NovaProxy is up to date");
+    } catch (e) {
+      setUpdate((prev) => ({ ...prev, phase: "error", error: String(e) }));
+    }
+  };
+
+  // The native menu's "Check for Updates…". The menu only asks; the answer is
+  // the Updates card, so Settings opens on it and the check runs from here.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void api
+      .onMenuCheckUpdates(() => {
+        setSettingsOpen(true);
+        setRevealUpdates(true);
+        void checkForUpdates();
+      })
+      .then((off) => (cancelled ? off() : (unlisten = off)))
+      .catch(() => {
+        // No listener means the menu item cannot reach the card. Settings still
+        // has its own button, so this is a degraded menu, not a broken app.
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+    // Subscribe once: the handler only calls setters, which are stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // "System proxy at launch" — off unless the user asked for it, because it
   // rewrites an OS setting they depend on for working internet. Without the
   // privileged helper this is also the one path that can still raise a password
@@ -569,7 +615,7 @@ export function App() {
   const goSection = (id: Section) => { setSection(id); api.trackUi("ui.section", id); };
   const goDetailTab = (t: DetailTab) => { setDetailTab(t); api.trackUi("ui.detail_tab", t); };
   const goChip = (c: FlowChip) => { setChip(c); api.trackUi("ui.flow.chip", c); };
-  const openSettings = () => { setSettingsOpen(true); api.trackUi("ui.settings.open"); };
+  const openSettings = () => { setSettingsOpen(true); setRevealUpdates(false); api.trackUi("ui.settings.open"); };
   const openOnboarding = () => { setOnboardingOpen(true); api.trackUi("ui.onboarding", "open"); };
 
   const openPalette = () => { setPaletteOpen(true); setPaletteQuery(""); setPalIndex(0); api.trackUi("ui.palette.open"); };
@@ -793,6 +839,7 @@ export function App() {
           mcp={mcp} setMcp={setMcp}
           helper={helper} setHelper={setHelper}
           update={update} setUpdate={setUpdate}
+          onCheckUpdates={checkForUpdates} revealUpdates={revealUpdates}
           prefs={prefs} setPrefs={setPrefs}
           showToast={showToast}
           onClose={() => setSettingsOpen(false)}
@@ -2080,7 +2127,8 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
 
 function SettingsModal({
   port, ca, net, setNet, mcp, setMcp,
-  helper, setHelper, update, setUpdate, prefs, setPrefs, showToast, onClose, onWalkthrough,
+  helper, setHelper, update, setUpdate, onCheckUpdates, revealUpdates,
+  prefs, setPrefs, showToast, onClose, onWalkthrough,
 }: {
   port: number;
   ca: CaStatus | null;
@@ -2092,6 +2140,10 @@ function SettingsModal({
   setHelper: (h: HelperStatus) => void;
   update: UpdateState;
   setUpdate: (u: UpdateState) => void;
+  /** Run a check on demand; owned by App so the menu can run the same one. */
+  onCheckUpdates: () => Promise<void>;
+  /** Settings was opened for the Updates card — scroll it into view. */
+  revealUpdates: boolean;
   prefs: Prefs;
   setPrefs: (p: Prefs) => void;
   showToast: (t: string) => void;
@@ -2125,6 +2177,7 @@ function SettingsModal({
               prefs={prefs} setPrefs={setPrefs}
               helper={helper} setHelper={setHelper}
               update={update} setUpdate={setUpdate}
+              onCheckUpdates={onCheckUpdates} revealUpdates={revealUpdates}
               showToast={showToast}
             />
           )}
@@ -2216,7 +2269,8 @@ const LAUNCH_ITEMS: DropdownItem[] = [
 ];
 
 function GeneralTab({
-  prefs, setPrefs, helper, setHelper, update, setUpdate, showToast,
+  prefs, setPrefs, helper, setHelper, update, setUpdate,
+  onCheckUpdates, revealUpdates, showToast,
 }: {
   prefs: Prefs;
   setPrefs: (p: Prefs) => void;
@@ -2224,6 +2278,8 @@ function GeneralTab({
   setHelper: (h: HelperStatus) => void;
   update: UpdateState;
   setUpdate: (u: UpdateState) => void;
+  onCheckUpdates: () => Promise<void>;
+  revealUpdates: boolean;
   showToast: (t: string) => void;
 }) {
   return (
@@ -2266,6 +2322,7 @@ function GeneralTab({
 
       <UpdateCard
         update={update} setUpdate={setUpdate}
+        onCheck={onCheckUpdates} reveal={revealUpdates}
         prefs={prefs} setPrefs={setPrefs}
         showToast={showToast}
       />
@@ -2355,29 +2412,33 @@ function HelperCard({
  * user's back, and it ends with the window going away — a relaunch on macOS, an
  * exit into the installer on Windows — which drops the capture session either
  * way. The launch check only ever reports.
+ *
+ * The check itself belongs to App, because the native menu can ask for one too
+ * and both routes have to end in this card rather than in two descriptions of
+ * the same state.
  */
 function UpdateCard({
-  update, setUpdate, prefs, setPrefs, showToast,
+  update, setUpdate, onCheck, reveal, prefs, setPrefs, showToast,
 }: {
   update: UpdateState;
   setUpdate: (u: UpdateState) => void;
+  onCheck: () => Promise<void>;
+  /** Settings was opened by the menu item; bring the card to the user's eyes. */
+  reveal: boolean;
   prefs: Prefs;
   setPrefs: (p: Prefs) => void;
   showToast: (t: string) => void;
 }) {
   const pct = progressPercent(update.progress);
   const acting = !canActOnUpdate(update);
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
 
-  async function check() {
-    setUpdate({ ...update, phase: "checking", error: null });
-    try {
-      const status = await api.checkUpdate();
-      setUpdate(afterCheck(status));
-      if (status.configured && !status.available) showToast("NovaProxy is up to date");
-    } catch (e) {
-      setUpdate({ ...update, phase: "error", error: String(e) });
-    }
-  }
+  // The card is the last of four in this tab, so opening Settings from the menu
+  // would otherwise land above the fold on the thing that was just asked for.
+  useEffect(() => {
+    if (!reveal) return;
+    headingRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [reveal]);
 
   async function install() {
     // A channel rather than a promise chain: the download is the one operation
@@ -2401,7 +2462,7 @@ function UpdateCard({
 
   return (
     <>
-      <h3>Updates</h3>
+      <h3 ref={headingRef}>Updates</h3>
       <div className="field-group">
         <span
           className={`dot ${
@@ -2453,7 +2514,7 @@ function UpdateCard({
       <div className="cert-actions">
         <div
           className={`btn-neutral ${acting ? "disabled" : ""}`}
-          onClick={() => !acting && void check()}
+          onClick={() => !acting && void onCheck()}
         >
           Check now
         </div>

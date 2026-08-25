@@ -1,4 +1,5 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Flow } from "./bindings/Flow";
 import type { ProxyStatus } from "./bindings/ProxyStatus";
 import type { CaStatus } from "./bindings/CaStatus";
@@ -140,6 +141,19 @@ export const api = {
    */
   installUpdate: (channel: Channel<UpdateProgress>) =>
     invoke<void>("install_update", { channel }),
+
+  /**
+   * Subscribe to the native menu's "Check for Updates…" item.
+   *
+   * The menu lives in Rust (`src-tauri/src/menu.rs`) and deliberately does not
+   * run the check itself — it asks the window to, so that a found version, a
+   * download and a failure are described in one place: the Updates card.
+   *
+   * Resolves with the unsubscribe function, which has to be called on teardown
+   * or a hot reload leaves the previous listener running.
+   */
+  onMenuCheckUpdates: (run: () => void): Promise<UnlistenFn> =>
+    listen<null>("menu://check-updates", () => run()),
 };
 
 /**

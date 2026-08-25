@@ -98,8 +98,11 @@ Flows stream into the list in real time.
 ## Updates
 
 Released builds check for a new version themselves. **Settings → General →
-Updates** shows the current version, checks on demand, and installs; the check
-also runs once at launch (switchable there) but only ever *reports* — installing
+Updates** shows the current version, checks on demand, and installs — and the
+native menu asks for that same check: **NovaProxy → Check for Updates…** on
+macOS, **Help → Check for Updates…** on Windows and Linux, which opens Settings
+on the card rather than answering in a dialog of its own. The check also runs
+once at launch (switchable there) but only ever *reports* — installing
 replaces a binary that holds a root CA and closes the window (an exec into the
 new build on macOS, an exit into the NSIS installer on Windows), so it stays a
 click.
@@ -113,8 +116,9 @@ tag push → CI builds + signs → NovaProxy_<ver>_<arch>.app.tar.gz + .sig
 ```
 
 `crates/nova-proto` carries `UpdateStatus` / `UpdateProgress`, `src-tauri/src/update.rs`
-owns the two commands, and `src/update.ts` holds the card's state machine (tested
-in `src/update.test.ts`).
+owns the two commands, `src-tauri/src/menu.rs` holds the menu item (which only
+emits an event — the card does the work), and `src/update.ts` holds the card's
+state machine (tested in `src/update.test.ts`).
 
 A development build has **no** updater endpoint — the endpoint and public key are
 injected at release time — and Settings says so rather than offering a button

@@ -2,9 +2,16 @@
 //!
 //! Composed explicitly rather than taken from [`Menu::default`], so the same
 //! structure is described in one place for every platform instead of being
-//! assembled differently by `cfg` inside Tauri. What NovaProxy adds to it is one
-//! item — collecting logs — which is here rather than in a settings panel
-//! because it is what a user needs when the window itself is misbehaving.
+//! assembled differently by `cfg` inside Tauri. What NovaProxy adds to it is two
+//! items:
+//!
+//! - **Collecting logs**, here rather than in a settings panel because it is
+//!   what a user needs when the window itself is misbehaving.
+//! - **Checking for updates**, because that is where every desktop user looks
+//!   for it first. The menu does not implement the check: it emits
+//!   [`CHECK_UPDATES_EVENT`] and the Updates card in Settings answers, so a
+//!   found version, a download and a failure all read the same whether the
+//!   check came from the menu or from the card's own button.
 //!
 //! # How far "the same on every platform" actually goes
 //!
@@ -48,12 +55,19 @@ use tauri::menu::{
     AboutMetadata, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID,
     WINDOW_SUBMENU_ID,
 };
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::state::AppState;
 
 /// Menu id of the log-collecting item. Matched in [`on_event`].
 const SHOW_LOGS: &str = "help.show-logs";
+
+/// Menu id of the update-checking item. Matched in [`on_event`].
+const CHECK_UPDATES: &str = "app.check-updates";
+
+/// Event the update item emits to the frontend, which owns the Updates card and
+/// therefore every sentence a check can end in.
+pub const CHECK_UPDATES_EVENT: &str = "menu://check-updates";
 
 /// Whether this platform implements window controls and Quit as menu items.
 ///
@@ -116,11 +130,21 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let maximize = PredefinedMenuItem::maximize(app, None)?;
     // One item cannot sit in two places, so each separator position needs its
     // own rather than sharing one.
-    let seps: Vec<PredefinedMenuItem<R>> = (0..6)
+    let seps: Vec<PredefinedMenuItem<R>> = (0..8)
         .map(|_| PredefinedMenuItem::separator(app))
         .collect::<tauri::Result<_>>()?;
 
     let show_logs = MenuItem::with_id(app, SHOW_LOGS, show_logs_label(), true, None::<&str>)?;
+    // Enabled even in a build that cannot update itself: the honest answer to
+    // "am I current?" is a sentence in the card, and an item greyed out for
+    // reasons the user cannot see reads as a bug.
+    let check_updates = MenuItem::with_id(
+        app,
+        CHECK_UPDATES,
+        "Check for Updates…",
+        true,
+        None::<&str>,
+    )?;
 
     // The app submenu: macOS's, and macOS's alone.
     let app_menu = Submenu::with_items(
@@ -130,6 +154,8 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         &[
             &about as &dyn IsMenuItem<R>,
             &seps[0],
+            &check_updates,
+            &seps[6],
             &services,
             &seps[1],
             &hide,
@@ -170,8 +196,14 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         ],
     )?;
 
-    // Help carries our item, plus About on the platforms with no app menu.
-    let mut help_items: Vec<&dyn IsMenuItem<R>> = vec![&show_logs];
+    // Help carries our items, plus About on the platforms with no app menu —
+    // which are also the platforms whose Help submenu holds the update check,
+    // there being no app menu to put it in.
+    let mut help_items: Vec<&dyn IsMenuItem<R>> = Vec::new();
+    if !PLATFORM_HAS_APP_MENU {
+        help_items.extend([&check_updates as &dyn IsMenuItem<R>, &seps[7]]);
+    }
+    help_items.push(&show_logs);
     if !PLATFORM_HAS_APP_MENU {
         help_items.extend([&seps[5] as &dyn IsMenuItem<R>, &about]);
     }
@@ -207,16 +239,60 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     Ok(())
 }
 
+/// What one of our menu items asks for.
+///
+/// Separated from [`on_event`] so the id-to-intent mapping is testable without a
+/// running app: the ids are strings that arrive from the OS, and a typo in one
+/// makes its item silently do nothing.
+#[derive(Debug, PartialEq, Eq)]
+enum Action {
+    ShowLogs,
+    CheckUpdates,
+}
+
+fn action_for(id: &str) -> Option<Action> {
+    match id {
+        SHOW_LOGS => Some(Action::ShowLogs),
+        CHECK_UPDATES => Some(Action::CheckUpdates),
+        // Every predefined item — About, Quit, the clipboard — is handled by the
+        // platform, so anything unrecognised here is not a failure.
+        _ => None,
+    }
+}
+
 /// Handle a menu click.
 pub fn on_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
-    if id != SHOW_LOGS {
-        return;
+    match action_for(id) {
+        Some(Action::ShowLogs) => {
+            let state: Arc<AppState> = (*app.state::<Arc<AppState>>()).clone();
+            // Off the menu thread: this reads and deflates the whole log
+            // directory, which on a heavy debugging week is not instant, and
+            // blocking here freezes the menu bar.
+            std::thread::spawn(move || export(&state));
+        }
+        Some(Action::CheckUpdates) => check_updates(app),
+        None => {}
     }
-    let state: Arc<AppState> = (*app.state::<Arc<AppState>>()).clone();
-    // Off the menu thread: this reads and deflates the whole log directory,
-    // which on a heavy debugging week is not instant, and blocking here freezes
-    // the menu bar.
-    std::thread::spawn(move || export(&state));
+}
+
+/// Hand the update check to the window that can show its result.
+///
+/// The menu is reachable on macOS with the window hidden or minimised — the menu
+/// bar belongs to the application, not to the window — so the window is brought
+/// back before the event goes out. Emitting to a window nobody can see would
+/// answer a question into the void.
+fn check_updates<R: Runtime>(app: &AppHandle<R>) {
+    crate::usage!("update.menu");
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    // A frontend that is not listening yet — a launch racing the menu — simply
+    // misses this. Costing the user a second click beats holding the menu.
+    if let Err(e) = app.emit(CHECK_UPDATES_EVENT, ()) {
+        tracing::warn!("could not ask the window to check for updates: {e}");
+    }
 }
 
 /// Collect the logs into the user's downloads folder and reveal the result.
@@ -283,6 +359,17 @@ mod tests {
         } else {
             assert_eq!(label, "Show Log Folder");
         }
+    }
+
+    #[test]
+    fn every_id_we_own_maps_to_the_action_it_names() {
+        assert_eq!(action_for(SHOW_LOGS), Some(Action::ShowLogs));
+        assert_eq!(action_for(CHECK_UPDATES), Some(Action::CheckUpdates));
+        // The two must stay distinct, or one item would run the other's code.
+        assert_ne!(SHOW_LOGS, CHECK_UPDATES);
+        // Predefined items and typos alike: no action, no panic.
+        assert_eq!(action_for("app.check-update"), None);
+        assert_eq!(action_for(""), None);
     }
 
     #[test]
