@@ -164,7 +164,7 @@ bind address.
 
 Four zones in the section body, and the status bar carries the fifth reading (§3).
 
-**Scope tree** (`--tree-w`, `rgba(255,255,255,.66)`, right hairline). Uppercase eyebrows over
+**Scope tree** (`--tree-w` default, dragged width persisted, `rgba(255,255,255,.66)`). Uppercase eyebrows over
 1px-gap rows: 12.5px/500 `--text2`, 14px icon, 9px radius, `--hover` on hover.
 - **Favorites** — Pinned, shown only once something is pinned; an empty row for a
   feature nobody has used is a control that does nothing. (Saved filters are
@@ -250,8 +250,8 @@ the inspector is showing.
 **Summary bar** between table and panes: method badge, status pill, the URL in 12px mono with
 the host emphasised, then right-aligned `N rows · n selected`.
 
-**Inspector — two panes.** A 42%-tall strip under a top hairline, split by a vertical
-hairline. Each pane is a column: a `rgba(243,243,248,.7)` head (12.5px/600 title, a 12px tab
+**Inspector — two panes.** A strip under a top hairline (42% by default, dragged
+height persisted), split by a vertical divider. Each pane is a column: a `rgba(243,243,248,.7)` head (12.5px/600 title, a 12px tab
 row, a `minus-circle` collapse at the right) over a scrolling body.
 - **Request** — Header · Query · Body · Cookies · Raw · Summary
 - **Response** — Header · Body · Raw · Treeview · Timing · Summary
@@ -261,6 +261,11 @@ Header / Query / Cookies bodies are a 176px key column beside the value in 11.5p
 an uppercase `Key / Value` head and `--bsoft` row hairlines. Body and Raw sit on code surfaces
 (§5). Timing keeps the waterfall the old inspector used. **cURL is not a tab** — it is `⌘⇧C`
 and a palette command, because it is an action, not a view.
+
+**Three dividers** — sidebar ↔ table, table ↔ inspector, request ↔ response — all
+from one `Splitter` (§5), all persisted. The table keeps a floor of five rows and
+a header: it is the surface this section exists for, so the inspector yields to it
+rather than the other way round.
 
 Every chord in this section is defined in `issues/0003-keyboard-shortcuts.md` §4.2–4.4. The
 tree footer keycap and the Auto Select label are the only two places the UI spells one out.
@@ -314,6 +319,25 @@ moment a column becomes optional. Numerics (duration, sizes) are right-aligned; 
 (URL, host, header keys) are mono and ellipsised from the right; **an absent value is `–`, a
 zero value is `0 B`** — collapsing the two hides whether a body existed. The header is
 `position:sticky` with its own translucent fill, so rows scroll under it rather than past it.
+
+### Splitter
+A 7px hit target carrying a 1px accent line that appears only on hover or focus —
+three permanent rules across the window would be three more things competing with
+the data — over the hairline it replaces, so the panes always have a seam. One
+component (`src/Splitter.tsx`) for all three: pointer **capture** rather than
+window listeners, so a drag survives the cursor outrunning the handle and releases
+itself if the pointer is lost; the value painted live and persisted **once** on
+release, because a drag emits hundreds of moves; arrow keys to nudge (12px, 48 with
+Shift) so it is not mouse-only; double-click to reset, so a pane dragged to nothing
+is recoverable without opening Settings.
+
+### Menu button (filter axis)
+A pill with an uppercase eyebrow for the axis, the selection beside it, and a
+chevron; a selection **tints** the pill (`rgba(62,181,109,.08)` on a
+`rgba(62,181,109,.42)` hairline) rather than filling it, since several sit in one
+row. The panel is a `--card` popover with `--e-pop`, capped at 300px and
+scrolling, closed by click-outside or Escape (`src/usePopover.ts`) — not by a
+scrim, because the point is that the rows behind it stay readable while you pick.
 
 ### Toggle switch
 40×23px pill track, `rgba(27,26,61,.14)` off / `--accent` on with an accent glow. Knob is a

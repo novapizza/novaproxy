@@ -26,6 +26,8 @@ import { FilterBar } from "./FilterBar";
 import { clauseActive, newClause } from "../builder";
 import { FlowTable } from "./FlowTable";
 import { ColumnPicker } from "./ColumnPicker";
+import { Splitter } from "../Splitter";
+import { DEFAULT_PREFS, INSPECTOR_PCT, TREE_W } from "../prefs";
 import { sortFlows, type Sort } from "./sort";
 import { clampColumnWidth, type ColumnId, type ColumnWidths } from "./columns";
 import { formatChord, shortcut } from "../shortcuts";
@@ -92,6 +94,20 @@ export const FlowsSection = forwardRef<FlowsHandle, {
   /** Filters the user kept, and the two ways the list changes. */
   saved: SavedFilter[];
   setSaved: (s: SavedFilter[]) => void;
+  /**
+   * The three dividers. `set` paints while dragging, `commit` persists once at
+   * the end — a drag emits hundreds of moves and would otherwise write hundreds
+   * of preferences.
+   */
+  treeWidth: number;
+  setTreeWidth: (px: number) => void;
+  commitTreeWidth: (px: number) => void;
+  inspectorPct: number;
+  setInspectorPct: (pct: number) => void;
+  commitInspectorPct: (pct: number) => void;
+  requestPct: number;
+  setRequestPct: (pct: number) => void;
+  commitRequestPct: (pct: number) => void;
 }>(function FlowsSection(props, ref) {
   const { flows, filter, selected, select } = props;
   const [panes, setPanes] = useState<PaneState>(INITIAL_PANES);
@@ -214,13 +230,27 @@ export const FlowsSection = forwardRef<FlowsHandle, {
   return (
     <div className="flows2">
       {!props.treeHidden && (
+      <>
       <ScopeTree
         tree={tree}
         scope={filter.scope}
         setScope={setScope}
         pinnedCount={pinned.size}
         filterRef={props.treeFilterRef}
+        width={props.treeWidth}
       />
+      <Splitter
+        orientation="vertical"
+        label="Resize the sidebar"
+        value={props.treeWidth}
+        min={TREE_W.min}
+        max={TREE_W.max}
+        reset={DEFAULT_PREFS.treeWidth}
+        onDrag={props.setTreeWidth}
+        onCommit={props.commitTreeWidth}
+        measure={(e, rect) => e.clientX - rect.left}
+      />
+      </>
       )}
 
       <div className="flows2-main">
@@ -286,6 +316,20 @@ export const FlowsSection = forwardRef<FlowsHandle, {
 
         {/* The summary bar is the inspector's head: the panes below carry tabs
             and bodies only, so the URL is stated once (design.md §4.1). */}
+        <Splitter
+          orientation="horizontal"
+          label="Resize the inspector"
+          value={props.inspectorPct}
+          min={INSPECTOR_PCT.min}
+          max={INSPECTOR_PCT.max}
+          reset={DEFAULT_PREFS.inspectorPct}
+          onDrag={props.setInspectorPct}
+          onCommit={props.commitInspectorPct}
+          // Dragging up grows the inspector, so the value is measured from the
+          // bottom of the table rather than from its top.
+          measure={(e, rect) => ((rect.bottom - e.clientY) / rect.height + 0) * 100 + 0}
+        />
+
         <div className="summary-bar">
           {selected ? (
             <>
@@ -338,7 +382,12 @@ export const FlowsSection = forwardRef<FlowsHandle, {
           </span>
         </div>
 
-        <div className="insp-strip" ref={inspRef} tabIndex={-1}>
+        <div
+          className="insp-strip"
+          ref={inspRef}
+          tabIndex={-1}
+          style={{ height: `${props.inspectorPct}%` }}
+        >
           {selected ? (
             <Inspector
               flow={selected}
@@ -346,6 +395,9 @@ export const FlowsSection = forwardRef<FlowsHandle, {
               panes={panes}
               setPanes={setPanes}
               onTab={(_pane, tab) => props.track?.("ui.detail_tab", tab.toLowerCase())}
+              requestPct={props.requestPct}
+              setRequestPct={props.setRequestPct}
+              commitRequestPct={props.commitRequestPct}
             />
           ) : (
             <div className="detail-empty">

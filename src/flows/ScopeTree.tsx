@@ -24,6 +24,7 @@ export function ScopeTree({
   setScope,
   pinnedCount,
   filterRef,
+  width,
 }: {
   tree: Tree;
   scope: Scope;
@@ -31,6 +32,8 @@ export function ScopeTree({
   pinnedCount: number;
   /** Focus target for the tree filter (⌘⇧F). */
   filterRef?: React.RefObject<HTMLInputElement | null>;
+  /** Set by the divider; the CSS token is only the first-paint fallback. */
+  width: number;
 }) {
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const [needle, setNeedle] = useState("");
@@ -60,7 +63,7 @@ export function ScopeTree({
   });
 
   return (
-    <div className="tree">
+    <div className="tree" style={{ width }}>
       <div className="tree-body">
         {/* Favourites appear only once there is something in them: a permanent
             empty "Pinned" row is a control that does nothing. */}

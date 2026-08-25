@@ -1,7 +1,6 @@
 import { Icon } from "../icons";
-import { clauseActive } from "../builder";
-import { FilterBuilder } from "./FilterBuilder";
 import { FLOW_TYPES, PROTOS, STATUS_CLASSES } from "../classify";
+import { clauseActive } from "../builder";
 import {
   activeFilterCount,
   describeFilter,
@@ -9,18 +8,19 @@ import {
   type FlowFilter,
   type SavedFilter,
 } from "../filter";
+import { usePopover } from "../usePopover";
+import { ChipMenu } from "./ChipMenu";
+import { FilterBuilder } from "./FilterBuilder";
 
 /**
- * Search box over three chip groups.
+ * One row: search box, the three axes as menus, saved filters, and the
+ * conditions toggle.
  *
- * The groups are the point: **OR inside a group, AND between groups**, so
- * `JSON` + `4xx` + `5xx` — "which API is failing" — is expressible, which is
- * exactly what a single mutually-exclusive chip row cannot say. An empty group
- * means "all of it", so there is no `All` chip to switch back to; **Reset** does
- * that, and it names how many groups are narrowing the view.
- *
- * Three rows cost ~56px that Proxyman spends on one scrollable row. Deliberate
- * (design.md §4.1): one row cannot show which axis a chip belongs to.
+ * The axes are still three independent things — **OR inside one, AND between
+ * them**, an empty one meaning "all of it", which is why there is no `All` chip
+ * and why Reset is what clears. What changed is only how they are drawn: as
+ * buttons rather than as three rows of chips, because those rows cost ~140px of a
+ * window that exists to show the table underneath (design.md §4.1).
  */
 export function FilterBar({
   filter,
@@ -43,7 +43,7 @@ export function FilterBar({
   searchRef?: React.RefObject<HTMLInputElement | null>;
   /** Which chip was pressed — the id only, never the search text. */
   onChip?: (id: string) => void;
-  /** View controls that belong beside Reset — today, the column picker. */
+  /** View controls that belong at the end of the row — today, the column picker. */
   trailing?: React.ReactNode;
   /**
    * Filters the user kept. Chips rather than a list in the sidebar, the way
@@ -63,123 +63,146 @@ export function FilterBar({
 
   return (
     <div className="fbar">
-      <div className="fbar-search">
-        <span className="mag"><Icon name="search" /></span>
-        <input
-          ref={searchRef}
-          value={filter.query}
-          onChange={(e) => patch({ query: e.target.value })}
-          placeholder="host, path, method:GET, status:401, app:Chrome, mcp:"
-          aria-label="Search the capture"
+      <div className="fbar-row">
+        <div className="fbar-search">
+          <span className="mag"><Icon name="search" /></span>
+          <input
+            ref={searchRef}
+            value={filter.query}
+            onChange={(e) => patch({ query: e.target.value })}
+            placeholder="host, path, method:GET, status:401, app:Chrome, mcp:"
+            aria-label="Search the capture"
+          />
+          {filter.query && (
+            <span className="clear" title="Clear the search" onClick={() => patch({ query: "" })}>
+              <Icon name="x" />
+            </span>
+          )}
+        </div>
+
+        <ChipMenu
+          label="Proto"
+          chips={PROTOS}
+          on={filter.proto}
+          toggle={(id) => {
+            patch({ proto: toggleIn(filter.proto, id) });
+            onChip?.(id);
+          }}
+          clear={() => patch({ proto: new Set() })}
         />
-        {filter.query && (
-          <span className="clear" title="Clear the search" onClick={() => patch({ query: "" })}>
-            <Icon name="x" />
-          </span>
+        <ChipMenu
+          label="Type"
+          chips={FLOW_TYPES}
+          on={filter.type}
+          toggle={(id) => {
+            patch({ type: toggleIn(filter.type, id) });
+            onChip?.(id);
+          }}
+          clear={() => patch({ type: new Set() })}
+        />
+        <ChipMenu
+          label="Status"
+          chips={STATUS_CLASSES}
+          on={filter.status}
+          toggle={(id) => {
+            patch({ status: toggleIn(filter.status, id) });
+            onChip?.(id);
+          }}
+          clear={() => patch({ status: new Set() })}
+        />
+
+        {saved.length > 0 && (
+          <SavedMenu saved={saved} apply={applySaved} remove={removeSaved} />
         )}
-        <span className="spacer" />
-        {active > 0 && (
-          <>
-            <span className="save" title={`Save “${describeFilter(filter)}”`} onClick={saveCurrent}>
-              Save
-            </span>
-            <span className="reset" onClick={reset}>
-              Reset filters ({active})
-            </span>
-          </>
-        )}
+
         <span
-          className={`build ${builderOpen || rows > 0 ? "on" : ""}`}
+          className={`fb-toggle ${builderOpen || rows > 0 ? "on" : ""}`}
           title="Filter by field, operator and value"
           onClick={toggleBuilder}
         >
           <Icon name="sliders" size={13} />
           {rows > 0 ? `${rows} condition${rows === 1 ? "" : "s"}` : "Conditions"}
         </span>
+
+        {/* Save and Reset appear only when there is a filter to save or clear —
+            two permanent buttons that usually do nothing is furniture. */}
+        {active > 0 && (
+          <>
+            <span className="fb-act" title={`Save “${describeFilter(filter)}”`} onClick={saveCurrent}>
+              Save
+            </span>
+            <span className="fb-act accent" onClick={reset}>
+              Reset ({active})
+            </span>
+          </>
+        )}
+
         {trailing}
       </div>
 
       {builderOpen && (
         <FilterBuilder clauses={filter.clauses} setClauses={(c) => patch({ clauses: c })} />
       )}
+    </div>
+  );
+}
 
-      <ChipGroup
-        label="Proto"
-        chips={PROTOS}
-        on={filter.proto}
-        toggle={(id) => {
-          patch({ proto: toggleIn(filter.proto, id) });
-          onChip?.(id);
-        }}
-      />
-      <ChipGroup
-        label="Type"
-        chips={FLOW_TYPES}
-        on={filter.type}
-        toggle={(id) => {
-          patch({ type: toggleIn(filter.type, id) });
-          onChip?.(id);
-        }}
-      />
-      {saved.length > 0 && (
-        <div className="chip-group">
-          <span className="cg-label">Saved</span>
+/**
+ * Saved filters, behind one button.
+ *
+ * Inline chips were fine at two and would have been the widest thing in the row
+ * at six — and unlike the axes, this list grows without bound because the user
+ * writes it.
+ */
+function SavedMenu({
+  saved,
+  apply,
+  remove,
+}: {
+  saved: SavedFilter[];
+  apply: (s: SavedFilter) => void;
+  remove: (id: string) => void;
+}) {
+  const pop = usePopover();
+  return (
+    <div className="chipmenu" ref={pop.ref}>
+      <span
+        className={`cm-btn ${pop.open ? "on" : ""}`}
+        onClick={pop.toggle}
+        role="button"
+        aria-expanded={pop.open}
+      >
+        <span className="cm-label">Saved</span>
+        <span className="cm-sum">{saved.length}</span>
+        <Icon name="chevron-down" size={12} />
+      </span>
+      {pop.open && (
+        <div className="cm-panel wide">
           {saved.map((sf) => (
-            <div key={sf.id} className="fchip saved" onClick={() => applySaved(sf)}>
-              {sf.label}
+            <div
+              key={sf.id}
+              className="cm-row"
+              onClick={() => {
+                apply(sf);
+                pop.setOpen(false);
+              }}
+            >
+              <span className="tick"><Icon name="filter" size={12} /></span>
+              <span className="t">{sf.label}</span>
               <span
                 className="x"
                 title="Forget this filter"
                 onClick={(e) => {
                   e.stopPropagation();
-                  removeSaved(sf.id);
+                  remove(sf.id);
                 }}
               >
-                <Icon name="x" size={10} />
+                <Icon name="x" size={11} />
               </span>
             </div>
           ))}
         </div>
       )}
-
-      <ChipGroup
-        label="Status"
-        chips={STATUS_CLASSES}
-        on={filter.status}
-        toggle={(id) => {
-          patch({ status: toggleIn(filter.status, id) });
-          onChip?.(id);
-        }}
-      />
-    </div>
-  );
-}
-
-function ChipGroup<T extends string>({
-  label,
-  chips,
-  on,
-  toggle,
-}: {
-  label: string;
-  chips: { id: T; label: string }[];
-  on: ReadonlySet<T>;
-  toggle: (id: T) => void;
-}) {
-  return (
-    <div className="chip-group">
-      <span className="cg-label">{label}</span>
-      {chips.map((c) => (
-        <div
-          key={c.id}
-          className={`fchip ${on.has(c.id) ? "on" : ""}`}
-          onClick={() => toggle(c.id)}
-          role="checkbox"
-          aria-checked={on.has(c.id)}
-        >
-          {c.label}
-        </div>
-      ))}
     </div>
   );
 }

@@ -10,6 +10,7 @@ import type { Flow } from "./api";
 import { FlowsSection } from "./flows/FlowsSection";
 import { DEFAULT_COLUMNS, normalizeColumns, type ColumnId } from "./flows/columns";
 import { EMPTY_FILTER, type FlowFilter, type SavedFilter } from "./filter";
+import { DEFAULT_PREFS } from "./prefs";
 import { KeyValueTable } from "./inspector/KeyValueTable";
 import { TreeviewPanel } from "./inspector/TreeviewPanel";
 import { TimingPanel } from "./inspector/TimingPanel";
@@ -71,6 +72,9 @@ const ROWS = REVERSED ? [...FLOWS].reverse() : FLOWS;
 function Harness() {
   const [columns, setColumns] = useState<ColumnId[]>(normalizeColumns([...DEFAULT_COLUMNS, "edited"]));
   const [widths, setWidths] = useState({});
+  const [treeWidth, setTreeWidth] = useState(DEFAULT_PREFS.treeWidth);
+  const [inspectorPct, setInspectorPct] = useState(DEFAULT_PREFS.inspectorPct);
+  const [requestPct, setRequestPct] = useState(DEFAULT_PREFS.requestPct);
   const [saved, setSaved] = useState<SavedFilter[]>([
     { id: "s1", label: "JSON · 4xx · 5xx", filter: { type: ["json"], status: ["4xx", "5xx"] } },
     { id: "s2", label: "slack.com", filter: { scope: { kind: "host", host: "slack.com" } } },
@@ -92,7 +96,7 @@ function Harness() {
   return (
     <div className="nova">
       <div className="body">
-        <div className="main">
+        <div className="content">
           <FlowsSection
             flows={ROWS}
             filter={filter}
@@ -104,6 +108,15 @@ function Harness() {
             setWidths={setWidths}
             saved={saved}
             setSaved={setSaved}
+            treeWidth={treeWidth}
+            setTreeWidth={setTreeWidth}
+            commitTreeWidth={setTreeWidth}
+            inspectorPct={inspectorPct}
+            setInspectorPct={setInspectorPct}
+            commitInspectorPct={setInspectorPct}
+            requestPct={requestPct}
+            setRequestPct={setRequestPct}
+            commitRequestPct={setRequestPct}
             recording
             selected={selected}
             select={setSelectedId}

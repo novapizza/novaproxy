@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_PREFS, loadPrefs, normalizePrefs, savePrefs } from "./prefs";
+import {
+  DEFAULT_PREFS,
+  INSPECTOR_PCT,
+  loadPrefs,
+  normalizePrefs,
+  REQUEST_PCT,
+  savePrefs,
+  TREE_W,
+} from "./prefs";
 import { DEFAULT_COLUMNS } from "./flows/columns";
 
 /** A `localStorage` stand-in, plus one that fails the way a locked-down browser does. */
@@ -74,5 +82,35 @@ describe("prefs", () => {
       },
     };
     expect(() => savePrefs(DEFAULT_PREFS, hostile)).not.toThrow();
+  });
+});
+
+describe("divider sizes", () => {
+  const load = (json: string) => loadPrefs(fakeStore(json));
+
+  it("keeps every divider inside a range that leaves the pane usable", () => {
+    // A 40px sidebar is a column of ellipses and a 5% inspector is a tab strip
+    // with nothing under it, so the floors are about usefulness, not rendering.
+    expect(load('{"treeWidth":10}').treeWidth).toBe(TREE_W.min);
+    expect(load('{"treeWidth":9999}').treeWidth).toBe(TREE_W.max);
+    expect(load('{"inspectorPct":1}').inspectorPct).toBe(INSPECTOR_PCT.min);
+    expect(load('{"inspectorPct":95}').inspectorPct).toBe(INSPECTOR_PCT.max);
+    expect(load('{"requestPct":0}').requestPct).toBe(REQUEST_PCT.min);
+    expect(load('{"requestPct":100}').requestPct).toBe(REQUEST_PCT.max);
+  });
+
+  it("rounds a dragged fraction, and rejects what is not a number", () => {
+    expect(load('{"treeWidth":252.7}').treeWidth).toBe(253);
+    // NaN survives Math.min/Math.max, so it is rejected explicitly — a NaN width
+    // would collapse the pane to nothing.
+    expect(load('{"treeWidth":"wide"}').treeWidth).toBe(DEFAULT_PREFS.treeWidth);
+    expect(normalizePrefs({ inspectorPct: null }).inspectorPct).toBe(DEFAULT_PREFS.inspectorPct);
+  });
+
+  it("round-trips a drag", () => {
+    const store = fakeStore();
+    savePrefs({ ...DEFAULT_PREFS, treeWidth: 320, inspectorPct: 55, requestPct: 35 }, store);
+    const back = loadPrefs(store);
+    expect([back.treeWidth, back.inspectorPct, back.requestPct]).toEqual([320, 55, 35]);
   });
 });

@@ -131,6 +131,16 @@ export function App() {
    * multi-select existed.
    */
   const [markedIds, setMarkedIds] = useState<string[]>([]);
+  /**
+   * Live divider sizes, mirrored out of prefs.
+   *
+   * A drag paints through this state and writes the preference once on release:
+   * `setPrefs` persists, and doing that per pointer-move would write hundreds of
+   * times for one drag.
+   */
+  const [treeWidth, setTreeWidth] = useState(prefs.treeWidth);
+  const [inspectorPct, setInspectorPct] = useState(prefs.inspectorPct);
+  const [requestPct, setRequestPct] = useState(prefs.requestPct);
   // Which slice of the capture the list shows, and (separately) whether
   // NovaProxy's own MCP/replay traffic is part of it.
 
@@ -716,6 +726,15 @@ export function App() {
               widths={prefs.columnWidths}
               setWidths={(w) => setPrefs({ ...prefs, columnWidths: w })}
               onMarked={setMarkedIds}
+              treeWidth={treeWidth}
+              setTreeWidth={setTreeWidth}
+              commitTreeWidth={(px) => { setTreeWidth(px); setPrefs({ ...prefs, treeWidth: px }); }}
+              inspectorPct={inspectorPct}
+              setInspectorPct={setInspectorPct}
+              commitInspectorPct={(p) => { setInspectorPct(p); setPrefs({ ...prefs, inspectorPct: p }); }}
+              requestPct={requestPct}
+              setRequestPct={setRequestPct}
+              commitRequestPct={(p) => { setRequestPct(p); setPrefs({ ...prefs, requestPct: p }); }}
               saved={prefs.savedFilters}
               setSaved={(sf) => setPrefs({ ...prefs, savedFilters: sf })}
               flows={flows}

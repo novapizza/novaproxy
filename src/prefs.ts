@@ -46,6 +46,18 @@ export interface Prefs {
   /** Sidebar hidden (⌘0). Persisted because a small screen stays small. */
   treeHidden: boolean;
   /**
+   * The three draggable dividers.
+   *
+   * Persisted for the same reason as `treeHidden`: how much room the inspector
+   * deserves is a property of the screen and of the work, not of the session.
+   * The sidebar is px because its content is names of a knowable width; the other
+   * two are percentages because they divide whatever height and width the window
+   * happens to have.
+   */
+  treeWidth: number;
+  inspectorPct: number;
+  requestPct: number;
+  /**
    * Filters the user kept. Unlike pins — which die with the session because a
    * flow id does — a filter is worth keeping across launches: it describes the
    * work, not one exchange.
@@ -75,6 +87,9 @@ export const DEFAULT_PREFS: Prefs = {
   columnWidths: {},
   autoSelect: false,
   treeHidden: false,
+  treeWidth: 252,
+  inspectorPct: 42,
+  requestPct: 50,
   savedFilters: [],
   autoCheckUpdates: true,
   onboardingDone: false,
@@ -101,6 +116,24 @@ function normalizeSaved(raw: unknown): SavedFilter[] {
   return out;
 }
 
+/**
+ * Bounds for the dividers, so a stale or hand-edited value cannot hide a pane.
+ *
+ * The floors are what a pane needs to be worth showing, not the smallest number
+ * that renders: a 40px sidebar is a column of ellipses, and a 10% inspector is a
+ * tab strip with nothing under it.
+ */
+export const TREE_W = { min: 180, max: 480 } as const;
+export const INSPECTOR_PCT = { min: 20, max: 70 } as const;
+export const REQUEST_PCT = { min: 20, max: 80 } as const;
+
+/** Clamp a stored number into range, rejecting NaN — which `Math.min` lets through. */
+function clampIn(raw: unknown, range: { min: number; max: number }, fallback: number): number {
+  const v = typeof raw === "number" ? raw : Number.NaN;
+  if (!Number.isFinite(v)) return fallback;
+  return Math.min(range.max, Math.max(range.min, Math.round(v)));
+}
+
 /** Coerce arbitrary stored JSON into a complete, in-range `Prefs`. */
 export function normalizePrefs(raw: unknown): Prefs {
   const v = (raw ?? {}) as Partial<Record<keyof Prefs, unknown>>;
@@ -114,6 +147,9 @@ export function normalizePrefs(raw: unknown): Prefs {
     columnWidths: normalizeWidths(v.columnWidths),
     autoSelect: v.autoSelect === true,
     treeHidden: v.treeHidden === true,
+    treeWidth: clampIn(v.treeWidth, TREE_W, DEFAULT_PREFS.treeWidth),
+    inspectorPct: clampIn(v.inspectorPct, INSPECTOR_PCT, DEFAULT_PREFS.inspectorPct),
+    requestPct: clampIn(v.requestPct, REQUEST_PCT, DEFAULT_PREFS.requestPct),
     savedFilters: normalizeSaved(v.savedFilters),
     // Only an explicit `false` opts out, so a pref file written by an older
     // build keeps the safer default.

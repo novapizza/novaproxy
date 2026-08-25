@@ -9,6 +9,8 @@ import { TimingPanel } from "./TimingPanel";
 import { TreeviewPanel } from "./TreeviewPanel";
 import { WsPanel } from "./WsPanel";
 import { parseCookies, parseQuery, rawHttp, summaryOf } from "./parts";
+import { Splitter } from "../Splitter";
+import { DEFAULT_PREFS, REQUEST_PCT } from "../prefs";
 
 /**
  * Request and response, side by side.
@@ -62,6 +64,9 @@ export function Inspector({
   onTab,
   panes,
   setPanes,
+  requestPct,
+  setRequestPct,
+  commitRequestPct,
 }: {
   flow: Flow;
   showToast: (t: string) => void;
@@ -69,6 +74,10 @@ export function Inspector({
   onTab?: (pane: PaneSide, tab: string) => void;
   panes: PaneState;
   setPanes: (p: PaneState) => void;
+  /** Width of the request pane, as a percentage of the strip. */
+  requestPct: number;
+  setRequestPct: (pct: number) => void;
+  commitRequestPct: (pct: number) => void;
 }) {
   const reqTab = panes.request;
   const resTab = panes.response;
@@ -118,6 +127,9 @@ export function Inspector({
           setPanes({ ...panes, collapsed: collapsed === "request" ? null : "request" })
         }
         meta={metaFor(flow, "request")}
+        // A collapsed pane keeps only its head, so the divider has nothing to
+        // divide — the flex basis is dropped and the other pane takes the room.
+        basis={collapsed ? undefined : `${requestPct}%`}
       >
         {reqTab === "Header" && (
           <KeyValueTable
@@ -139,6 +151,25 @@ export function Inspector({
           <KeyValueTable rows={summaryOf(flow, "request")} empty="nothing captured" />
         )}
       </Pane>
+
+      {!collapsed && (
+        <Splitter
+          orientation="vertical"
+          label="Resize the request pane"
+          value={requestPct}
+          min={REQUEST_PCT.min}
+          max={REQUEST_PCT.max}
+          reset={DEFAULT_PREFS.requestPct}
+          onDrag={setRequestPct}
+          onCommit={commitRequestPct}
+          // The rect is the request pane's; the strip is its parent, and the
+          // percentage is of that.
+          measure={(e, rect) => {
+            const strip = rect.width / (requestPct / 100);
+            return ((e.clientX - rect.left) / strip) * 100;
+          }}
+        />
+      )}
 
       <Pane
         side="response"
@@ -199,6 +230,7 @@ function Pane({
   collapsed,
   toggleCollapse,
   meta,
+  basis,
   children,
 }: {
   side: PaneSide;
@@ -210,10 +242,15 @@ function Pane({
   collapsed: boolean;
   toggleCollapse: () => void;
   meta: string;
+  /** Flex basis from the divider; absent means "share what is left". */
+  basis?: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className={`insp-pane ${collapsed ? "collapsed" : ""} ${active ? "active" : ""}`}>
+    <div
+      className={`insp-pane ${collapsed ? "collapsed" : ""} ${active ? "active" : ""}`}
+      style={basis ? { flexBasis: basis, flexGrow: 0 } : undefined}
+    >
       <div className="insp-head">
         <span className="title">{side === "request" ? "Request" : "Response"}</span>
         <span className="tabs">

@@ -179,7 +179,11 @@ input, textarea, select { font-family: inherit; }
 .rail-gear:hover { background: var(--hover); color: var(--text2); }
 
 /* ------------------------------ content column ------------------------------ */
-.content { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+/* `min-height: 0` is load-bearing, not boilerplate: without it this column
+   cannot shrink below its content, and the flows table's own min-height (its
+   five-row floor) pushes the whole column past the bottom of the window —
+   dragging the status bar off screen. */
+.content { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 /* ------------------------------ header bar ------------------------------ */
 .toolbar {
@@ -951,6 +955,7 @@ input, textarea, select { font-family: inherit; }
 /* ------------------------------- scope tree ------------------------------- */
 
 .tree {
+  /* Width comes from the divider; this is the first-paint fallback. */
   width: var(--tree-w); flex: none;
   display: flex; flex-direction: column; min-height: 0;
   background: rgba(255,255,255,.66);
@@ -1008,8 +1013,8 @@ input, textarea, select { font-family: inherit; }
 
 
 .fbar {
-  flex: none; display: flex; flex-direction: column; gap: 7px;
-  padding: 12px 18px 10px; border-bottom: 1px solid var(--border);
+  flex: none; display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 18px; border-bottom: 1px solid var(--border);
 }
 .fbar-search {
   display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 12px;
@@ -1161,7 +1166,9 @@ input, textarea, select { font-family: inherit; }
 /* 42% by default, but it yields to the table's floor before the table does —
    `flex: 0 1 auto` is what lets it shrink at all. */
 .insp-strip {
-  flex: 0 1 auto; height: 42%; min-height: 96px; max-height: 60%;
+  /* Height comes from the divider; `flex: 0 1 auto` is what lets it yield to
+     the table's floor rather than the table yielding to it. */
+  flex: 0 1 auto; min-height: 96px;
   display: flex; flex-direction: column;
   border-top: 1px solid var(--border); background: rgba(255,255,255,.9);
 }
@@ -1386,3 +1393,89 @@ input, textarea, select { font-family: inherit; }
 }
 .fb-add:hover { color: var(--accent); border-color: rgba(62,181,109,.45); }
 .fb-add .kbd { font-size: 10px; }
+
+
+/* -------------------------------- splitters ------------------------------- */
+
+/*
+ * A divider is a 7px hit target with a 1px line, and the line only appears on
+ * hover or focus: three permanent rules across the window would be three more
+ * things competing with the data. `touch-action: none` is what makes the pointer
+ * capture work on a trackpad.
+ */
+.splitter { flex: none; position: relative; background: transparent; outline: none; touch-action: none; }
+.splitter.vertical { width: 7px; cursor: col-resize; }
+.splitter.horizontal { height: 7px; cursor: row-resize; }
+.splitter .grip { position: absolute; background: var(--accent); opacity: 0; transition: opacity var(--t-micro) var(--ease); }
+.splitter.vertical .grip { top: 0; bottom: 0; left: 3px; width: 1px; }
+.splitter.horizontal .grip { left: 0; right: 0; top: 3px; height: 1px; }
+.splitter:hover .grip, .splitter:focus-visible .grip { opacity: .85; }
+/* The border the divider replaces: without it the panes touch with no seam at
+   rest, which reads as a rendering glitch rather than as a quiet divider. */
+.splitter.vertical { border-right: 1px solid var(--border); }
+.splitter.horizontal { border-bottom: 1px solid var(--border); }
+
+/* --------------------------- one-row filter bar --------------------------- */
+
+.fbar-row { display: flex; align-items: center; gap: 8px; }
+.fbar-row > .fbar-search { flex: 1; min-width: 140px; }
+
+.fb-toggle, .fb-act {
+  flex: none; display: flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 10px; border-radius: var(--r-pill);
+  border: 1px solid transparent; white-space: nowrap; cursor: pointer;
+  font: 500 11.5px var(--font-ui); color: var(--muted);
+}
+.fb-toggle:hover, .fb-act:hover { color: var(--text2); background: var(--hover); }
+.fb-toggle.on { color: var(--accent); border-color: rgba(62,181,109,.32); background: rgba(62,181,109,.08); }
+.fb-act.accent { color: var(--accent); }
+.fb-act.accent:hover { color: var(--accent-hover); }
+
+/* ------------------------------- chip menus ------------------------------- */
+
+.chipmenu { position: relative; flex: none; }
+.cm-btn {
+  display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px 0 10px;
+  border-radius: var(--r-pill); border: 1px solid var(--border2);
+  background: rgba(255,255,255,.7); cursor: pointer; white-space: nowrap;
+}
+.cm-btn:hover { border-color: rgba(27,26,61,.24); }
+/* An axis with a selection is accent-tinted rather than solid: several of these
+   sit in a row, and four solid green buttons would be a wall. */
+.cm-btn.on { border-color: rgba(62,181,109,.42); background: rgba(62,181,109,.08); }
+.cm-label {
+  font: 600 10px var(--font-ui); letter-spacing: .09em; text-transform: uppercase;
+  color: var(--faint);
+}
+.cm-btn.on .cm-label { color: var(--accent); }
+.cm-sum {
+  font: 500 11.5px var(--font-ui); color: var(--text);
+  max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cm-btn svg { color: var(--faint); flex: none; }
+
+.cm-panel {
+  position: absolute; top: 30px; left: 0; min-width: 150px; z-index: 7;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--r-field); box-shadow: var(--e-pop); padding: 6px;
+  max-height: 300px; overflow-y: auto;
+}
+/* Saved filters are named by their own parts, so the labels are long and the
+   list grows without bound — right-aligned so a wide panel opens inward. */
+.cm-panel.wide { min-width: 240px; max-width: 320px; left: auto; right: 0; }
+.cm-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  border-radius: var(--r-tag); cursor: pointer;
+  font: 500 12px var(--font-ui); color: var(--text2);
+}
+.cm-row:hover { background: var(--hover); }
+.cm-row.on { color: var(--text); }
+.cm-row .tick { display: flex; width: 12px; flex: none; color: var(--accent); }
+.cm-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm-row .x { display: flex; flex: none; color: var(--faint); }
+.cm-row .x:hover { color: var(--c-red-deep); }
+.cm-clear {
+  margin-top: 4px; padding: 7px 8px; border-top: 1px solid var(--border);
+  font: 500 11.5px var(--font-ui); color: var(--c-red-deep); cursor: pointer;
+}
+.cm-clear:hover { background: rgba(216,134,137,.08); }
