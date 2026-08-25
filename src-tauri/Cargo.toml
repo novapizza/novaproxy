@@ -22,8 +22,18 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+# Already in the tree via transitive deps; named here because the usage stream
+# depends on it directly for the session and device ids.
+uuid = { version = "1", features = ["v4"] }
 dirs = "5"
 base64 = "0.22"
+# The support bundle. Default features drag in aes/bzip2/lzma/zstd; the logs are
+# text, so deflate is the only codec that earns its compile time.
+zip = { version = "4", default-features = false, features = ["deflate"] }
+# Local wall-clock for the bundle's filename and its `collected_at`. `clock` only
+# — the rest of chrono is timezone data we do not read.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 nova-core = { path = "../crates/nova-core" }
@@ -36,6 +46,8 @@ tower-service = "0.3"
 schemars = "1"
 rmcp = { version = "3.0.0", features = ["server", "macros", "transport-streamable-http-server", "transport-streamable-http-server-session", "server-side-http"] }
 tauri-plugin-updater = "2.10.1"
+crash-handler = "0.8.0"
+libc = "0.2.189"
 
 [dev-dependencies]
 # The MCP e2e test speaks JSON-RPC to the endpoint over HTTP.

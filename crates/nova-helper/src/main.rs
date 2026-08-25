@@ -13,6 +13,9 @@ use anyhow::{bail, Result};
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
+        // stdout is a file now (the plist's StandardOutPath), and ANSI colour
+        // escapes in a log a human is meant to read are just noise.
+        .with_ansi(false)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "nova_helper=info,nova_os=info".into()),

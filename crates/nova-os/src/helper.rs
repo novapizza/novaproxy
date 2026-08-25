@@ -62,6 +62,16 @@ pub const HELPER_DIR: &str = "/Library/Application Support/NovaProxy";
 pub const HELPER_BIN: &str = "/Library/Application Support/NovaProxy/nova-helper";
 pub const PLIST_PATH: &str = "/Library/LaunchDaemons/dev.novaproxy.helper.plist";
 
+/// Where the daemon's stdout and stderr land.
+///
+/// `/Library/Logs` rather than the app's own `~/Library/Logs/NovaProxy`: the
+/// daemon runs as root before any user is logged in, and writing into a home
+/// directory it does not own is both wrong and impossible at that point. The
+/// app's log bundler reads this file back out, which is why it is made
+/// world-readable — see `prepare_log`.
+pub const HELPER_LOG_DIR: &str = "/Library/Logs/NovaProxy";
+pub const HELPER_LOG: &str = "/Library/Logs/NovaProxy/helper.log";
+
 /// Filename the app stages the plist under before the privileged copy.
 pub const STAGED_PLIST: &str = "dev.novaproxy.helper.plist";
 
@@ -217,6 +227,10 @@ pub fn plist_xml(owner_uid: u32) -> String {
     <true/>
     <key>ProcessType</key>
     <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>{HELPER_LOG}</string>
+    <key>StandardErrorPath</key>
+    <string>{HELPER_LOG}</string>
 </dict>
 </plist>
 "#
@@ -235,6 +249,10 @@ pub fn install_plan(source_bin: &Path, staged_plist: &Path) -> Plan {
     let job = format!("system/{LABEL}");
     let steps = vec![
         Step::new("/usr/bin/install", &["-d", "-o", "root", "-g", "wheel", "-m", "755", HELPER_DIR]),
+        // launchd does not create the directory its StandardOutPath names: without
+        // this step the plist points at nothing and the daemon's log is discarded
+        // exactly as it was before. 755 so the app can read the file back.
+        Step::new("/usr/bin/install", &["-d", "-o", "root", "-g", "wheel", "-m", "755", HELPER_LOG_DIR]),
         Step::with_args(
             "/usr/bin/install",
             vec![
@@ -467,6 +485,7 @@ pub mod server {
         let listener =
             UnixListener::bind(&path).with_context(|| format!("cannot bind {}", path.display()))?;
         restrict_socket(&path, owner_uid)?;
+        prepare_log();
         tracing::info!("nova-helper listening on {} for uid {owner_uid}", path.display());
 
         for stream in listener.incoming() {
@@ -480,6 +499,39 @@ pub mod server {
             }
         }
         Ok(())
+    }
+
+    /// Size at which the log is rotated, checked once per boot.
+    ///
+    /// launchd appends to `StandardOutPath` forever and rotates nothing. A quiet
+    /// boot writes a handful of lines, but `rejected connection from uid N` is one
+    /// line per refused connect — a process retrying in a loop is unbounded, and
+    /// this daemon is the one thing on the machine that must not fill the disk.
+    const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
+
+    /// Make the log readable by the user and keep it from growing without end.
+    ///
+    /// launchd creates the file 0600 root, which the app's log bundler — running
+    /// as the user — cannot read. A daemon log nobody can collect is the same as
+    /// no daemon log, so it is widened to 0644: still root-only to write, which is
+    /// what matters, because a user-writable root log is a place to forge entries.
+    ///
+    /// Best-effort throughout. Nothing here is worth refusing to serve over.
+    fn prepare_log() {
+        let path = std::path::Path::new(HELPER_LOG);
+        // Widened *before* any rename, because the mode belongs to the inode:
+        // chmod after the rename would target a path that no longer exists and
+        // leave the rotated file unreadable — the one thing this is here to fix.
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644));
+        if std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) > MAX_LOG_BYTES {
+            // Rename rather than truncate: launchd opened this fd before we ran,
+            // so a truncate leaves it writing at the old offset into a sparse
+            // file. The consequence of renaming is that *this* run's output keeps
+            // flowing into `helper.log.1` — the fd follows the inode — and a fresh
+            // `helper.log` appears on the next launch. Both names are collected
+            // into the support bundle for exactly that reason.
+            let _ = std::fs::rename(path, format!("{HELPER_LOG}.1"));
+        }
     }
 
     /// Hand the socket to the installing user, and to nobody else.
@@ -650,11 +702,27 @@ mod tests {
     }
 
     #[test]
+    fn the_plist_sends_the_daemons_output_to_a_file() {
+        // Without these keys launchd routes stdout and stderr to /dev/null, which
+        // silently discarded `rejected connection from uid N`.
+        let xml = plist_xml(501);
+        assert!(xml.contains("<key>StandardOutPath</key>"));
+        assert!(xml.contains("<key>StandardErrorPath</key>"));
+        assert_eq!(
+            xml.matches(HELPER_LOG).count(),
+            2,
+            "both streams go to {HELPER_LOG}"
+        );
+    }
+
+    #[test]
     fn install_places_the_binary_as_root_then_loads_the_job() {
         let plan = install_plan(Path::new("/build/nova-helper"), Path::new("/staged/x.plist"));
         assert_eq!(plan.elevation, Elevation::MacAdmin, "one prompt, once");
         let line = plan.steps.iter().map(|s| s.to_shell()).collect::<Vec<_>>().join(" ; ");
         assert!(line.contains("-o root -g wheel -m 755 /build/nova-helper"));
+        // launchd will not create the log directory the plist names.
+        assert!(line.contains(&format!("-m 755 {HELPER_LOG_DIR}")));
         assert!(line.contains(HELPER_BIN));
         assert!(line.contains("-m 644 /staged/x.plist"));
         assert!(line.contains(&format!("bootout system/{LABEL}")));

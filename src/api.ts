@@ -1,4 +1,5 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Flow } from "./bindings/Flow";
 import type { ProxyStatus } from "./bindings/ProxyStatus";
 import type { CaStatus } from "./bindings/CaStatus";
@@ -84,6 +85,33 @@ export const api = {
    */
   restoreSystemProxy: () => invoke<ProxyStatus>("restore_system_proxy"),
 
+  /**
+   * Record something the webview cannot record itself.
+   *
+   * A bundled app has no console anyone reads and no file the renderer can
+   * write to, so an uncaught render error used to blank the window and leave
+   * nothing behind. Deliberately fire-and-forget: a logging call that can
+   * reject is a second error to handle inside an error handler.
+   */
+  logUi: (level: "info" | "warn" | "error", kind: UiLogKind, message: string) => {
+    void invoke("log_from_ui", { level, kind, message }).catch(() => {});
+  },
+
+  /**
+   * Count something the user did, so the usage stream says what gets used and
+   * not only what breaks.
+   *
+   * `ev` and `name` are both folded through fixed vocabularies on the Rust
+   * side, and anything it does not recognise becomes `"other"` — so inventing a
+   * name here produces a useless line rather than a leak. Never pass anything
+   * the user typed: a search query is the host they are debugging.
+   *
+   * Fire-and-forget for the same reason as `logUi`.
+   */
+  trackUi: (ev: UiEvent, name?: UiEventName) => {
+    void invoke("track_ui", { ev, name: name ?? null }).catch(() => {});
+  },
+
   /** State of the macOS helper that applies proxy changes without a password. */
   helperStatus: () => invoke<HelperStatus>("helper_status"),
   /** Install it — one administrator prompt, then none. */
@@ -113,9 +141,58 @@ export const api = {
    */
   installUpdate: (channel: Channel<UpdateProgress>) =>
     invoke<void>("install_update", { channel }),
+
+  /**
+   * Subscribe to the native menu's "Check for Updates…" item.
+   *
+   * The menu lives in Rust (`src-tauri/src/menu.rs`) and deliberately does not
+   * run the check itself — it asks the window to, so that a found version, a
+   * download and a failure are described in one place: the Updates card.
+   *
+   * Resolves with the unsubscribe function, which has to be called on teardown
+   * or a hot reload leaves the previous listener running.
+   */
+  onMenuCheckUpdates: (run: () => void): Promise<UnlistenFn> =>
+    listen<null>("menu://check-updates", () => run()),
 };
 
+/**
+ * Where a UI log came from. A fixed set rather than free text, so the counts in
+ * the usage stream mean something; the Rust side folds anything else to
+ * "other".
+ */
+export type UiLogKind = "render" | "unhandled-rejection" | "window-error" | "command";
+
+/**
+ * Interface events the usage stream counts. Mirrors `ui_event` in
+ * `commands.rs`: adding one here without adding it there gets it folded into
+ * `ui.other`.
+ */
+export type UiEvent =
+  | "ui.section"
+  | "ui.detail_tab"
+  | "ui.settings.open"
+  | "ui.palette.open"
+  | "ui.flow.action"
+  | "ui.flow.chip"
+  | "ui.onboarding";
+
+/** Values those events may carry. Mirrors `ui_event_name` in `commands.rs`. */
+export type UiEventName =
+  | Section
+  | DetailTab
+  | FlowAction
+  | FlowChipName
+  | OnboardingStep;
+
+type Section = "flows" | "rules" | "break" | "scripts" | "certs";
+type DetailTab = "overview" | "request" | "response" | "timing" | "curl" | "ws";
+type FlowAction = "resend" | "copy_curl" | "group_toggle";
+type FlowChipName = "all" | "errors" | "slow" | "mcp";
+type OnboardingStep = "open" | "done" | "skip";
+
 export { Channel };
+
 export type {
   BodyPreview,
   Flow,

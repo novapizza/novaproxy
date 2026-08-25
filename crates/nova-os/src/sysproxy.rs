@@ -453,6 +453,22 @@ pub mod linux {
 
 /// Capture the current proxy state so it can be restored later.
 pub fn snapshot() -> Backup {
+    let backup = snapshot_inner();
+    // The count, never the names: which VPN or Wi-Fi network someone is on is
+    // theirs. A count is still the thing that matters — a snapshot with zero
+    // services means the later restore will silently put nothing back, which
+    // is exactly the failure that looks like "NovaProxy broke my internet".
+    tracing::info!(
+        services = backup.services.len(),
+        "captured system proxy snapshot"
+    );
+    if backup.services.is_empty() && backup.windows.is_none() && backup.gnome.is_none() {
+        tracing::warn!("snapshot is empty; a later restore will have nothing to put back");
+    }
+    backup
+}
+
+fn snapshot_inner() -> Backup {
     #[cfg(target_os = "macos")]
     {
         macos::snapshot()
