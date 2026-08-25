@@ -40,6 +40,8 @@ tower-service = "0.3"
 schemars = "1"
 rmcp = { version = "3.0.0", features = ["server", "macros", "transport-streamable-http-server", "transport-streamable-http-server-session", "server-side-http"] }
 tauri-plugin-updater = "2.10.1"
+crash-handler = "0.8.0"
+libc = "0.2.189"
 
 [dev-dependencies]
 # The MCP e2e test speaks JSON-RPC to the endpoint over HTTP.

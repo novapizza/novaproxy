@@ -3,6 +3,7 @@
 
 // Public so the integration tests can drive the MCP endpoint directly.
 pub mod commands;
+pub mod crash;
 pub mod logging;
 pub mod mcp;
 pub mod state;
@@ -64,6 +65,13 @@ pub fn run() {
         logging::init_stdout_only();
     }
     logging::install_panic_hook();
+
+    // Read the previous run's crash before arming this run's handler, so a
+    // crash inside `install` cannot hide the one before it.
+    crash::report_previous();
+    // Held for the whole of `run` for the same reason as the log guard: dropping
+    // it detaches the exception port and the next crash goes unrecorded.
+    let _crash_guard = crash::install();
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
