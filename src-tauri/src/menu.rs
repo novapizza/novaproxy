@@ -2,11 +2,15 @@
 //!
 //! Composed explicitly rather than taken from [`Menu::default`], so the same
 //! structure is described in one place for every platform instead of being
-//! assembled differently by `cfg` inside Tauri. What NovaProxy adds to it is two
-//! items:
+//! assembled differently by `cfg` inside Tauri. What NovaProxy adds to it is
+//! three items:
 //!
 //! - **Collecting logs**, here rather than in a settings panel because it is
 //!   what a user needs when the window itself is misbehaving.
+//! - **Keyboard Shortcuts**, which is where a macOS user looks for them, and
+//!   the one chord this app registers as a menu accelerator rather than in the
+//!   webview: a menu accelerator works with focus anywhere, at the price of
+//!   never reaching the page (see [`SHORTCUTS_EVENT`]).
 //! - **Checking for updates**, because that is where every desktop user looks
 //!   for it first. The menu does not implement the check: it emits
 //!   [`CHECK_UPDATES_EVENT`] and the Updates card in Settings answers, so a
@@ -65,9 +69,17 @@ const SHOW_LOGS: &str = "help.show-logs";
 /// Menu id of the update-checking item. Matched in [`on_event`].
 const CHECK_UPDATES: &str = "app.check-updates";
 
+/// Menu id of the keyboard-shortcuts item. Matched in [`on_event`].
+const SHORTCUTS: &str = "help.shortcuts";
+
 /// Event the update item emits to the frontend, which owns the Updates card and
 /// therefore every sentence a check can end in.
 pub const CHECK_UPDATES_EVENT: &str = "menu://check-updates";
+
+/// Event the shortcuts item emits. The dialog renders from the frontend's
+/// shortcut registry (`src/shortcuts.ts`), which is the only place that knows
+/// what the chords are — so the menu asks for it rather than describing it.
+pub const SHORTCUTS_EVENT: &str = "menu://shortcuts";
 
 /// Whether this platform implements window controls and Quit as menu items.
 ///
@@ -135,6 +147,17 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .collect::<tauri::Result<_>>()?;
 
     let show_logs = MenuItem::with_id(app, SHOW_LOGS, show_logs_label(), true, None::<&str>)?;
+    // The one chord that lives in the menu rather than in the webview: it has to
+    // work when focus is anywhere, and macOS users look for shortcuts in Help.
+    // Everything else is dispatched by `src/useShortcuts.ts`, so that the
+    // registry stays the single source of truth (issues/0003 §3).
+    let shortcuts = MenuItem::with_id(
+        app,
+        SHORTCUTS,
+        "Keyboard Shortcuts",
+        true,
+        Some("CmdOrCtrl+/"),
+    )?;
     // Enabled even in a build that cannot update itself: the honest answer to
     // "am I current?" is a sentence in the card, and an item greyed out for
     // reasons the user cannot see reads as a bug.
@@ -203,6 +226,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     if !PLATFORM_HAS_APP_MENU {
         help_items.extend([&check_updates as &dyn IsMenuItem<R>, &seps[7]]);
     }
+    help_items.push(&shortcuts);
     help_items.push(&show_logs);
     if !PLATFORM_HAS_APP_MENU {
         help_items.extend([&seps[5] as &dyn IsMenuItem<R>, &about]);
@@ -248,12 +272,14 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 enum Action {
     ShowLogs,
     CheckUpdates,
+    Shortcuts,
 }
 
 fn action_for(id: &str) -> Option<Action> {
     match id {
         SHOW_LOGS => Some(Action::ShowLogs),
         CHECK_UPDATES => Some(Action::CheckUpdates),
+        SHORTCUTS => Some(Action::Shortcuts),
         // Every predefined item — About, Quit, the clipboard — is handled by the
         // platform, so anything unrecognised here is not a failure.
         _ => None,
@@ -271,6 +297,7 @@ pub fn on_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
             std::thread::spawn(move || export(&state));
         }
         Some(Action::CheckUpdates) => check_updates(app),
+        Some(Action::Shortcuts) => show_shortcuts(app),
         None => {}
     }
 }
@@ -292,6 +319,24 @@ fn check_updates<R: Runtime>(app: &AppHandle<R>) {
     // misses this. Costing the user a second click beats holding the menu.
     if let Err(e) = app.emit(CHECK_UPDATES_EVENT, ()) {
         tracing::warn!("could not ask the window to check for updates: {e}");
+    }
+}
+
+/// Ask the window to open the Shortcuts dialog.
+///
+/// Same shape as the update check, and for the same reason: the menu knows what
+/// the user asked for, the window knows what to show. Reached with the window
+/// hidden — the macOS menu bar belongs to the application — so it is brought
+/// back first.
+fn show_shortcuts<R: Runtime>(app: &AppHandle<R>) {
+    crate::usage!("shortcuts.menu");
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    if let Err(e) = app.emit(SHORTCUTS_EVENT, ()) {
+        tracing::warn!("could not ask the window to show the shortcuts: {e}");
     }
 }
 
@@ -365,8 +410,13 @@ mod tests {
     fn every_id_we_own_maps_to_the_action_it_names() {
         assert_eq!(action_for(SHOW_LOGS), Some(Action::ShowLogs));
         assert_eq!(action_for(CHECK_UPDATES), Some(Action::CheckUpdates));
-        // The two must stay distinct, or one item would run the other's code.
-        assert_ne!(SHOW_LOGS, CHECK_UPDATES);
+        assert_eq!(action_for(SHORTCUTS), Some(Action::Shortcuts));
+        // They must stay distinct, or one item would run another's code.
+        let ids = [SHOW_LOGS, CHECK_UPDATES, SHORTCUTS];
+        assert_eq!(
+            ids.iter().collect::<std::collections::HashSet<_>>().len(),
+            ids.len()
+        );
         // Predefined items and typos alike: no action, no panic.
         assert_eq!(action_for("app.check-update"), None);
         assert_eq!(action_for(""), None);

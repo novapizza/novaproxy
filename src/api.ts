@@ -154,6 +154,16 @@ export const api = {
    */
   onMenuCheckUpdates: (run: () => void): Promise<UnlistenFn> =>
     listen<null>("menu://check-updates", () => run()),
+
+  /**
+   * Subscribe to the native menu's "Keyboard Shortcuts" item.
+   *
+   * Same split as the update check: the menu owns the accelerator (⌘/ has to
+   * work with focus anywhere), the window owns the panel — which renders from
+   * `src/shortcuts.ts`, the only place that knows what the chords are.
+   */
+  onMenuShortcuts: (run: () => void): Promise<UnlistenFn> =>
+    listen<null>("menu://shortcuts", () => run()),
 };
 
 /**

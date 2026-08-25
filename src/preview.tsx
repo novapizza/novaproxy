@@ -15,6 +15,7 @@ import { TreeviewPanel } from "./inspector/TreeviewPanel";
 import { TimingPanel } from "./inspector/TimingPanel";
 import { BodyPanel, bodyToText } from "./inspector/BodyPanel";
 import { parseCookies, parseQuery, rawHttp, summaryOf } from "./inspector/parts";
+import { ShortcutsDialog } from "./ShortcutsDialog";
 
 const now = Date.now();
 let n = 148;
@@ -127,5 +128,13 @@ function Panels() {
   );
 }
 
-const PANELS = new URLSearchParams(location.search).has("panels");
-createRoot(document.getElementById("root")!).render(PANELS ? <Panels /> : <Harness />);
+const q = new URLSearchParams(location.search);
+createRoot(document.getElementById("root")!).render(
+  q.has("panels") ? <Panels /> : q.has("shortcuts") ? (
+    <div className="nova">
+      <ShortcutsDialog onClose={() => {}} />
+    </div>
+  ) : (
+    <Harness />
+  ),
+);

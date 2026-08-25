@@ -1,15 +1,38 @@
-import { useEffect, useMemo } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { Flow } from "../api";
 import type { IconName } from "../icons";
 import { applyFilter, isFiltering, type FlowFilter } from "../filter";
 import { buildScopeTree, type Scope } from "../scope";
-import { Inspector } from "../inspector/Inspector";
+import {
+  INITIAL_PANES,
+  Inspector,
+  tabsFor,
+  type PaneSide,
+  type PaneState,
+} from "../inspector/Inspector";
 import { methodClass, statusClass, statusText } from "../badges";
 import { Icon } from "../icons";
 import { ScopeTree } from "./ScopeTree";
 import { FilterBar } from "./FilterBar";
 import { FlowTable } from "./FlowTable";
 import type { ColumnId } from "./columns";
+import { formatChord, shortcut } from "../shortcuts";
+
+/**
+ * What the keyboard can ask of this section from outside it.
+ *
+ * The global dispatcher lives in `App`, but the inspector's panes and the table's
+ * focus are this component's state; a handle is the smallest seam between the
+ * two — smaller than lifting four pieces of view state into `App` so that a
+ * chord can reach them.
+ */
+export interface FlowsHandle {
+  focusTable: () => void;
+  focusInspector: () => void;
+  paneTab: (delta: 1 | -1) => void;
+  switchPane: () => void;
+  toggleCollapse: () => void;
+}
 
 /**
  * The Flows section: scope tree, filter bar, table, inspector.
@@ -19,7 +42,7 @@ import type { ColumnId } from "./columns";
  * the chips set three axes, the search box sets a query, and all of them AND
  * together in `buildPredicate` — so none of them has to know about the others.
  */
-export function FlowsSection(props: {
+export const FlowsSection = forwardRef<FlowsHandle, {
   flows: Flow[];
   filter: FlowFilter;
   patch: (p: Partial<FlowFilter>) => void;
@@ -42,8 +65,35 @@ export function FlowsSection(props: {
   searchRef?: React.RefObject<HTMLInputElement | null>;
   treeFilterRef?: React.RefObject<HTMLInputElement | null>;
   tableRef?: React.RefObject<HTMLDivElement | null>;
-}) {
+  /** Hidden by ⌘0, so a small window can give the table its width back. */
+  treeHidden?: boolean;
+}>(function FlowsSection(props, ref) {
   const { flows, filter, selected, select } = props;
+  const [panes, setPanes] = useState<PaneState>(INITIAL_PANES);
+  const ownTableRef = useRef<HTMLDivElement | null>(null);
+  const tableRef = props.tableRef ?? ownTableRef;
+  const inspRef = useRef<HTMLDivElement | null>(null);
+
+  useImperativeHandle(ref, () => ({
+    focusTable: () => tableRef.current?.focus(),
+    focusInspector: () => inspRef.current?.focus(),
+    paneTab: (delta) => {
+      const side: PaneSide = panes.active;
+      const tabs = tabsFor(side);
+      const at = tabs.indexOf(panes[side]);
+      // Wrap: with six panels, walking off the end and stopping there feels like
+      // the key stopped working.
+      const next = tabs[(at + delta + tabs.length) % tabs.length];
+      setPanes({ ...panes, [side]: next });
+    },
+    switchPane: () =>
+      setPanes({ ...panes, active: panes.active === "request" ? "response" : "request" }),
+    toggleCollapse: () =>
+      setPanes({
+        ...panes,
+        collapsed: panes.collapsed === panes.active ? null : panes.active,
+      }),
+  }));
 
   /**
    * The tree counts what the table could show, so NovaProxy's own traffic is
@@ -93,6 +143,7 @@ export function FlowsSection(props: {
 
   return (
     <div className="flows2">
+      {!props.treeHidden && (
       <ScopeTree
         tree={tree}
         scope={filter.scope}
@@ -101,6 +152,7 @@ export function FlowsSection(props: {
         savedCount={0}
         filterRef={props.treeFilterRef}
       />
+      )}
 
       <div className="flows2-main">
         <FilterBar
@@ -117,7 +169,8 @@ export function FlowsSection(props: {
           selectedId={selected?.id ?? null}
           select={select}
           empty={empty}
-          scrollRef={props.tableRef}
+          scrollRef={tableRef}
+          onInspect={() => inspRef.current?.focus()}
         />
 
         {/* The summary bar is the inspector's head: the panes below carry tabs
@@ -154,18 +207,22 @@ export function FlowsSection(props: {
           </span>
         </div>
 
-        <div className="insp-strip">
+        <div className="insp-strip" ref={inspRef} tabIndex={-1}>
           {selected ? (
             <Inspector
               flow={selected}
               showToast={props.showToast}
+              panes={panes}
+              setPanes={setPanes}
               onTab={(_pane, tab) => props.track?.("ui.detail_tab", tab.toLowerCase())}
             />
           ) : (
             <div className="detail-empty">
               <div className="big">Select a flow to inspect</div>
               <div className="hint">
-                click a row, or press <span className="kbd">⌘K</span> for commands
+                click a row, or press{" "}
+                <span className="kbd">{formatChord(shortcut("palette").chord).join("")}</span> for
+                commands
               </div>
             </div>
           )}
@@ -173,4 +230,4 @@ export function FlowsSection(props: {
       </div>
     </div>
   );
-}
+});

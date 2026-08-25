@@ -68,6 +68,14 @@ export interface FlowFilter {
   query: string;
   /** Show NovaProxy's own traffic (its MCP endpoint, and replays it issued). */
   includeInternal: boolean;
+  /**
+   * Whether the narrowing above is in force.
+   *
+   * `⌘B` flips this rather than clearing anything: "show me everything for a
+   * second" and "throw away the filter I just built" are different intentions,
+   * and only one of them is undoable.
+   */
+  enabled: boolean;
 }
 
 export const EMPTY_FILTER: FlowFilter = {
@@ -77,6 +85,7 @@ export const EMPTY_FILTER: FlowFilter = {
   scope: ALL_TRAFFIC,
   query: "",
   includeInternal: false,
+  enabled: true,
 };
 
 /**
@@ -112,6 +121,9 @@ export function isFiltering(f: FlowFilter): boolean {
  */
 export function buildPredicate(f: FlowFilter, ctx: ScopeContext = {}): (flow: Flow) => boolean {
   const { proto, type, status, scope, includeInternal } = f;
+  // Switched off, everything shows — except NovaProxy's own traffic, which is
+  // not a filter the user set but a default about whose capture this is.
+  if (!f.enabled) return (flow) => includeInternal || !flow.internal;
   const query = f.query.trim();
   const anyProto = proto.size === 0;
   const anyType = type.size === 0;

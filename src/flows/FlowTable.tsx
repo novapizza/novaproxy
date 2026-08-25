@@ -29,6 +29,7 @@ export function FlowTable({
   select,
   empty,
   scrollRef,
+  onInspect,
 }: {
   flows: Flow[];
   columns: ColumnId[];
@@ -36,6 +37,8 @@ export function FlowTable({
   select: (id: string) => void;
   empty: { icon: IconName; msg: string; hint: string } | null;
   scrollRef?: React.RefObject<HTMLDivElement | null>;
+  /** Enter: hand focus to the inspector. */
+  onInspect?: () => void;
 }) {
   const ownRef = useRef<HTMLDivElement | null>(null);
   const ref = scrollRef ?? ownRef;
@@ -64,6 +67,44 @@ export function FlowTable({
     if (h > 0 && Math.abs(h - rowH) > 0.5) setRowH(h);
   };
 
+  /**
+   * Row navigation is handled here rather than by the global dispatcher: arrow
+   * keys belong to the element that has focus, and a window-level listener would
+   * fight every scrollable panel in the app. The chords are still declared in
+   * `src/shortcuts.ts` so the dialog can list them.
+   */
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const at = flows.findIndex((f) => f.id === selectedId);
+    const page = Math.max(1, Math.floor(viewportH / rowH) - 1);
+    const go = (i: number) => {
+      const next = flows[Math.min(Math.max(i, 0), flows.length - 1)];
+      if (next) {
+        select(next.id);
+        scrollTo(Math.min(Math.max(i, 0), flows.length - 1));
+      }
+    };
+    switch (e.key) {
+      case "ArrowDown": e.preventDefault(); go(at < 0 ? 0 : at + 1); break;
+      case "ArrowUp": e.preventDefault(); go(at < 0 ? 0 : at - 1); break;
+      case "Home": e.preventDefault(); go(0); break;
+      case "End": e.preventDefault(); go(flows.length - 1); break;
+      case "PageDown": e.preventDefault(); go((at < 0 ? 0 : at) + page); break;
+      case "PageUp": e.preventDefault(); go((at < 0 ? 0 : at) - page); break;
+      case "Enter": e.preventDefault(); onInspect?.(); break;
+    }
+  };
+
+  /** Keep the row that just became current inside the window. */
+  const scrollTo = (index: number) => {
+    const el = ref.current;
+    if (!el) return;
+    const top = index * rowH;
+    const headH = rowH; // the sticky header covers the first row's worth
+    if (top < el.scrollTop + headH) el.scrollTop = Math.max(0, top - headH);
+    else if (top + rowH > el.scrollTop + el.clientHeight) el.scrollTop = top + rowH - el.clientHeight;
+  };
+
   const slice = sliceFlat(flows.length, rowH, scrollTop, viewportH, OVERSCAN);
   const template = gridTemplate(columns);
   const minWidth = minTableWidth(columns);
@@ -73,6 +114,7 @@ export function FlowTable({
       className="ftable"
       ref={ref}
       onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+      onKeyDown={onKeyDown}
       tabIndex={0}
       role="grid"
       aria-label="Captured flows"

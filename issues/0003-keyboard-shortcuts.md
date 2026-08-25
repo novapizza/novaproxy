@@ -116,8 +116,12 @@ tay.
 | `↵` | chuyển focus sang Inspector |
 | `⌘↵` | Resend flow đang chọn |
 | `⌘⇧C` | Copy as cURL |
-| `⌘⇧A` | Toggle **Auto Select** (follow tail) |
-| `⌘A` | Select all rows (phase 6) — **đụng `select_all` của Edit menu**, xem §9.3 |
+| `⌘⇧A` | Select every visible row |
+
+**Auto Select không có chord** — nó là toggle ở status bar + Settings, và `⌘A`
+không dùng được: Edit menu có `select_all` predefined nên macOS ăn `⌘A` trước
+webview; muốn lấy phải bỏ item đó, tức mất Select All trong mọi text field.
+Đã verify khi implement (§9.3).
 
 ### 4.3 Filter — lấy đúng của Proxyman
 
@@ -202,17 +206,19 @@ không Ctrl trên mac (§1 vấn đề 2). Có test chặn (§8).
 - Rust: `action_for("help.shortcuts")` trả đúng action; 3 id không trùng nhau —
   khuôn test đã có sẵn trong `menu.rs` (`every_id_we_own_maps_to_the_action_it_names`).
 
-## 9. Cần verify khi implement (chưa chắc, không đoán)
+## 9. Kết quả verify (đã implement)
 
-1. **Cú pháp accelerator của Tauri/muda cho `⌘/`** — `"CmdOrCtrl+Slash"` hay
-   `"CmdOrCtrl+/"`. Phải thử, không chép từ trí nhớ.
-2. **`⌘R` trong build release** có reload webview không (dev thì có). Nếu có thì
-   phải `preventDefault` — và đó là lý do record toggle dùng `⌘⇧R`.
-3. **`⌘A`**: Edit submenu có `select_all` predefined → trên mac nó chiếm `⌘A`
-   trước webview. Muốn `⌘A` = select all rows thì phải bỏ item đó khỏi Edit (mất
-   Select All trong text field) hoặc chọn chord khác. Verify rồi mới chốt.
-4. **`⌘,`**: macOS thường tự map Preferences… Ta không có item Preferences trong
-   app menu → phải tự handle ở webview; verify OS không ăn trước.
+1. **Accelerator `⌘/`**: `"CmdOrCtrl+/"` — **đúng**. muda parse ở runtime chứ
+   không phải compile time, nên nếu sai thì `menu::build` trả `Err` và app không
+   start; app start được là bằng chứng nó parse.
+2. **`⌘R`**: không chiếm, record toggle dùng `⌘⇧R` như kế hoạch. Chưa cần
+   `preventDefault` cho `⌘R` vì không có chord nào dùng nó.
+3. **`⌘A`**: đúng như lo — Edit menu chiếm. Chốt `⌘⇧A` cho select-all-rows, ghi
+   lý do ngay trong registry (`src/shortcuts.ts`) chứ không chỉ trong doc này.
+4. **`⌘,`**: OS không ăn — không có item Preferences trong app menu nên webview
+   nhận được. Hoạt động.
+5. **`⌘P` vs print**: WKWebView không tự bind. Chưa test WebView2 (chưa build
+   Windows).
 5. **`⌘P` có bị webview biến thành print không.** WKWebView không tự bind `⌘P`
    khi app không có Print menu item, nhưng WebView2 (Windows) **có** menu chuột
    phải với Print. Phải thử trên cả 2 platform; nếu bị ăn thì `preventDefault`

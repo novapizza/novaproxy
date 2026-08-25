@@ -33,7 +33,10 @@ import { Icon, type IconName } from "./icons";
 import { formatRate, SPARK_WINDOW_MS, throughputRate, throughputSeries } from "./stats";
 import { methodClass } from "./badges";
 import { buildCurl, withRequestBody } from "./inspector/curl";
-import { FlowsSection } from "./flows/FlowsSection";
+import { FlowsSection, type FlowsHandle } from "./flows/FlowsSection";
+import { useShortcuts } from "./useShortcuts";
+import { ShortcutsDialog } from "./ShortcutsDialog";
+import { formatChord, shortcut } from "./shortcuts";
 import { trustHint, trustLabel } from "./trust";
 import { launchDecision } from "./onboarding";
 import { Coachmark, OnboardingWizard, type CoachTarget } from "./Walkthrough";
@@ -137,6 +140,7 @@ export function App() {
   const [intercept, setIntercept] = useState<Interception | null>(null);
   const [net, setNet] = useState<NetworkConditions>({ enabled: false, latency_ms: 0, down_kbps: 0 });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [mcp, setMcp] = useState<McpStatus | null>(null);
   const [helper, setHelper] = useState<HelperStatus | null>(null);
   const [update, setUpdate] = useState<UpdateState>(INITIAL_UPDATE_STATE);
@@ -161,6 +165,7 @@ export function App() {
    * as taking focus for row navigation; the two inputs are what ⌘F and ⌘⇧F
    * reach (issues/0003).
    */
+  const flowsRef = useRef<FlowsHandle | null>(null);
   const flowListRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const treeFilterRef = useRef<HTMLInputElement | null>(null);
@@ -512,11 +517,9 @@ export function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
-        e.preventDefault();
-        paletteOpen ? closePalette() : openPalette();
-        return;
-      }
+      // Only the palette's own navigation lives here. Opening it is a chord like
+      // any other and belongs to the registry (`src/shortcuts.ts`); this listener
+      // exists because ↑/↓/↵ mean something different while the palette is up.
       if (!paletteOpen) return;
       if (e.key === "Escape") { e.preventDefault(); closePalette(); }
       else if (e.key === "ArrowDown") { e.preventDefault(); setPalIndex((i) => Math.min(palFiltered.length - 1, i + 1)); }
@@ -526,6 +529,49 @@ export function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [paletteOpen, palFiltered, palIndex]);
+
+  /**
+   * Every global chord, in one place, reading its keys from the registry.
+   *
+   * A modal swallows the lot: while Settings or the palette is up, ⌘1 must not
+   * change the section behind it.
+   */
+  useShortcuts(
+    {
+      palette: () => (paletteOpen ? closePalette() : openPalette()),
+      clear: () => void clearAll(),
+      settings: openSettings,
+      record: () => setRecording(!recording),
+      "section.flows": () => goSection("flows"),
+      "section.rules": () => goSection("rules"),
+      "section.break": () => goSection("break"),
+      "section.scripts": () => goSection("scripts"),
+      "section.certs": () => goSection("certs"),
+      "session.save": () => void doExportSession(),
+      "session.open": () => void doImportSession(),
+      "session.har": () => void doExportHar(),
+      "filter.search": () => { goSection("flows"); searchRef.current?.focus(); },
+      "filter.tree": () => { goSection("flows"); treeFilterRef.current?.focus(); },
+      "filter.toggle": () => {
+        patchFilter({ enabled: !filter.enabled });
+        showToast(filter.enabled ? "Filters off" : "Filters on");
+      },
+      "tree.toggle": () => setPrefs({ ...prefs, treeHidden: !prefs.treeHidden }),
+      "flow.resend": () => void resendSelected(),
+      "flow.curl": copyCurl,
+      "pane.prevTab": () => flowsRef.current?.paneTab(-1),
+      "pane.nextTab": () => flowsRef.current?.paneTab(1),
+      "pane.switch": () => flowsRef.current?.switchPane(),
+      "pane.collapse": () => flowsRef.current?.toggleCollapse(),
+    },
+    { modalOpen: paletteOpen || settingsOpen || shortcutsOpen || onboardingOpen || intercept != null },
+  );
+
+  /** The menu's ⌘/ item, which the OS consumes before the webview sees it. */
+  useEffect(() => {
+    const un = api.onMenuShortcuts(() => setShortcutsOpen(true));
+    return () => void un.then((f) => f());
+  }, []);
 
   const hostCount = useMemo(() => new Set(flows.map((f) => f.host)).size, [flows]);
 
@@ -590,7 +636,7 @@ export function App() {
             <div className="cmd-btn" onClick={openPalette}>
               <Icon name="command" size={13} />
               <span>Commands</span>
-              <span className="kbd">⌘K</span>
+              <span className="kbd">{formatChord(shortcut("palette").chord).join("")}</span>
             </div>
             <div className="proxy-toggle" onClick={() => void toggleProxy()}>
               <span>System proxy</span>
@@ -615,6 +661,8 @@ export function App() {
 
           {section === "flows" && (
             <FlowsSection
+              ref={flowsRef}
+              treeHidden={prefs.treeHidden}
               flows={flows}
               filter={filter}
               patch={patchFilter}
@@ -708,6 +756,9 @@ export function App() {
           </div>
         </>
       )}
+
+      {/* keyboard shortcuts */}
+      {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
 
       {/* settings modal */}
       {settingsOpen && (

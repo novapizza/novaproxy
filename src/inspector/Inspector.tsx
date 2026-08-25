@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type { Flow } from "../api";
 import { Icon } from "../icons";
 import { useStore } from "../store";
@@ -24,26 +23,56 @@ import { parseCookies, parseQuery, rawHttp, summaryOf } from "./parts";
  * (issues/0003 §6).
  */
 
-const REQUEST_TABS = ["Header", "Query", "Body", "Cookies", "Raw", "Summary"] as const;
-const RESPONSE_TABS = ["Header", "Body", "Raw", "Treeview", "Timing", "Summary"] as const;
+export const REQUEST_TABS = ["Header", "Query", "Body", "Cookies", "Raw", "Summary"] as const;
+export const RESPONSE_TABS = ["Header", "Body", "Raw", "Treeview", "Timing", "Summary"] as const;
 
-type RequestTab = (typeof REQUEST_TABS)[number];
-type ResponseTab = (typeof RESPONSE_TABS)[number];
+export type PaneSide = "request" | "response";
+
+/**
+ * Which panel each pane is showing, which pane the keyboard acts on, and which
+ * one is collapsed.
+ *
+ * Held by the caller rather than inside this component so the keyboard shortcuts
+ * (`⌘[`, `⌘]`, `⌘E`, `⌘⇧→`) have something to act on: a chord arrives at the
+ * window, and state buried in a child is unreachable from there without a ref
+ * dance that would be harder to read than one prop.
+ */
+export interface PaneState {
+  active: PaneSide;
+  request: string;
+  response: string;
+  collapsed: PaneSide | null;
+}
+
+export const INITIAL_PANES: PaneState = {
+  active: "response",
+  request: "Header",
+  response: "Header",
+  collapsed: null,
+};
+
+/** The tab list for one side. */
+export function tabsFor(side: PaneSide): readonly string[] {
+  return side === "request" ? REQUEST_TABS : RESPONSE_TABS;
+}
 
 export function Inspector({
   flow,
   showToast,
   onTab,
+  panes,
+  setPanes,
 }: {
   flow: Flow;
   showToast: (t: string) => void;
   /** Told which pane tab was opened, for usage counting. */
-  onTab?: (pane: "request" | "response", tab: string) => void;
+  onTab?: (pane: PaneSide, tab: string) => void;
+  panes: PaneState;
+  setPanes: (p: PaneState) => void;
 }) {
-  const [reqTab, setReqTab] = useState<RequestTab>("Header");
-  const [resTab, setResTab] = useState<ResponseTab>("Header");
-  /** Which pane, if any, is collapsed to its head. Never both. */
-  const [collapsed, setCollapsed] = useState<"request" | "response" | null>(null);
+  const reqTab = panes.request;
+  const resTab = panes.response;
+  const collapsed = panes.collapsed;
   const wsMessages = useStore((s) => s.wsMessages[flow.id]);
   const wsDropped = useStore((s) => s.wsDropped[flow.id] ?? 0);
 
@@ -79,12 +108,15 @@ export function Inspector({
         side="request"
         tabs={REQUEST_TABS}
         tab={reqTab}
+        active={panes.active === "request"}
         setTab={(t) => {
-          setReqTab(t as RequestTab);
+          setPanes({ ...panes, active: "request", request: t });
           onTab?.("request", t);
         }}
         collapsed={collapsed === "request"}
-        toggleCollapse={() => setCollapsed(collapsed === "request" ? null : "request")}
+        toggleCollapse={() =>
+          setPanes({ ...panes, collapsed: collapsed === "request" ? null : "request" })
+        }
         meta={metaFor(flow, "request")}
       >
         {reqTab === "Header" && (
@@ -112,12 +144,15 @@ export function Inspector({
         side="response"
         tabs={RESPONSE_TABS}
         tab={resTab}
+        active={panes.active === "response"}
         setTab={(t) => {
-          setResTab(t as ResponseTab);
+          setPanes({ ...panes, active: "response", response: t });
           onTab?.("response", t);
         }}
         collapsed={collapsed === "response"}
-        toggleCollapse={() => setCollapsed(collapsed === "response" ? null : "response")}
+        toggleCollapse={() =>
+          setPanes({ ...panes, collapsed: collapsed === "response" ? null : "response" })
+        }
         meta={metaFor(flow, "response")}
       >
         {resTab === "Header" && (
@@ -147,7 +182,7 @@ export function Inspector({
 }
 
 /** The one line of context a pane head can carry: what this side weighed. */
-function metaFor(flow: Flow, side: "request" | "response"): string {
+function metaFor(flow: Flow, side: PaneSide): string {
   const type =
     side === "request" ? headerValue(flow.request_headers, "content-type") : flow.content_type;
   const size = side === "request" ? flow.request_size : flow.response_size;
@@ -159,15 +194,18 @@ function Pane({
   side,
   tabs,
   tab,
+  active,
   setTab,
   collapsed,
   toggleCollapse,
   meta,
   children,
 }: {
-  side: "request" | "response";
+  side: PaneSide;
   tabs: readonly string[];
   tab: string;
+  /** True for the pane the keyboard is acting on. */
+  active: boolean;
   setTab: (t: string) => void;
   collapsed: boolean;
   toggleCollapse: () => void;
@@ -175,7 +213,7 @@ function Pane({
   children: React.ReactNode;
 }) {
   return (
-    <div className={`insp-pane ${collapsed ? "collapsed" : ""}`}>
+    <div className={`insp-pane ${collapsed ? "collapsed" : ""} ${active ? "active" : ""}`}>
       <div className="insp-head">
         <span className="title">{side === "request" ? "Request" : "Response"}</span>
         <span className="tabs">

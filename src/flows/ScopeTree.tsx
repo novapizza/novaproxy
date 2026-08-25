@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Icon } from "../icons";
+import { formatChord, shortcut } from "../shortcuts";
 import {
   sameScope,
   type AppNode,
@@ -120,7 +121,7 @@ export function ScopeTree({
           placeholder="Filter tree"
           aria-label="Filter the scope tree"
         />
-        <span className="kbd">⌘⇧F</span>
+        <span className="kbd">{formatChord(shortcut("filter.tree").chord).join("")}</span>
       </div>
     </div>
   );

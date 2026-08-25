@@ -34,6 +34,8 @@ export interface Prefs {
    * one click.
    */
   autoSelect: boolean;
+  /** Sidebar hidden (⌘0). Persisted because a small screen stays small. */
+  treeHidden: boolean;
   /**
    * Look for a new version at launch. On by default: a debugging proxy holds a
    * root CA and a TLS stack, so running an old build is a security decision the
@@ -56,6 +58,7 @@ export const DEFAULT_PREFS: Prefs = {
   systemProxyAtLaunch: "none",
   columns: [...DEFAULT_COLUMNS],
   autoSelect: false,
+  treeHidden: false,
   autoCheckUpdates: true,
   onboardingDone: false,
 };
@@ -73,6 +76,7 @@ export function normalizePrefs(raw: unknown): Prefs {
     // not a column choice — so this is a reset, not a translation.
     columns: normalizeColumns(Array.isArray(v.columns) ? (v.columns as string[]) : null),
     autoSelect: v.autoSelect === true,
+    treeHidden: v.treeHidden === true,
     // Only an explicit `false` opts out, so a pref file written by an older
     // build keeps the safer default.
     autoCheckUpdates: v.autoCheckUpdates !== false,
