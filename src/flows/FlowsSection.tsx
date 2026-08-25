@@ -1,8 +1,17 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { Flow } from "../api";
 import type { IconName } from "../icons";
-import { applyFilter, isFiltering, type FlowFilter } from "../filter";
+import {
+  applyFilter,
+  describeFilter,
+  filterFromJson,
+  filterToJson,
+  isFiltering,
+  type FlowFilter,
+  type SavedFilter,
+} from "../filter";
 import { buildScopeTree, type Scope } from "../scope";
+import { useStore } from "../store";
 import {
   INITIAL_PANES,
   Inspector,
@@ -76,6 +85,9 @@ export const FlowsSection = forwardRef<FlowsHandle, {
   treeHidden?: boolean;
   /** Rows marked for a bulk action, reported up so the actions can use them. */
   onMarked?: (ids: string[]) => void;
+  /** Filters the user kept, and the two ways the list changes. */
+  saved: SavedFilter[];
+  setSaved: (s: SavedFilter[]) => void;
 }>(function FlowsSection(props, ref) {
   const { flows, filter, selected, select } = props;
   const [panes, setPanes] = useState<PaneState>(INITIAL_PANES);
@@ -86,6 +98,10 @@ export const FlowsSection = forwardRef<FlowsHandle, {
    * (and leak them past the retention cap).
    */
   const [marked, setMarked] = useState<ReadonlySet<string>>(new Set());
+  const pinned = useStore((s) => s.pinned);
+  const comments = useStore((s) => s.comments);
+  const togglePin = useStore((s) => s.togglePin);
+  const setComment = useStore((s) => s.setComment);
   const ownTableRef = useRef<HTMLDivElement | null>(null);
   const tableRef = props.tableRef ?? ownTableRef;
   const inspRef = useRef<HTMLDivElement | null>(null);
@@ -122,7 +138,9 @@ export const FlowsSection = forwardRef<FlowsHandle, {
     [flows, filter.includeInternal],
   );
 
-  const filtered = useMemo(() => applyFilter(flows, filter), [flows, filter]);
+  // `pinned` reaches the predicate as context rather than as part of the filter:
+  // it is membership the flow does not carry, and the scope only reads it.
+  const filtered = useMemo(() => applyFilter(flows, filter, { pinned }), [flows, filter, pinned]);
   const rows = useMemo(() => sortFlows(filtered, sort), [filtered, sort]);
 
   // Marks follow the rows: a row the filter hides is not a row a bulk action
@@ -183,8 +201,7 @@ export const FlowsSection = forwardRef<FlowsHandle, {
         tree={tree}
         scope={filter.scope}
         setScope={setScope}
-        pinnedCount={0}
-        savedCount={0}
+        pinnedCount={pinned.size}
         filterRef={props.treeFilterRef}
       />
       )}
@@ -197,6 +214,20 @@ export const FlowsSection = forwardRef<FlowsHandle, {
           searchRef={props.searchRef}
           onChip={(id) => props.track?.("ui.flow.chip", id)}
           trailing={<ColumnPicker columns={props.columns} setColumns={props.setColumns} />}
+          saved={props.saved}
+          applySaved={(sf) => props.patch(filterFromJson(sf.filter))}
+          saveCurrent={() => {
+            const label = describeFilter(filter);
+            // Saving the same filter twice is a no-op rather than a duplicate
+            // chip: the label *is* the filter, so two identical chips would be
+            // two identical buttons.
+            if (props.saved.some((s) => s.label === label)) return;
+            props.setSaved([
+              ...props.saved,
+              { id: `sf${Date.now()}`, label, filter: filterToJson(filter) },
+            ]);
+          }}
+          removeSaved={(id) => props.setSaved(props.saved.filter((s) => s.id !== id))}
         />
 
         <FlowTable
@@ -251,6 +282,22 @@ export const FlowsSection = forwardRef<FlowsHandle, {
               <span className="act" onClick={props.onCopyCurl}>
                 <Icon name="copy" size={12} /> cURL
               </span>
+              <span
+                className={`act ${pinned.has(selected.id) ? "on" : ""}`}
+                title={pinned.has(selected.id) ? "Unpin this flow" : "Pin this flow"}
+                onClick={() => togglePin(selected.id)}
+              >
+                <Icon name="pin" size={12} /> {pinned.has(selected.id) ? "Pinned" : "Pin"}
+              </span>
+              {/* The note is part of the bar rather than a panel: it is written
+                  while looking at the row, and it is one line. */}
+              <input
+                className="note"
+                value={comments[selected.id] ?? ""}
+                onChange={(e) => setComment(selected.id, e.target.value)}
+                placeholder="Add a note…"
+                aria-label="Note on this flow"
+              />
             </>
           ) : (
             <>

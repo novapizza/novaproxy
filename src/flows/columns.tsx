@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { Flow } from "../api";
 import { appIcon, onIconsChanged } from "../appicons";
+import { useStore } from "../store";
 import { Icon } from "../icons";
 import { methodClass, statusClass, statusText } from "../badges";
 import { formatCellBytes, formatClock } from "../format";
@@ -28,7 +29,8 @@ export type ColumnId =
   | "response"
   | "ssl"
   | "protocol"
-  | "edited";
+  | "edited"
+  | "comment";
 
 export interface Column {
   id: ColumnId;
@@ -80,6 +82,7 @@ export const COLUMNS: Record<ColumnId, Column> = {
     track: "minmax(320px, 1fr)",
     cell: (f) => (
       <>
+        <PinMark flow={f} />
         <span className="u">{f.url}</span>
         {f.mcp && <span className="tag mcp" title={mcpLabel(f)}>MCP</span>}
         {f.is_websocket && <span className="tag ws">WS</span>}
@@ -139,6 +142,12 @@ export const COLUMNS: Record<ColumnId, Column> = {
     track: "84px",
     cell: (f) => f.http_version,
   },
+  comment: {
+    id: "comment",
+    label: "Comment",
+    track: "160px",
+    cell: (f) => <CommentCell flow={f} />,
+  },
   edited: {
     id: "edited",
     label: "Edited",
@@ -157,6 +166,28 @@ export const COLUMNS: Record<ColumnId, Column> = {
     ),
   },
 };
+
+/**
+ * A pin, on the row itself.
+ *
+ * Without it the only way to see what is pinned is to switch to the Pinned
+ * scope — which is exactly the switch a pin is meant to save you.
+ */
+function PinMark({ flow }: { flow: Flow }) {
+  const pinned = useStore((s) => s.pinned.has(flow.id));
+  if (!pinned) return null;
+  return (
+    <span className="pinmark" title="Pinned">
+      <Icon name="pin" size={11} />
+    </span>
+  );
+}
+
+/** The note the user wrote on this row, if any. */
+function CommentCell({ flow }: { flow: Flow }) {
+  const note = useStore((s) => s.comments[flow.id]);
+  return <span className="note">{note ?? "–"}</span>;
+}
 
 /**
  * The originating app, with its real icon once macOS has been asked for it.
@@ -197,6 +228,7 @@ export const COLUMN_ORDER: ColumnId[] = [
   "response",
   "protocol",
   "edited",
+  "comment",
   "ssl",
 ];
 

@@ -1,6 +1,12 @@
 import { Icon } from "../icons";
 import { FLOW_TYPES, PROTOS, STATUS_CLASSES } from "../classify";
-import { activeFilterCount, toggleIn, type FlowFilter } from "../filter";
+import {
+  activeFilterCount,
+  describeFilter,
+  toggleIn,
+  type FlowFilter,
+  type SavedFilter,
+} from "../filter";
 
 /**
  * Search box over three chip groups.
@@ -21,6 +27,10 @@ export function FilterBar({
   searchRef,
   onChip,
   trailing,
+  saved,
+  applySaved,
+  saveCurrent,
+  removeSaved,
 }: {
   filter: FlowFilter;
   patch: (p: Partial<FlowFilter>) => void;
@@ -31,6 +41,15 @@ export function FilterBar({
   onChip?: (id: string) => void;
   /** View controls that belong beside Reset — today, the column picker. */
   trailing?: React.ReactNode;
+  /**
+   * Filters the user kept. Chips rather than a list in the sidebar, the way
+   * Proxyman does it: a saved filter *is* a filter, so it belongs among the
+   * filters (issues/0002 §8.1).
+   */
+  saved: SavedFilter[];
+  applySaved: (s: SavedFilter) => void;
+  saveCurrent: () => void;
+  removeSaved: (id: string) => void;
 }) {
   const active = activeFilterCount(filter);
 
@@ -52,9 +71,14 @@ export function FilterBar({
         )}
         <span className="spacer" />
         {active > 0 && (
-          <span className="reset" onClick={reset}>
-            Reset filters ({active})
-          </span>
+          <>
+            <span className="save" title={`Save “${describeFilter(filter)}”`} onClick={saveCurrent}>
+              Save
+            </span>
+            <span className="reset" onClick={reset}>
+              Reset filters ({active})
+            </span>
+          </>
         )}
         {trailing}
       </div>
@@ -77,6 +101,27 @@ export function FilterBar({
           onChip?.(id);
         }}
       />
+      {saved.length > 0 && (
+        <div className="chip-group">
+          <span className="cg-label">Saved</span>
+          {saved.map((sf) => (
+            <div key={sf.id} className="fchip saved" onClick={() => applySaved(sf)}>
+              {sf.label}
+              <span
+                className="x"
+                title="Forget this filter"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  removeSaved(sf.id);
+                }}
+              >
+                <Icon name="x" size={10} />
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
       <ChipGroup
         label="Status"
         chips={STATUS_CLASSES}

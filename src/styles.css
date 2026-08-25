@@ -1021,10 +1021,17 @@ input, textarea, select { font-family: inherit; }
   flex: 1; min-width: 0; background: transparent; border: none; outline: none;
   font: 400 12px var(--font-mono); color: var(--text);
 }
-.fbar-search .reset {
+.fbar-search .reset, .fbar-search .save {
   flex: none; font: 500 11.5px var(--font-ui); color: var(--accent); cursor: pointer; white-space: nowrap;
 }
-.fbar-search .reset:hover { color: var(--accent-hover); }
+.fbar-search .save { color: var(--muted); }
+.fbar-search .reset:hover, .fbar-search .save:hover { color: var(--accent-hover); }
+
+/* A saved filter is a chip among the chips, with its own way out. */
+.fchip.saved { display: inline-flex; align-items: center; gap: 6px; padding-right: 6px; }
+.fchip.saved .x { display: flex; color: var(--faint); }
+.fchip.saved .x:hover { color: var(--c-red-deep); }
+.fchip.saved:hover { border-color: rgba(27,26,61,.24); }
 
 /* Groups, not a single row: the eyebrow is what says which axis a chip is on,
    and that is the whole reason the rows are split (design.md §4.1). */
@@ -1100,6 +1107,7 @@ input, textarea, select { font-family: inherit; }
 
 .ft-row .c-url { display: flex; align-items: center; gap: 6px; color: var(--text); }
 .ft-row .c-url .u { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ft-row .pinmark { display: flex; flex: none; color: var(--c-amber); }
 .ft-row .c-url .tag {
   flex: none; font: 600 8.5px var(--font-ui); letter-spacing: .07em;
   border-radius: 4px; padding: 1px 4px; border: 1px solid currentColor;
@@ -1116,6 +1124,7 @@ input, textarea, select { font-family: inherit; }
 
 .ft-row .c-method, .ft-row .c-status { overflow: visible; }
 .ft-row .c-edited { display: flex; align-items: center; gap: 3px; }
+.ft-row .c-comment .note { font-family: var(--font-ui); color: var(--c-indigo); }
 .ft-row .etag {
   font: 600 9px var(--font-ui); letter-spacing: .04em;
   width: 14px; text-align: center; border-radius: 3px;
@@ -1173,6 +1182,16 @@ input, textarea, select { font-family: inherit; }
   cursor: pointer;
 }
 .summary-bar .act:hover { border-color: var(--accent); color: var(--accent-hover); }
+.summary-bar .act.on { border-color: var(--accent); color: var(--accent); background: rgba(62,181,109,.10); }
+/* One line, and only as wide as it needs: the URL beside it is the thing being
+   read, and a note is a margin scribble. */
+.summary-bar .note {
+  flex: none; width: 180px; height: 24px; padding: 0 9px;
+  border-radius: var(--r-pill); border: 1px solid var(--border);
+  background: var(--input); outline: none;
+  font: 400 11.5px var(--font-ui); color: var(--text);
+}
+.summary-bar .note:focus { border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12); }
 
 .insp { flex: 1; display: flex; min-height: 0; }
 .insp-pane {

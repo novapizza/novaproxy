@@ -714,6 +714,8 @@ export function App() {
               widths={prefs.columnWidths}
               setWidths={(w) => setPrefs({ ...prefs, columnWidths: w })}
               onMarked={setMarkedIds}
+              saved={prefs.savedFilters}
+              setSaved={(sf) => setPrefs({ ...prefs, savedFilters: sf })}
               flows={flows}
               filter={filter}
               patch={patchFilter}

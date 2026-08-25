@@ -11,6 +11,17 @@ interface Store {
   wsMessages: Record<string, WsMessage[]>;
   /** How many of a socket's oldest frames the cap has dropped, by flow id. */
   wsDropped: Record<string, number>;
+  /**
+   * Flows the user pinned, and notes they wrote on them.
+   *
+   * Session-only, deliberately: a flow id is minted per exchange, so a pin
+   * restored from disk would point at nothing after a restart. Keyed by id
+   * rather than held on the flow because a snapshot replaces the whole flow
+   * object several times per exchange and would wipe an annotation written
+   * mid-flight.
+   */
+  pinned: ReadonlySet<string>;
+  comments: Readonly<Record<string, string>>;
 
   upsertFlow: (f: Flow) => void;
   /** Apply a frame's worth of snapshots in one store update. */
@@ -24,6 +35,9 @@ interface Store {
   select: (id: string | null) => void;
   setProxy: (p: ProxyStatus) => void;
   setCa: (c: CaStatus | null) => void;
+  togglePin: (id: string) => void;
+  /** An empty note removes the comment rather than storing a blank. */
+  setComment: (id: string, text: string) => void;
 }
 
 /**
@@ -239,6 +253,8 @@ export const useStore = create<Store>((set) => ({
   ca: null,
   wsMessages: {},
   wsDropped: {},
+  pinned: new Set(),
+  comments: {},
 
   // Snapshots arrive multiple times per flow (started → response → completed).
   // Replace in place if we've seen the id; otherwise prepend (newest first).
@@ -254,9 +270,33 @@ export const useStore = create<Store>((set) => ({
   // Replace the flow list (used when importing a saved .nova session). Imported
   // flows keep their bodies: nothing else has a copy to fetch them from.
   loadFlows: (flows) => set({ flows, selectedId: null, wsMessages: {}, wsDropped: {} }),
-  clear: () => set({ flows: [], selectedId: null, wsMessages: {}, wsDropped: {} }),
+  // Annotations go with the flows they annotate: a pin on a flow that no longer
+  // exists is a count in the sidebar pointing at nothing.
+  clear: () =>
+    set({
+      flows: [],
+      selectedId: null,
+      wsMessages: {},
+      wsDropped: {},
+      pinned: new Set(),
+      comments: {},
+    }),
   setRecording: (v) => set({ recording: v }),
   select: (id) => set({ selectedId: id }),
   setProxy: (p) => set({ proxy: p }),
   setCa: (c) => set({ ca: c }),
+  togglePin: (id) =>
+    set((s) => {
+      const next = new Set(s.pinned);
+      if (!next.delete(id)) next.add(id);
+      return { pinned: next };
+    }),
+  setComment: (id, text) =>
+    set((s) => {
+      const next = { ...s.comments };
+      const trimmed = text.trim();
+      if (trimmed === "") delete next[id];
+      else next[id] = trimmed;
+      return { comments: next };
+    }),
 }));

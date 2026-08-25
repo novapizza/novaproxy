@@ -1,7 +1,7 @@
 /* Throwaway visual harness: renders the Flows section with mock flows so the
    layout can be screenshotted without a Tauri runtime. Not shipped. */
 import { createRoot } from "react-dom/client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
 import "@fontsource-variable/petrona";
@@ -9,13 +9,14 @@ import "./styles.css";
 import type { Flow } from "./api";
 import { FlowsSection } from "./flows/FlowsSection";
 import { DEFAULT_COLUMNS, normalizeColumns, type ColumnId } from "./flows/columns";
-import { EMPTY_FILTER, type FlowFilter } from "./filter";
+import { EMPTY_FILTER, type FlowFilter, type SavedFilter } from "./filter";
 import { KeyValueTable } from "./inspector/KeyValueTable";
 import { TreeviewPanel } from "./inspector/TreeviewPanel";
 import { TimingPanel } from "./inspector/TimingPanel";
 import { BodyPanel, bodyToText } from "./inspector/BodyPanel";
 import { parseCookies, parseQuery, rawHttp, summaryOf } from "./inspector/parts";
 import { ShortcutsDialog } from "./ShortcutsDialog";
+import { useStore } from "./store";
 
 const now = Date.now();
 let n = 148;
@@ -70,6 +71,15 @@ const ROWS = REVERSED ? [...FLOWS].reverse() : FLOWS;
 function Harness() {
   const [columns, setColumns] = useState<ColumnId[]>(normalizeColumns([...DEFAULT_COLUMNS, "edited"]));
   const [widths, setWidths] = useState({});
+  const [saved, setSaved] = useState<SavedFilter[]>([
+    { id: "s1", label: "JSON · 4xx · 5xx", filter: { type: ["json"], status: ["4xx", "5xx"] } },
+    { id: "s2", label: "slack.com", filter: { scope: { kind: "host", host: "slack.com" } } },
+  ]);
+  useEffect(() => {
+    const st = useStore.getState();
+    st.togglePin(FLOWS[2].id);
+    st.setComment(FLOWS[2].id, "401 only for this tenant");
+  }, []);
   const [filter, setFilter] = useState<FlowFilter>(EMPTY_FILTER);
   const [selectedId, setSelectedId] = useState<string | null>(ROWS[REVERSED ? 0 : 3].id);
   const selected = ROWS.find((f) => f.id === selectedId) ?? null;
@@ -86,6 +96,8 @@ function Harness() {
             setColumns={setColumns}
             widths={widths}
             setWidths={setWidths}
+            saved={saved}
+            setSaved={setSaved}
             recording
             selected={selected}
             select={setSelectedId}

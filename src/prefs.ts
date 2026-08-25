@@ -1,3 +1,4 @@
+import { filterFromJson, filterToJson, type SavedFilter } from "./filter";
 import {
   DEFAULT_COLUMNS,
   normalizeColumns,
@@ -45,6 +46,12 @@ export interface Prefs {
   /** Sidebar hidden (⌘0). Persisted because a small screen stays small. */
   treeHidden: boolean;
   /**
+   * Filters the user kept. Unlike pins — which die with the session because a
+   * flow id does — a filter is worth keeping across launches: it describes the
+   * work, not one exchange.
+   */
+  savedFilters: SavedFilter[];
+  /**
    * Look for a new version at launch. On by default: a debugging proxy holds a
    * root CA and a TLS stack, so running an old build is a security decision the
    * user should have to make deliberately. The check only ever *reports* —
@@ -68,11 +75,31 @@ export const DEFAULT_PREFS: Prefs = {
   columnWidths: {},
   autoSelect: false,
   treeHidden: false,
+  savedFilters: [],
   autoCheckUpdates: true,
   onboardingDone: false,
 };
 
 const KEY = "novaproxy.prefs";
+
+/**
+ * Keep stored filters usable: a label, and a filter that survives being rebuilt.
+ *
+ * Passed through `filterFromJson` → `filterToJson` so a blob written by an older
+ * build loses only the parts that no longer exist, rather than sitting in the
+ * chip row matching nothing.
+ */
+function normalizeSaved(raw: unknown): SavedFilter[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SavedFilter[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const { id, label, filter } = item as Partial<SavedFilter>;
+    if (typeof id !== "string" || typeof label !== "string" || label.trim() === "") continue;
+    out.push({ id, label, filter: filterToJson(filterFromJson(filter)) });
+  }
+  return out;
+}
 
 /** Coerce arbitrary stored JSON into a complete, in-range `Prefs`. */
 export function normalizePrefs(raw: unknown): Prefs {
@@ -87,6 +114,7 @@ export function normalizePrefs(raw: unknown): Prefs {
     columnWidths: normalizeWidths(v.columnWidths),
     autoSelect: v.autoSelect === true,
     treeHidden: v.treeHidden === true,
+    savedFilters: normalizeSaved(v.savedFilters),
     // Only an explicit `false` opts out, so a pref file written by an older
     // build keeps the safer default.
     autoCheckUpdates: v.autoCheckUpdates !== false,

@@ -1,6 +1,7 @@
 import type { Flow } from "./api";
 import { protoOf, statusClassOf, typeOf, type Proto, type FlowType, type StatusClass } from "./classify";
 import { ALL_TRAFFIC, matchScope, type Scope, type ScopeContext } from "./scope";
+import { FLOW_TYPES, PROTOS, STATUS_CLASSES } from "./classify";
 
 /**
  * Match a flow against the search query. Supports `method:`, `status:`,
@@ -155,4 +156,91 @@ export function toggleIn<T>(set: ReadonlySet<T>, value: T): Set<T> {
   const next = new Set(set);
   if (!next.delete(value)) next.add(value);
   return next;
+}
+
+
+/* ----------------------------- saved filters ------------------------------ */
+
+/**
+ * A filter, flattened for storage.
+ *
+ * `Set` and a tagged union do not survive `JSON.stringify` in a form that comes
+ * back as itself, so a saved filter is stored as this and rebuilt on load —
+ * defensively, since the blob on disk was written by an older build.
+ */
+export interface FilterJson {
+  proto?: string[];
+  type?: string[];
+  status?: string[];
+  scope?: Scope;
+  query?: string;
+  includeInternal?: boolean;
+}
+
+export function filterToJson(f: FlowFilter): FilterJson {
+  return {
+    proto: [...f.proto],
+    type: [...f.type],
+    status: [...f.status],
+    scope: f.scope,
+    query: f.query.trim(),
+    includeInternal: f.includeInternal,
+  };
+}
+
+/**
+ * Rebuild a filter from storage, dropping anything unrecognised.
+ *
+ * A chip id that no longer exists (a payload kind that was renamed, say) would
+ * otherwise make a saved filter match nothing at all, which reads as "my saved
+ * filter is broken" rather than "that chip is gone".
+ */
+export function filterFromJson(raw: unknown): FlowFilter {
+  const j = (raw ?? {}) as FilterJson;
+  const known = <T extends string>(list: unknown, valid: readonly { id: T }[]): Set<T> => {
+    const ids = new Set(valid.map((v) => v.id as string));
+    const arr = Array.isArray(list) ? list : [];
+    return new Set(arr.filter((x): x is T => typeof x === "string" && ids.has(x)));
+  };
+  const scope = j.scope && typeof j.scope === "object" && "kind" in j.scope ? j.scope : ALL_TRAFFIC;
+  return {
+    proto: known(j.proto, PROTOS),
+    type: known(j.type, FLOW_TYPES),
+    status: known(j.status, STATUS_CLASSES),
+    scope: scope as Scope,
+    query: typeof j.query === "string" ? j.query : "",
+    includeInternal: j.includeInternal === true,
+    enabled: true,
+  };
+}
+
+/**
+ * A name for a filter nobody named.
+ *
+ * Derived rather than prompted for: asking for a name is a modal in the middle
+ * of "I want this filter back later", and the parts of the filter *are* its
+ * name. Groups keep their order (protocol, kind, status, then scope and query)
+ * so two saved filters built the same way read the same way.
+ */
+export function describeFilter(f: FlowFilter): string {
+  const parts: string[] = [];
+  const label = <T extends string>(set: ReadonlySet<T>, defs: readonly { id: T; label: string }[]) =>
+    defs.filter((d) => set.has(d.id)).map((d) => d.label);
+  parts.push(...label(f.proto, PROTOS));
+  parts.push(...label(f.type, FLOW_TYPES));
+  parts.push(...label(f.status, STATUS_CLASSES));
+  if (f.scope.kind === "app") parts.push(f.scope.name || "unknown app");
+  if (f.scope.kind === "host") parts.push(f.scope.host);
+  if (f.scope.kind === "path") parts.push(`${f.scope.host}${f.scope.prefix}`);
+  if (f.scope.kind === "pinned") parts.push("pinned");
+  const q = f.query.trim();
+  if (q) parts.push(`“${q}”`);
+  return parts.length > 0 ? parts.join(" · ") : "everything";
+}
+
+/** A named filter, kept across launches. */
+export interface SavedFilter {
+  id: string;
+  label: string;
+  filter: FilterJson;
 }

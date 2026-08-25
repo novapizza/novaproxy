@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { Flow } from "./api";
 import {
   activeFilterCount,
+  describeFilter,
+  filterFromJson,
+  filterToJson,
   applyFilter,
   buildPredicate,
   EMPTY_FILTER,
@@ -268,5 +271,60 @@ describe("toggleIn", () => {
     expect([...toggleIn(a, "y")].sort()).toEqual(["x", "y"]);
     expect([...toggleIn(a, "x")]).toEqual([]);
     expect([...a]).toEqual(["x"]);
+  });
+});
+
+
+describe("saved filters", () => {
+  it("round-trips through storage", () => {
+    const original = filter({
+      proto: new Set(["https"]),
+      type: new Set(["json", "graphql"]),
+      status: new Set(["4xx"]),
+      scope: { kind: "host", host: "api.example.com" },
+      query: "shoots",
+    });
+    const back = filterFromJson(JSON.parse(JSON.stringify(filterToJson(original))));
+    expect(back.proto).toEqual(original.proto);
+    expect(back.type).toEqual(original.type);
+    expect(back.status).toEqual(original.status);
+    expect(back.scope).toEqual(original.scope);
+    expect(back.query).toBe("shoots");
+  });
+
+  it("drops chip ids it no longer recognises instead of matching nothing", () => {
+    const back = filterFromJson({ type: ["json", "gopher"], status: ["9xx"] });
+    expect([...back.type]).toEqual(["json"]);
+    expect([...back.status]).toEqual([]);
+  });
+
+  it("survives junk, an empty blob and a missing scope", () => {
+    expect(filterFromJson(null)).toEqual(EMPTY_FILTER);
+    expect(filterFromJson({ scope: "everything" }).scope).toEqual({ kind: "all" });
+    expect(filterFromJson({ proto: "https" }).proto.size).toBe(0);
+  });
+
+  it("comes back enabled — a saved filter is one you are about to use", () => {
+    expect(filterFromJson(filterToJson(filter({ enabled: false }))).enabled).toBe(true);
+  });
+});
+
+describe("describeFilter", () => {
+  it("names a filter by its parts, groups in a fixed order", () => {
+    expect(
+      describeFilter(
+        filter({ status: new Set(["4xx", "5xx"]), type: new Set(["json"]), proto: new Set(["https"]) }),
+      ),
+    ).toBe("HTTPS · JSON · 4xx · 5xx");
+  });
+
+  it("includes the scope and the query", () => {
+    expect(describeFilter(filter({ scope: { kind: "host", host: "api.x" } }))).toBe("api.x");
+    expect(describeFilter(filter({ query: "shoots" }))).toBe("“shoots”");
+    expect(describeFilter(filter({ scope: { kind: "app", name: "" } }))).toBe("unknown app");
+  });
+
+  it("says `everything` rather than nothing at all", () => {
+    expect(describeFilter(EMPTY_FILTER)).toBe("everything");
   });
 });

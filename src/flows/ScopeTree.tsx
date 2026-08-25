@@ -23,14 +23,12 @@ export function ScopeTree({
   scope,
   setScope,
   pinnedCount,
-  savedCount,
   filterRef,
 }: {
   tree: Tree;
   scope: Scope;
   setScope: (s: Scope) => void;
   pinnedCount: number;
-  savedCount: number;
   /** Focus target for the tree filter (⌘⇧F). */
   filterRef?: React.RefObject<HTMLInputElement | null>;
 }) {
@@ -66,16 +64,14 @@ export function ScopeTree({
       <div className="tree-body">
         {/* Favourites appear only once there is something in them: a permanent
             empty "Pinned" row is a control that does nothing. */}
-        {(pinnedCount > 0 || savedCount > 0) && (
+        {pinnedCount > 0 && (
           <>
             <div className="tree-eyebrow">Favorites</div>
-            {pinnedCount > 0 && (
-              <div {...row({ kind: "pinned" })}>
-                <Icon name="pin" size={14} />
-                <span className="t">Pinned</span>
-                <span className="n">{pinnedCount}</span>
-              </div>
-            )}
+            <div {...row({ kind: "pinned" })}>
+              <Icon name="pin" size={14} />
+              <span className="t">Pinned</span>
+              <span className="n">{pinnedCount}</span>
+            </div>
           </>
         )}
 
