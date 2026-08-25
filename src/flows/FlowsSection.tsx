@@ -15,7 +15,9 @@ import { Icon } from "../icons";
 import { ScopeTree } from "./ScopeTree";
 import { FilterBar } from "./FilterBar";
 import { FlowTable } from "./FlowTable";
-import type { ColumnId } from "./columns";
+import { ColumnPicker } from "./ColumnPicker";
+import { sortFlows, type Sort } from "./sort";
+import { clampColumnWidth, type ColumnId, type ColumnWidths } from "./columns";
 import { formatChord, shortcut } from "../shortcuts";
 
 /**
@@ -32,6 +34,8 @@ export interface FlowsHandle {
   paneTab: (delta: 1 | -1) => void;
   switchPane: () => void;
   toggleCollapse: () => void;
+  /** ⌘⇧A: mark every row the filter is currently showing. */
+  markAll: () => void;
 }
 
 /**
@@ -48,6 +52,9 @@ export const FlowsSection = forwardRef<FlowsHandle, {
   patch: (p: Partial<FlowFilter>) => void;
   reset: () => void;
   columns: ColumnId[];
+  setColumns: (c: ColumnId[]) => void;
+  widths: ColumnWidths;
+  setWidths: (w: ColumnWidths) => void;
   recording: boolean;
   selected: Flow | null;
   select: (id: string | null) => void;
@@ -67,9 +74,18 @@ export const FlowsSection = forwardRef<FlowsHandle, {
   tableRef?: React.RefObject<HTMLDivElement | null>;
   /** Hidden by ⌘0, so a small window can give the table its width back. */
   treeHidden?: boolean;
+  /** Rows marked for a bulk action, reported up so the actions can use them. */
+  onMarked?: (ids: string[]) => void;
 }>(function FlowsSection(props, ref) {
   const { flows, filter, selected, select } = props;
   const [panes, setPanes] = useState<PaneState>(INITIAL_PANES);
+  const [sort, setSort] = useState<Sort | null>(null);
+  /**
+   * Rows marked for a bulk action, as ids rather than flows: a flow object is
+   * replaced on every snapshot, and a set of objects would hold the stale ones
+   * (and leak them past the retention cap).
+   */
+  const [marked, setMarked] = useState<ReadonlySet<string>>(new Set());
   const ownTableRef = useRef<HTMLDivElement | null>(null);
   const tableRef = props.tableRef ?? ownTableRef;
   const inspRef = useRef<HTMLDivElement | null>(null);
@@ -93,6 +109,7 @@ export const FlowsSection = forwardRef<FlowsHandle, {
         ...panes,
         collapsed: panes.collapsed === panes.active ? null : panes.active,
       }),
+    markAll: () => setMarked(new Set(rows.map((f) => f.id))),
   }));
 
   /**
@@ -106,6 +123,18 @@ export const FlowsSection = forwardRef<FlowsHandle, {
   );
 
   const filtered = useMemo(() => applyFilter(flows, filter), [flows, filter]);
+  const rows = useMemo(() => sortFlows(filtered, sort), [filtered, sort]);
+
+  // Marks follow the rows: a row the filter hides is not a row a bulk action
+  // should still act on, and holding its id would surprise the next Export.
+  useEffect(() => {
+    if (marked.size === 0) return;
+    const visible = new Set(rows.map((f) => f.id));
+    const kept = [...marked].filter((id) => visible.has(id));
+    if (kept.length !== marked.size) setMarked(new Set(kept));
+  }, [rows, marked]);
+
+  useEffect(() => props.onMarked?.([...marked]), [marked, props.onMarked]);
 
   /**
    * Follow the tail.
@@ -114,7 +143,13 @@ export const FlowsSection = forwardRef<FlowsHandle, {
    * an in-flight flow must not re-select anything, only a genuinely new head of
    * the list should.
    */
-  const newestId = filtered.length > 0 ? filtered[0].id : null;
+  // Newest by `seq`, not "first row": once the table is sorted by duration the
+  // top row is no longer the newest, and following it would jump around.
+  const newestId = useMemo(() => {
+    let best: (typeof filtered)[number] | null = null;
+    for (const f of filtered) if (!best || Number(f.seq) > Number(best.seq)) best = f;
+    return best?.id ?? null;
+  }, [filtered]);
   useEffect(() => {
     if (props.autoSelect && newestId) select(newestId);
   }, [props.autoSelect, newestId, select]);
@@ -161,16 +196,38 @@ export const FlowsSection = forwardRef<FlowsHandle, {
           reset={props.reset}
           searchRef={props.searchRef}
           onChip={(id) => props.track?.("ui.flow.chip", id)}
+          trailing={<ColumnPicker columns={props.columns} setColumns={props.setColumns} />}
         />
 
         <FlowTable
-          flows={filtered}
+          flows={rows}
           columns={props.columns}
           selectedId={selected?.id ?? null}
           select={select}
           empty={empty}
           scrollRef={tableRef}
           onInspect={() => inspRef.current?.focus()}
+          sort={sort}
+          setSort={setSort}
+          widths={props.widths}
+          setWidth={(id, px) => props.setWidths({ ...props.widths, [id]: clampColumnWidth(px) })}
+          marked={marked}
+          toggleMark={(id) =>
+            setMarked((prev) => {
+              const next = new Set(prev);
+              if (!next.delete(id)) next.add(id);
+              return next;
+            })
+          }
+          markRange={(toId) => {
+            // From the current row to the clicked one, inclusive — the range a
+            // person means by shift-clicking, in the order the table is showing.
+            const a = rows.findIndex((f) => f.id === (selected?.id ?? toId));
+            const b = rows.findIndex((f) => f.id === toId);
+            if (a < 0 || b < 0) return;
+            const [lo, hi] = a <= b ? [a, b] : [b, a];
+            setMarked(new Set(rows.slice(lo, hi + 1).map((f) => f.id)));
+          }}
         />
 
         {/* The summary bar is the inspector's head: the panes below carry tabs
@@ -202,8 +259,12 @@ export const FlowsSection = forwardRef<FlowsHandle, {
             </>
           )}
           <span className="rows">
-            {filtered.length} row{filtered.length === 1 ? "" : "s"}
-            {selected ? " · 1 selected" : ""}
+            {rows.length} row{rows.length === 1 ? "" : "s"}
+            {marked.size > 0
+              ? ` · ${marked.size} marked`
+              : selected
+              ? " · 1 selected"
+              : ""}
           </span>
         </div>
 

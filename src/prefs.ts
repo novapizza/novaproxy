@@ -1,4 +1,10 @@
-import { DEFAULT_COLUMNS, normalizeColumns, type ColumnId } from "./flows/columns";
+import {
+  DEFAULT_COLUMNS,
+  normalizeColumns,
+  normalizeWidths,
+  type ColumnId,
+  type ColumnWidths,
+} from "./flows/columns";
 
 /**
  * Preferences that outlive a session.
@@ -28,6 +34,8 @@ export interface Prefs {
    * `src/flows/columns.tsx`.
    */
   columns: ColumnId[];
+  /** Dragged column widths, in px. Absent columns keep their declared track. */
+  columnWidths: ColumnWidths;
   /**
    * Follow the tail: keep the newest row selected as it arrives. Off by
    * default — a selection that moves while you are reading a body is worse than
@@ -57,6 +65,7 @@ export interface Prefs {
 export const DEFAULT_PREFS: Prefs = {
   systemProxyAtLaunch: "none",
   columns: [...DEFAULT_COLUMNS],
+  columnWidths: {},
   autoSelect: false,
   treeHidden: false,
   autoCheckUpdates: true,
@@ -75,6 +84,7 @@ export function normalizePrefs(raw: unknown): Prefs {
     // the default column set stands in. Nothing to migrate *from* — grouping is
     // not a column choice — so this is a reset, not a translation.
     columns: normalizeColumns(Array.isArray(v.columns) ? (v.columns as string[]) : null),
+    columnWidths: normalizeWidths(v.columnWidths),
     autoSelect: v.autoSelect === true,
     treeHidden: v.treeHidden === true,
     // Only an explicit `false` opts out, so a pref file written by an older

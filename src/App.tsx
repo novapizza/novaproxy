@@ -124,6 +124,13 @@ export function App() {
    */
   const columns = prefs.columns;
   const autoSelect = prefs.autoSelect;
+  /**
+   * Rows marked in the table, mirrored up here because the two actions that can
+   * act on more than one flow — Copy as cURL and Export as HAR — live at this
+   * level. Empty means "act on the current row", which is what they did before
+   * multi-select existed.
+   */
+  const [markedIds, setMarkedIds] = useState<string[]>([]);
   // Which slice of the capture the list shows, and (separately) whether
   // NovaProxy's own MCP/replay traffic is part of it.
 
@@ -202,7 +209,14 @@ export function App() {
   }
   async function doExportHar() {
     try {
-      if (await exportHar(await flowsForExport())) showToast("HAR exported");
+      const all = await flowsForExport();
+      // Marked rows narrow the export; nothing marked exports the capture, which
+      // is what the command did before there was a way to mark anything.
+      const wanted = markedIds.length > 0 ? new Set(markedIds) : null;
+      const flows = wanted ? all.filter((f) => wanted.has(f.id)) : all;
+      if (await exportHar(flows)) {
+        showToast(wanted ? `HAR exported (${flows.length} marked flows)` : "HAR exported");
+      }
     } catch (e) { showToast(String(e)); }
   }
   async function doImportSession() {
@@ -467,13 +481,26 @@ export function App() {
 
   const selected = useMemo(() => flows.find((f) => f.id === selectedId) ?? null, [flows, selectedId]);
 
+  /**
+   * The flows an action should act on: the marked rows if there are any,
+   * otherwise the current one. Marking is additive to the old behaviour rather
+   * than a mode — nothing has to be marked for the actions to work.
+   */
+  function actionTargets(): Flow[] {
+    if (markedIds.length === 0) return selected ? [selected] : [];
+    const byId = new Map(flows.map((f) => [f.id, f]));
+    return markedIds.map((id) => byId.get(id)).filter((f): f is Flow => f != null);
+  }
+
   async function copyCurl() {
-    if (!selected) return showToast("No flow selected");
+    const targets = actionTargets();
+    if (targets.length === 0) return showToast("No flow selected");
     api.trackUi("ui.flow.action", "copy_curl");
     // The list holds no body bytes, so the request body is fetched before the
     // command is written out — a cURL without its `--data` is not the request.
-    navigator.clipboard.writeText(buildCurl(await withRequestBody(selected)));
-    showToast("cURL copied to clipboard");
+    const cmds = await Promise.all(targets.map(async (f) => buildCurl(await withRequestBody(f))));
+    navigator.clipboard.writeText(cmds.join("\n\n"));
+    showToast(targets.length === 1 ? "cURL copied to clipboard" : `${targets.length} cURLs copied`);
   }
 
   /* command palette */
@@ -559,6 +586,7 @@ export function App() {
       "tree.toggle": () => setPrefs({ ...prefs, treeHidden: !prefs.treeHidden }),
       "flow.resend": () => void resendSelected(),
       "flow.curl": copyCurl,
+      "row.selectAll": () => flowsRef.current?.markAll(),
       "pane.prevTab": () => flowsRef.current?.paneTab(-1),
       "pane.nextTab": () => flowsRef.current?.paneTab(1),
       "pane.switch": () => flowsRef.current?.switchPane(),
@@ -566,6 +594,25 @@ export function App() {
     },
     { modalOpen: paletteOpen || settingsOpen || shortcutsOpen || onboardingOpen || intercept != null },
   );
+
+  /**
+   * Escape closes whatever is on top.
+   *
+   * Separate from `useShortcuts`, which stops dispatching while a modal is open —
+   * that is the rule that keeps ⌘1 from moving the section behind a dialog, and
+   * this is the one exception to it.
+   */
+  useEffect(() => {
+    if (!(settingsOpen || shortcutsOpen)) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      if (shortcutsOpen) setShortcutsOpen(false);
+      else setSettingsOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [settingsOpen, shortcutsOpen]);
 
   /** The menu's ⌘/ item, which the OS consumes before the webview sees it. */
   useEffect(() => {
@@ -663,6 +710,10 @@ export function App() {
             <FlowsSection
               ref={flowsRef}
               treeHidden={prefs.treeHidden}
+              setColumns={(c) => setPrefs({ ...prefs, columns: c })}
+              widths={prefs.columnWidths}
+              setWidths={(w) => setPrefs({ ...prefs, columnWidths: w })}
+              onMarked={setMarkedIds}
               flows={flows}
               filter={filter}
               patch={patchFilter}

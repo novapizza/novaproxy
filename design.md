@@ -221,6 +221,16 @@ the path. Three empty states, per §8: nothing captured, capture paused, nothing
 > `sliceFlat` (`src/virtual.ts`): one height, one measurement, no per-group containing blocks.
 > Sticky *group* headers were the only reason that geometry was per-group.
 
+**Sorting, columns, marks.** A sortable header cycles ascending → descending →
+back to capture order, marked by a small `▲`/`▼` in `--accent`; capture order is a
+state you can return to, not the absence of one. A hover-only 1px grip on each
+header edge resizes that column, and a dragged width replaces the declared track
+(the URL column's `1fr` included). The column picker sits at the right of the
+filter bar, next to Reset — the decision is made while looking at the table that
+is too wide. **Marked** rows (⌘-click, shift-click, `⌘⇧A`) take a `--c-indigo`
+wash rather than the accent: they are a batch for the next action, not the one row
+the inspector is showing.
+
 **Summary bar** between table and panes: method badge, status pill, the URL in 12px mono with
 the host emphasised, then right-aligned `N rows · n selected`.
 

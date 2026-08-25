@@ -2,7 +2,15 @@ import { memo, useLayoutEffect, useRef, useState } from "react";
 import type { Flow } from "../api";
 import { Icon, type IconName } from "../icons";
 import { sliceFlat } from "../virtual";
-import { COLUMNS, gridTemplate, minTableWidth, type ColumnId } from "./columns";
+import {
+  clampColumnWidth,
+  COLUMNS,
+  gridTemplate,
+  minTableWidth,
+  type ColumnId,
+  type ColumnWidths,
+} from "./columns";
+import { cycleSort, sortable, sortGlyph, type Sort } from "./sort";
 
 /** Rows kept mounted beyond each viewport edge, to cover a fast flick. */
 const OVERSCAN = 10;
@@ -30,6 +38,13 @@ export function FlowTable({
   empty,
   scrollRef,
   onInspect,
+  sort,
+  setSort,
+  widths,
+  setWidth,
+  marked,
+  toggleMark,
+  markRange,
 }: {
   flows: Flow[];
   columns: ColumnId[];
@@ -39,6 +54,14 @@ export function FlowTable({
   scrollRef?: React.RefObject<HTMLDivElement | null>;
   /** Enter: hand focus to the inspector. */
   onInspect?: () => void;
+  sort: Sort | null;
+  setSort: (s: Sort | null) => void;
+  widths: ColumnWidths;
+  setWidth: (id: ColumnId, px: number) => void;
+  /** Rows marked for a bulk action. The *current* row is `selectedId`. */
+  marked: ReadonlySet<string>;
+  toggleMark: (id: string) => void;
+  markRange: (toId: string) => void;
 }) {
   const ownRef = useRef<HTMLDivElement | null>(null);
   const ref = scrollRef ?? ownRef;
@@ -106,8 +129,45 @@ export function FlowTable({
   };
 
   const slice = sliceFlat(flows.length, rowH, scrollTop, viewportH, OVERSCAN);
-  const template = gridTemplate(columns);
-  const minWidth = minTableWidth(columns);
+  const template = gridTemplate(columns, widths);
+  const minWidth = minTableWidth(columns, widths);
+
+  /**
+   * Drag a column edge.
+   *
+   * Pointer capture rather than window listeners: it keeps the drag alive when
+   * the cursor outruns the 6px grip, and releases itself if the pointer is lost.
+   */
+  const startResize = (id: ColumnId) => (e: React.PointerEvent<HTMLSpanElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const grip = e.currentTarget;
+    const cell = grip.parentElement as HTMLElement | null;
+    if (!cell) return;
+    const startX = e.clientX;
+    const startW = cell.getBoundingClientRect().width;
+    grip.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => setWidth(id, clampColumnWidth(startW + ev.clientX - startX));
+    const up = (ev: PointerEvent) => {
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", up);
+      grip.removeEventListener("pointercancel", up);
+      grip.releasePointerCapture(ev.pointerId);
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up);
+    grip.addEventListener("pointercancel", up);
+  };
+
+  /**
+   * A click means one of three things, and the modifier says which: plain picks
+   * one row, ⌘/Ctrl adds or removes one, Shift takes everything between.
+   */
+  const onRowClick = (e: React.MouseEvent, id: string) => {
+    if (e.metaKey || e.ctrlKey) toggleMark(id);
+    else if (e.shiftKey) markRange(id);
+    else select(id);
+  };
 
   return (
     <div
@@ -121,8 +181,17 @@ export function FlowTable({
     >
       <div className="ft-head" style={{ gridTemplateColumns: template, minWidth }}>
         {columns.map((id) => (
-          <span key={id} className={COLUMNS[id].align === "right" ? "r" : undefined}>
+          <span
+            key={id}
+            className={`${COLUMNS[id].align === "right" ? "r" : ""} ${sortable(id) ? "sortable" : ""} ${
+              sort?.by === id ? "sorted" : ""
+            }`}
+            onClick={() => setSort(cycleSort(sort, id))}
+            title={sortable(id) ? "Sort by this column" : undefined}
+          >
             {COLUMNS[id].label}
+            {sort?.by === id && <span className="sg">{sortGlyph(sort, id)}</span>}
+            <span className="grip" onPointerDown={startResize(id)} />
           </span>
         ))}
       </div>
@@ -144,7 +213,8 @@ export function FlowTable({
               template={template}
               even={(slice.from + i) % 2 === 0}
               selected={f.id === selectedId}
-              select={select}
+              marked={marked.has(f.id)}
+              onClick={onRowClick}
               measure={i === 0 ? measure : undefined}
             />
           ))}
@@ -162,7 +232,8 @@ const Row = memo(function Row({
   template,
   even,
   selected,
-  select,
+  marked,
+  onClick,
   measure,
 }: {
   flow: Flow;
@@ -170,7 +241,8 @@ const Row = memo(function Row({
   template: string;
   even: boolean;
   selected: boolean;
-  select: (id: string) => void;
+  marked: boolean;
+  onClick: (e: React.MouseEvent, id: string) => void;
   measure?: (el: HTMLElement | null) => void;
 }) {
   return (
@@ -179,10 +251,10 @@ const Row = memo(function Row({
       role="row"
       aria-selected={selected}
       className={`ft-row ${even ? "even" : "odd"} ${selected ? "sel" : ""} ${
-        flow.status == null && flow.error == null ? "pending" : ""
-      }`}
+        marked ? "marked" : ""
+      } ${flow.status == null && flow.error == null ? "pending" : ""}`}
       style={{ gridTemplateColumns: template }}
-      onClick={() => select(flow.id)}
+      onClick={(e) => onClick(e, flow.id)}
     >
       {columns.map((id) => (
         <span key={id} className={`c-${id}${COLUMNS[id].align === "right" ? " r" : ""}`}>

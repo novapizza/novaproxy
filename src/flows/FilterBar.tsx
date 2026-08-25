@@ -20,6 +20,7 @@ export function FilterBar({
   reset,
   searchRef,
   onChip,
+  trailing,
 }: {
   filter: FlowFilter;
   patch: (p: Partial<FlowFilter>) => void;
@@ -28,6 +29,8 @@ export function FilterBar({
   searchRef?: React.RefObject<HTMLInputElement | null>;
   /** Which chip was pressed — the id only, never the search text. */
   onChip?: (id: string) => void;
+  /** View controls that belong beside Reset — today, the column picker. */
+  trailing?: React.ReactNode;
 }) {
   const active = activeFilterCount(filter);
 
@@ -53,6 +56,7 @@ export function FilterBar({
             Reset filters ({active})
           </span>
         )}
+        {trailing}
       </div>
 
       <ChipGroup

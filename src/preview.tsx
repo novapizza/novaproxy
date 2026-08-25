@@ -67,6 +67,8 @@ const REVERSED = new URLSearchParams(location.search).has("rev");
 const ROWS = REVERSED ? [...FLOWS].reverse() : FLOWS;
 
 function Harness() {
+  const [columns, setColumns] = useState(DEFAULT_COLUMNS);
+  const [widths, setWidths] = useState({});
   const [filter, setFilter] = useState<FlowFilter>(EMPTY_FILTER);
   const [selectedId, setSelectedId] = useState<string | null>(ROWS[REVERSED ? 0 : 3].id);
   const selected = ROWS.find((f) => f.id === selectedId) ?? null;
@@ -79,7 +81,10 @@ function Harness() {
             filter={filter}
             patch={(p) => setFilter((f) => ({ ...f, ...p }))}
             reset={() => setFilter(EMPTY_FILTER)}
-            columns={DEFAULT_COLUMNS}
+            columns={columns}
+            setColumns={setColumns}
+            widths={widths}
+            setWidths={setWidths}
             recording
             selected={selected}
             select={setSelectedId}

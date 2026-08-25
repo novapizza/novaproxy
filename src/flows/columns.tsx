@@ -193,14 +193,45 @@ export function normalizeColumns(ids: readonly string[] | null | undefined): Col
   return kept.length > 1 ? kept : [...DEFAULT_COLUMNS];
 }
 
-/** The `grid-template-columns` both the header row and every body row use. */
-export function gridTemplate(ids: readonly ColumnId[]): string {
-  return ids.map((id) => COLUMNS[id].track).join(" ");
+/** A dragged width per column; anything absent keeps its declared track. */
+export type ColumnWidths = Partial<Record<ColumnId, number>>;
+
+/** Narrower than this and a cell shows nothing but an ellipsis. */
+export const MIN_COLUMN_W = 44;
+export const MAX_COLUMN_W = 720;
+
+export function clampColumnWidth(px: number): number {
+  if (!Number.isFinite(px)) return MIN_COLUMN_W;
+  return Math.round(Math.min(MAX_COLUMN_W, Math.max(MIN_COLUMN_W, px)));
+}
+
+/** Keep stored widths sane: known columns, in range. */
+export function normalizeWidths(raw: unknown): ColumnWidths {
+  const out: ColumnWidths = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!(k in COLUMNS)) continue;
+    if (typeof v !== "number" || !Number.isFinite(v)) continue;
+    out[k as ColumnId] = clampColumnWidth(v);
+  }
+  return out;
+}
+
+/**
+ * The `grid-template-columns` the header row and every body row share.
+ *
+ * A dragged width replaces the declared track — including the URL column's
+ * `1fr`, which is the one case where dragging changes the *kind* of track and
+ * not just its size: a user who sized the URL column meant that size.
+ */
+export function gridTemplate(ids: readonly ColumnId[], widths: ColumnWidths = {}): string {
+  return ids.map((id) => (widths[id] ? `${widths[id]}px` : COLUMNS[id].track)).join(" ");
 }
 
 /** Minimum width the visible columns need before the table has to scroll sideways. */
-export function minTableWidth(ids: readonly ColumnId[]): number {
+export function minTableWidth(ids: readonly ColumnId[], widths: ColumnWidths = {}): number {
   return ids.reduce((sum, id) => {
+    if (widths[id]) return sum + widths[id]!;
     const t = COLUMNS[id].track;
     const px = /(\d+)px/.exec(t.includes("minmax") ? t.slice(t.indexOf("minmax")) : t);
     return sum + (px ? Number(px[1]) : 0);

@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  clampColumnWidth,
   COLUMNS,
   COLUMN_ORDER,
   DEFAULT_COLUMNS,
   gridTemplate,
+  MAX_COLUMN_W,
+  MIN_COLUMN_W,
   minTableWidth,
   normalizeColumns,
+  normalizeWidths,
 } from "./columns";
 
 describe("column declarations", () => {
@@ -53,5 +57,34 @@ describe("normalizeColumns", () => {
     expect(normalizeColumns(null)).toEqual(DEFAULT_COLUMNS);
     expect(normalizeColumns([])).toEqual(DEFAULT_COLUMNS);
     expect(normalizeColumns(["nope"])).toEqual(DEFAULT_COLUMNS);
+  });
+});
+
+describe("column widths", () => {
+  it("a dragged width replaces the declared track, URL's 1fr included", () => {
+    expect(gridTemplate(["method", "url"], { url: 400 })).toBe("62px 400px");
+    expect(gridTemplate(["method", "url"], { method: 90 })).toBe("90px minmax(320px, 1fr)");
+  });
+
+  it("counts dragged widths when working out whether the table scrolls", () => {
+    const wide = minTableWidth(["method", "url"], { url: 900 });
+    expect(wide).toBe(62 + 900);
+  });
+
+  it("clamps a width to something a cell can still show", () => {
+    expect(clampColumnWidth(2)).toBe(MIN_COLUMN_W);
+    expect(clampColumnWidth(9999)).toBe(MAX_COLUMN_W);
+    expect(clampColumnWidth(120.6)).toBe(121);
+    // NaN survives Math.min/Math.max, so it is rejected explicitly.
+    expect(clampColumnWidth(Number.NaN)).toBe(MIN_COLUMN_W);
+  });
+
+  it("drops stored widths for columns that no longer exist, and out-of-range ones", () => {
+    expect(normalizeWidths({ url: 400, madeUp: 100, method: "wide", status: 1 })).toEqual({
+      url: 400,
+      status: MIN_COLUMN_W,
+    });
+    expect(normalizeWidths(null)).toEqual({});
+    expect(normalizeWidths("nope")).toEqual({});
   });
 });

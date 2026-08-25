@@ -1003,6 +1003,7 @@ input, textarea, select { font-family: inherit; }
 
 .flows2-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
+
 .fbar {
   flex: none; display: flex; flex-direction: column; gap: 7px;
   padding: 12px 18px 10px; border-bottom: 1px solid var(--border);
@@ -1047,6 +1048,21 @@ input, textarea, select { font-family: inherit; }
   font: 600 10.5px var(--font-ui); letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
 }
 .ft-head .r { text-align: right; }
+.ft-head > span { position: relative; padding-right: 8px; }
+.ft-head .sortable { cursor: pointer; }
+.ft-head .sortable:hover { color: var(--text2); }
+.ft-head .sorted { color: var(--accent); }
+.ft-head .sg { margin-left: 4px; font-size: 8px; vertical-align: middle; }
+/* The resize grip: invisible until hovered, so the header stays quiet. */
+.ft-head .grip {
+  position: absolute; top: 0; right: -3px; width: 7px; height: 100%;
+  cursor: col-resize; touch-action: none;
+}
+.ft-head .grip::after {
+  content: ""; position: absolute; top: 6px; bottom: 6px; left: 3px; width: 1px;
+  background: var(--accent); opacity: 0; transition: opacity var(--t-micro) var(--ease);
+}
+.ft-head .grip:hover::after { opacity: .8; }
 
 .ft-row {
   height: var(--row-h); cursor: pointer;
@@ -1057,6 +1073,10 @@ input, textarea, select { font-family: inherit; }
 .ft-row.odd { background: var(--row-alt); }
 .ft-row:hover { background: var(--hover); }
 .ft-row.sel { border-left-color: var(--accent); background: rgba(62,181,109,.11); }
+/* Marked rows are a *set*, so they read as a wash rather than as the one row
+   the inspector is showing: ⌘-click adds to a batch, it does not move focus. */
+.ft-row.marked { background: rgba(140,120,243,.13); }
+.ft-row.marked.sel { background: rgba(62,181,109,.16); border-left-color: var(--c-indigo); }
 /* A flow still in flight has no status and no duration yet; dim the row rather
    than leaving it looking like a completed one with holes in it. */
 .ft-row.pending { color: var(--muted); }
@@ -1247,3 +1267,37 @@ input, textarea, select { font-family: inherit; }
   padding: 12px 22px; border-top: 1px solid var(--border);
   font: 400 11.5px var(--font-ui); color: var(--faint);
 }
+
+
+/* ------------------------------ column picker ----------------------------- */
+
+.colpick { position: relative; flex: none; display: flex; }
+.cp-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: var(--r-tag);
+  color: var(--faint); cursor: pointer;
+}
+.cp-btn:hover, .cp-btn.on { color: var(--accent); background: var(--hover); }
+.cp-panel {
+  position: absolute; top: 28px; right: 0; width: 176px; z-index: 6;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--r-field); box-shadow: var(--e-pop); padding: 6px;
+}
+.cp-eyebrow {
+  font: 600 10px var(--font-ui); letter-spacing: .09em; text-transform: uppercase;
+  color: var(--faint); padding: 4px 8px 6px;
+}
+.cp-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  border-radius: var(--r-tag); cursor: pointer;
+  font: 500 12px var(--font-ui); color: var(--text2);
+}
+.cp-row:hover { background: var(--hover); }
+.cp-row.on { color: var(--text); }
+.cp-row.locked { cursor: default; opacity: .6; }
+.cp-row .tick { display: flex; width: 12px; flex: none; color: var(--accent); }
+.cp-reset {
+  margin-top: 4px; padding: 7px 8px; border-top: 1px solid var(--border);
+  font: 500 11.5px var(--font-ui); color: var(--accent); cursor: pointer;
+}
+.cp-reset:hover { color: var(--accent-hover); }
