@@ -54,6 +54,9 @@ input, textarea, select { font-family: inherit; }
   --card: #ffffff;
   --input: #f7faf8;
   --hover: rgba(27,26,61,.05);
+  /* flows table: zebra row, sticky header fill */
+  --row-alt: rgba(242,246,243,.55);
+  --thead: rgba(242,246,243,.96);
 
   /* hairlines — depth comes from white on wash, never from heavy strokes */
   --border: rgba(27,26,61,.07);
@@ -65,6 +68,12 @@ input, textarea, select { font-family: inherit; }
   --text2: #3b3a5c;
   --muted: #6b6a86;
   --faint: #a9a8be;
+
+  /* flows table metrics — --row-h is measured back out of the DOM by
+     FlowTable, so changing it here is enough (design.md §4.1) */
+  --row-h: 34px;
+  --thead-h: 32px;
+  --tree-w: 252px;
 
   --shadow: rgba(27,26,61,.10);
   --overlay: rgba(27,26,61,.28);
@@ -1112,3 +1121,179 @@ input, textarea, select { font-family: inherit; }
   0% { transform: translateX(-100%); }
   100% { transform: translateX(285%); }
 }
+
+
+/* ==========================================================================
+   Flows — scope tree, filter bar, table, inspector strip (design.md §4.1)
+   ========================================================================== */
+
+.flows2 { flex: 1; display: flex; min-height: 0; min-width: 0; }
+
+/* ------------------------------- scope tree ------------------------------- */
+
+.tree {
+  width: var(--tree-w); flex: none;
+  display: flex; flex-direction: column; min-height: 0;
+  background: rgba(255,255,255,.66);
+  border-right: 1px solid var(--border);
+}
+.tree-body { flex: 1; overflow-y: auto; min-height: 0; padding: 14px 10px 10px; }
+
+.tree-eyebrow, .tree-head {
+  display: flex; align-items: center; gap: 8px; padding: 0 8px;
+  font: 600 10.5px var(--font-ui); letter-spacing: .09em; text-transform: uppercase;
+  color: var(--faint);
+}
+.tree-head { margin-top: 18px; margin-bottom: 6px; }
+.tree-head .n, .tree-row .n { font: 400 11px var(--font-mono); color: var(--faint); flex: none; }
+
+.tree-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 9px; border-radius: 9px; cursor: pointer;
+  font: 500 12.5px var(--font-ui); color: var(--text2);
+}
+.tree-row:hover { background: var(--hover); }
+.tree-row.mono .t { font: 400 11.5px var(--font-mono); }
+.tree-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Selection is the accent, but as a tint plus a hairline rather than a fill:
+   the tree is a permanent surface, and a solid green row would shout. */
+.tree-row.on {
+  background: #fff; border: 1px solid rgba(62,181,109,.28);
+  color: var(--accent); padding: 6px 8px;
+}
+.tree-row.indent { padding-left: 8px; }
+.tree-row.indent2 { padding-left: 26px; }
+.tree-row.indent3 { padding-left: 40px; }
+.tree-row .twist { display: flex; flex: none; color: var(--faint); width: 12px; }
+.tree-row .twist.hidden { visibility: hidden; }
+.tree-none { padding: 8px 10px; font: 400 11.5px var(--font-ui); color: var(--faint); }
+
+.tree-foot { flex: none; padding: 10px; border-top: 1px solid var(--border); display: flex; }
+.tree-foot > * { flex: none; }
+.tree-foot {
+  align-items: center; gap: 8px;
+}
+.tree-foot input {
+  flex: 1; min-width: 0; height: 32px; padding: 0 4px;
+  background: transparent; border: none; outline: none;
+  font: 400 12px var(--font-ui); color: var(--text);
+}
+.tree-foot {
+  padding: 8px 10px;
+}
+.tree-foot > .kbd { font: 400 10.5px var(--font-mono); color: var(--faint); }
+
+/* ------------------------------ filter bar ------------------------------- */
+
+.flows2-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+.fbar {
+  flex: none; display: flex; flex-direction: column; gap: 7px;
+  padding: 12px 18px 10px; border-bottom: 1px solid var(--border);
+}
+.fbar-search {
+  display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 12px;
+  border-radius: var(--r-field); background: var(--input); border: 1px solid var(--border);
+}
+.fbar-search:focus-within {
+  border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12);
+}
+.fbar-search .mag, .fbar-search .clear { display: flex; flex: none; color: var(--faint); }
+.fbar-search .clear { cursor: pointer; color: var(--muted); }
+.fbar-search input {
+  flex: 1; min-width: 0; background: transparent; border: none; outline: none;
+  font: 400 12px var(--font-mono); color: var(--text);
+}
+.fbar-search .reset {
+  flex: none; font: 500 11.5px var(--font-ui); color: var(--accent); cursor: pointer; white-space: nowrap;
+}
+.fbar-search .reset:hover { color: var(--accent-hover); }
+
+/* Groups, not a single row: the eyebrow is what says which axis a chip is on,
+   and that is the whole reason the rows are split (design.md §4.1). */
+.chip-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.chip-group .cg-label {
+  width: 44px; flex: none;
+  font: 600 10px var(--font-ui); letter-spacing: .09em; text-transform: uppercase; color: var(--faint);
+}
+.chip-group .fchip { padding: 3px 10px; font-size: 11px; }
+
+/* -------------------------------- the table ------------------------------- */
+
+.ftable { flex: 1; overflow: auto; min-height: 0; outline: none; }
+
+.ft-head, .ft-row { display: grid; align-items: center; gap: 0; padding: 0 14px; }
+
+.ft-head {
+  position: sticky; top: 0; z-index: 4; height: var(--thead-h);
+  background: var(--thead); backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border2);
+  font: 600 10.5px var(--font-ui); letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+}
+.ft-head .r { text-align: right; }
+
+.ft-row {
+  height: var(--row-h); cursor: pointer;
+  border-left: 2px solid transparent; border-bottom: 1px solid var(--bsoft);
+  /* No entry animation: rows mount as they scroll into view (design.md §7). */
+}
+.ft-row.odd { background: var(--row-alt); }
+.ft-row:hover { background: var(--hover); }
+.ft-row.sel { border-left-color: var(--accent); background: rgba(62,181,109,.11); }
+/* A flow still in flight has no status and no duration yet; dim the row rather
+   than leaving it looking like a completed one with holes in it. */
+.ft-row.pending { color: var(--muted); }
+
+.ft-row > span {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 400 11.5px var(--font-mono); color: var(--text2);
+  font-variant-numeric: tabular-nums;
+  padding-right: 10px;
+}
+.ft-row > span.r, .ft-head > span.r { text-align: right; padding-right: 0; padding-left: 10px; }
+
+.ft-row .c-seq { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
+.ft-row .rdot { width: 6px; height: 6px; border-radius: var(--r-pill); flex: none; background: var(--accent); }
+.ft-row .rdot.s-4xx, .ft-row .rdot.s-5xx, .ft-row .rdot.s-err { background: var(--c-red); }
+.ft-row .rdot.s-3xx { background: var(--c-violet); }
+.ft-row .rdot.s-1xx { background: var(--c-blue); }
+.ft-row .rdot.s-pending { background: var(--faint); animation: novapulse 1.4s var(--ease) infinite; }
+
+.ft-row .c-url { display: flex; align-items: center; gap: 6px; color: var(--text); }
+.ft-row .c-url .u { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ft-row .c-url .tag {
+  flex: none; font: 600 8.5px var(--font-ui); letter-spacing: .07em;
+  border-radius: 4px; padding: 1px 4px; border: 1px solid currentColor;
+}
+.ft-row .c-url .tag.mcp { color: var(--c-indigo); }
+.ft-row .c-url .tag.ws { color: var(--c-indigo); }
+.ft-row .c-url .tag.map { color: var(--c-amber); }
+.ft-row .c-url .tag.resent { color: var(--c-cyan); }
+
+.ft-row .c-client { display: flex; align-items: center; gap: 7px; font-family: var(--font-ui); }
+.ft-row .c-client svg { flex: none; color: var(--c-indigo); }
+.ft-row .c-client .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ft-row .c-method, .ft-row .c-status { overflow: visible; }
+.ft-row .ssl { display: flex; justify-content: flex-end; }
+.ft-row .ssl.on { color: var(--accent); }
+.ft-row .ssl.off { color: var(--faint); }
+.ft-row .ssl.tunneled { color: var(--c-amber); }
+
+/* --------------------------- inspector strip ----------------------------- */
+
+/* 42% of the section, per the design. Fixed rather than a minimum so the table
+   above it does not jump every time a taller body loads. */
+.insp-strip {
+  flex: none; height: 42%; min-height: 0;
+  display: flex; flex-direction: column;
+  border-top: 1px solid var(--border); background: rgba(255,255,255,.9);
+}
+.insp-strip .detail-empty { flex: 1; }
+
+/* Auto Select, in the status bar. */
+.statusbar .autosel {
+  display: flex; align-items: center; gap: 5px; cursor: pointer; color: var(--muted);
+}
+.statusbar .autosel:hover { color: var(--text2); }
+.statusbar .autosel.on { color: var(--accent); }

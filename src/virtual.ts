@@ -91,6 +91,45 @@ export function sliceGroups(
   return slices;
 }
 
+/** What to render for one flat list of fixed-height rows. */
+export interface FlatSlice {
+  /** Rows to render: `[from, to)`. */
+  from: number;
+  to: number;
+  /** Spacers standing in for the rows above `from` and below `to`. */
+  padTop: number;
+  padBottom: number;
+}
+
+/**
+ * The same geometry for a flat list — the flows table.
+ *
+ * Simpler than [`sliceGroups`] on purpose: with no sticky group headers there is
+ * nothing to keep in its own containing block, so one row height and one window
+ * describe the whole list. That is the entire reason the table can drop the
+ * per-group arithmetic.
+ *
+ * Before the viewport is measured this renders nothing rather than everything: a
+ * first frame that mounts 10,000 rows is the crash this module exists to
+ * prevent.
+ */
+export function sliceFlat(
+  count: number,
+  rowH: number,
+  scrollTop: number,
+  viewportH: number,
+  overscan: number,
+): FlatSlice {
+  const total = Math.max(0, count);
+  if (!(viewportH > 0) || !(rowH > 0)) {
+    return { from: 0, to: 0, padTop: 0, padBottom: total * Math.max(0, rowH) };
+  }
+  const margin = Math.max(0, overscan) * rowH;
+  const from = clamp(Math.floor((scrollTop - margin) / rowH), 0, total);
+  const to = clamp(Math.ceil((scrollTop + viewportH + margin) / rowH), from, total);
+  return { from, to, padTop: from * rowH, padBottom: (total - to) * rowH };
+}
+
 /** Rows actually rendered across every group — what the DOM node count follows. */
 export function renderedRows(slices: GroupSlice[]): number {
   return slices.reduce((n, s) => n + (s.to - s.from), 0);

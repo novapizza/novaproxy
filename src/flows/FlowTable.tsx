@@ -1,0 +1,152 @@
+import { memo, useLayoutEffect, useRef, useState } from "react";
+import type { Flow } from "../api";
+import { Icon, type IconName } from "../icons";
+import { sliceFlat } from "../virtual";
+import { COLUMNS, gridTemplate, minTableWidth, type ColumnId } from "./columns";
+
+/** Rows kept mounted beyond each viewport edge, to cover a fast flick. */
+const OVERSCAN = 10;
+
+/** First-frame estimate only; the real height is measured from the DOM. */
+const ROW_H_GUESS = 34;
+
+/**
+ * The flows table, windowed.
+ *
+ * Retention allows `MAX_FLOWS` rows and mounting them all is what killed the
+ * webview before `src/virtual.ts` existed. Rows here are one fixed height, which
+ * is what lets this use the flat `sliceFlat` geometry instead of the per-group
+ * arithmetic the old list needed for its sticky host headers.
+ *
+ * The header row and every body row share one `grid-template-columns`, taken
+ * from the column declarations — so a column that appears or disappears cannot
+ * leave the header describing tracks the body does not have.
+ */
+export function FlowTable({
+  flows,
+  columns,
+  selectedId,
+  select,
+  empty,
+  scrollRef,
+}: {
+  flows: Flow[];
+  columns: ColumnId[];
+  selectedId: string | null;
+  select: (id: string) => void;
+  empty: { icon: IconName; msg: string; hint: string } | null;
+  scrollRef?: React.RefObject<HTMLDivElement | null>;
+}) {
+  const ownRef = useRef<HTMLDivElement | null>(null);
+  const ref = scrollRef ?? ownRef;
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(0);
+  const [rowH, setRowH] = useState(ROW_H_GUESS);
+
+  // Measured in a layout effect so the very first paint is already windowed, and
+  // observed because a window resize changes how many rows fit.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const sync = () => {
+      setViewportH(el.clientHeight);
+      setScrollTop(el.scrollTop);
+    };
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+
+  const measure = (el: HTMLElement | null) => {
+    if (!el) return;
+    const h = el.getBoundingClientRect().height;
+    if (h > 0 && Math.abs(h - rowH) > 0.5) setRowH(h);
+  };
+
+  const slice = sliceFlat(flows.length, rowH, scrollTop, viewportH, OVERSCAN);
+  const template = gridTemplate(columns);
+  const minWidth = minTableWidth(columns);
+
+  return (
+    <div
+      className="ftable"
+      ref={ref}
+      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+      tabIndex={0}
+      role="grid"
+      aria-label="Captured flows"
+    >
+      <div className="ft-head" style={{ gridTemplateColumns: template, minWidth }}>
+        {columns.map((id) => (
+          <span key={id} className={COLUMNS[id].align === "right" ? "r" : undefined}>
+            {COLUMNS[id].label}
+          </span>
+        ))}
+      </div>
+
+      {empty ? (
+        <div className="list-empty">
+          <div className="icon"><Icon name={empty.icon} size={26} /></div>
+          <div className="big">{empty.msg}</div>
+          <div>{empty.hint}</div>
+        </div>
+      ) : (
+        <div className="ft-body" style={{ minWidth }}>
+          {slice.padTop > 0 && <div style={{ height: slice.padTop }} />}
+          {flows.slice(slice.from, slice.to).map((f, i) => (
+            <Row
+              key={f.id}
+              flow={f}
+              columns={columns}
+              template={template}
+              even={(slice.from + i) % 2 === 0}
+              selected={f.id === selectedId}
+              select={select}
+              measure={i === 0 ? measure : undefined}
+            />
+          ))}
+          {slice.padBottom > 0 && <div style={{ height: slice.padBottom }} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One row. Memoised: a snapshot for one flow must not re-render its neighbours. */
+const Row = memo(function Row({
+  flow,
+  columns,
+  template,
+  even,
+  selected,
+  select,
+  measure,
+}: {
+  flow: Flow;
+  columns: ColumnId[];
+  template: string;
+  even: boolean;
+  selected: boolean;
+  select: (id: string) => void;
+  measure?: (el: HTMLElement | null) => void;
+}) {
+  return (
+    <div
+      ref={measure}
+      role="row"
+      aria-selected={selected}
+      className={`ft-row ${even ? "even" : "odd"} ${selected ? "sel" : ""} ${
+        flow.status == null && flow.error == null ? "pending" : ""
+      }`}
+      style={{ gridTemplateColumns: template }}
+      onClick={() => select(flow.id)}
+    >
+      {columns.map((id) => (
+        <span key={id} className={`c-${id}${COLUMNS[id].align === "right" ? " r" : ""}`}>
+          {COLUMNS[id].cell(flow)}
+        </span>
+      ))}
+    </div>
+  );
+});

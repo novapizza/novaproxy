@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   Channel,
@@ -13,7 +13,6 @@ import {
   type TlsScope,
   type McpStatus,
   type HelperStatus,
-  type BodyPreview,
   type UpdateProgress,
 } from "./api";
 import {
@@ -25,41 +24,21 @@ import {
   updateSummary,
   type UpdateState,
 } from "./update";
-import { MAX_WS_FRAMES, useStore } from "./store";
+import { useStore } from "./store";
 import { exportSession, exportHar, importSession } from "./session";
-import {
-  distinctApps,
-  filterFlows,
-  FLOW_CHIPS,
-  type FlowChip,
-  mcpLabel,
-  toastDuration,
-} from "./filter";
+import { EMPTY_FILTER, toastDuration, type FlowFilter } from "./filter";
 import { Brandmark } from "./Brandmark";
 import { Dropdown, type DropdownItem } from "./Dropdown";
 import { Icon, type IconName } from "./icons";
-import {
-  flowStats,
-  formatRate,
-  sparkPath,
-  SPARK_WINDOW_MS,
-  throughputRate,
-  throughputSeries,
-} from "./stats";
-import { formatDuration, formatMs, timingBreakdown } from "./timing";
-import { sliceGroups } from "./virtual";
+import { formatRate, SPARK_WINDOW_MS, throughputRate, throughputSeries } from "./stats";
+import { methodClass } from "./badges";
+import { buildCurl, withRequestBody, type DetailTab } from "./inspector/Detail";
+import { FlowsSection } from "./flows/FlowsSection";
+import { DEFAULT_COLUMNS } from "./flows/columns";
 import { trustHint, trustLabel } from "./trust";
 import { launchDecision } from "./onboarding";
 import { Coachmark, OnboardingWizard, type CoachTarget } from "./Walkthrough";
-import {
-  clampListWidth,
-  DEFAULT_PREFS,
-  loadPrefs,
-  savePrefs,
-  MAX_LIST_WIDTH,
-  MIN_LIST_WIDTH,
-  type Prefs,
-} from "./prefs";
+import { loadPrefs, savePrefs, type Prefs } from "./prefs";
 
 /* ------------------------------- helpers ------------------------------- */
 
@@ -73,114 +52,8 @@ function formatBytes(n: number | bigint) {
   return `${(v / 1024 / 1024).toFixed(2)} MB`;
 }
 
-function formatAgo(ms: number) {
-  const s = Math.max(0, (Date.now() - ms) / 1000);
-  if (s < 1) return "just now";
-  if (s < 60) return `${Math.floor(s)}s ago`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  return `${Math.floor(s / 3600)}h ago`;
-}
-
-const KNOWN_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"];
-const methodClass = (m: string) => (KNOWN_METHODS.includes(m) ? `m-${m}` : "m-OTHER");
-
-function statusClass(status: number | null, error: string | null) {
-  if (error) return "s-err";
-  if (!status) return "s-pending";
-  const b = Math.floor(status / 100);
-  return b === 1 ? "s-1xx" : b === 2 ? "s-2xx" : b === 3 ? "s-3xx" : b === 4 ? "s-4xx" : "s-5xx";
-}
-
-const statusText = (status: number | null, error: string | null) => (error ? "ERR" : status ?? "···");
-
-function buildCurl(f: Flow): string {
-  let s = `curl -X ${f.method} '${f.url}'`;
-  for (const h of f.request_headers) s += ` \\\n  -H '${h.name}: ${h.value}'`;
-  if (f.request_body?.text) s += ` \\\n  --data '${f.request_body.text}'`;
-  return s;
-}
-
-/**
- * Whether a preview describes bytes the list is not holding: the metadata says
- * there is content, but neither the text nor the base64 came with it. The store
- * drops body bytes on ingest (see `withoutBodies`); the engine keeps them.
- */
-function bytesMissing(body: Flow["request_body"]): boolean {
-  return !!body && body.text == null && body.base64 == null && Number(body.size) > 0;
-}
-
-/** Put a flow's request body back, for the paths that need the bytes themselves. */
-async function withRequestBody(flow: Flow): Promise<Flow> {
-  const body = flow.request_body;
-  if (!bytesMissing(body)) return flow;
-  try {
-    return {
-      ...flow,
-      request_body: await api.readBody(flow.id, "request", body!.media_type, body!.decoded_from),
-    };
-  } catch {
-    return flow; // a cURL without its body still beats no cURL
-  }
-}
-
-/**
- * A body preview with its bytes, fetched when the list is not holding them.
- *
- * The fetched copy is tagged with the flow and side it belongs to, so switching
- * flows can never show one flow's body under another's headers while the next
- * fetch is in flight.
- */
-function useBodyBytes(
-  flowId: string,
-  side: "request" | "response",
-  body: Flow["request_body"],
-  onError?: (m: string) => void,
-) {
-  const [fetched, setFetched] = useState<{ key: string; body: BodyPreview } | null>(null);
-  const [loading, setLoading] = useState(false);
-  const key = `${flowId}:${side}`;
-  const current = fetched?.key === key ? fetched.body : null;
-  const missing = bytesMissing(body);
-
-  useEffect(() => {
-    if (!missing) return;
-    let alive = true;
-    setLoading(true);
-    api
-      .readBody(flowId, side, body!.media_type, body!.decoded_from)
-      .then((p) => alive && setFetched({ key, body: p }))
-      .catch((e) => alive && onError?.(String(e)))
-      .finally(() => alive && setLoading(false));
-    return () => {
-      alive = false;
-    };
-    // `key` covers flowId and side; the rest of `body` is metadata for the fetch.
-  }, [key, missing]);
-
-  return {
-    shown: current ?? body,
-    fetched: current,
-    loading,
-    put: (p: BodyPreview) => setFetched({ key, body: p }),
-    setLoading,
-  };
-}
-
-function bodyToText(body: Flow["request_body"]): string | null {
-  if (!body || body.text == null) return null;
-  const ct = (body.media_type ?? "").toLowerCase();
-  if (ct.includes("json")) {
-    try {
-      return JSON.stringify(JSON.parse(body.text), null, 2);
-    } catch {
-      return body.text;
-    }
-  }
-  return body.text;
-}
 
 type Section = "flows" | "rules" | "break" | "scripts" | "certs";
-type DetailTab = "overview" | "request" | "response" | "timing" | "curl" | "ws";
 
 const RAIL: { id: Section; icon: IconName; label: string }[] = [
   { id: "flows", icon: "activity", label: "Flows" },
@@ -234,15 +107,20 @@ export function App() {
   };
 
   const [section, setSection] = useState<Section>("flows");
-  const [query, setQuery] = useState("");
-  const [appFilter, setAppFilter] = useState("");
+  /**
+   * Everything narrowing the flows table, in one value — the tree's scope, the
+   * three chip groups and the search box. One state atom rather than five: they
+   * are read together on every capture frame, and a `Reset filters` that has to
+   * remember to clear five setters is a bug waiting to happen.
+   */
+  const [filter, setFilter] = useState<FlowFilter>(EMPTY_FILTER);
+  const patchFilter = (p: Partial<FlowFilter>) => setFilter((f) => ({ ...f, ...p }));
+  /** Follow the tail: keep the newest row selected as it lands. */
+  const [autoSelect, setAutoSelect] = useState(false);
+  const [columns] = useState(DEFAULT_COLUMNS);
   // Which slice of the capture the list shows, and (separately) whether
   // NovaProxy's own MCP/replay traffic is part of it.
-  const [chip, setChip] = useState<FlowChip>("all");
-  const [showInternal, setShowInternal] = useState(false);
-  const [groupByHost, setGroupByHost] = useState(prefs.flowGrouping === "grouped");
   const [detailTab, setDetailTab] = useState<DetailTab>("overview");
-  const [listWidth, setListWidth] = useState(prefs.flowListWidth);
 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
@@ -276,7 +154,14 @@ export function App() {
   // or open it on a step that is already done.
   const [statusProbed, setStatusProbed] = useState(false);
   const recBtnRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * Focus targets. The table anchors the walkthrough's second coachmark as well
+   * as taking focus for row navigation; the two inputs are what ⌘F and ⌘⇧F
+   * reach (issues/0003).
+   */
   const flowListRef = useRef<HTMLDivElement | null>(null);
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const treeFilterRef = useRef<HTMLInputElement | null>(null);
   const onboardingDecided = useRef(false);
 
   const saveNet = (next: NetworkConditions) => {
@@ -585,6 +470,9 @@ export function App() {
   }
 
   /* command palette */
+  /** True when the type group holds exactly the MCP chip — what the palette toggles. */
+  const mcpOnly = filter.type.size === 1 && filter.type.has("mcp");
+
   const commands: { id: string; icon: IconName; label: string; kbd?: string; run: () => void }[] = useMemo(
     () => [
       { id: "rec", icon: recording ? "circle-pause" : "circle-dot", label: recording ? "Pause capture" : "Resume capture", run: () => setRecording(!recording) },
@@ -595,14 +483,14 @@ export function App() {
       { id: "save", icon: "download", label: "Save session (.nova)", run: () => void doExportSession() },
       { id: "open", icon: "upload", label: "Open session (.nova)", run: () => void doImportSession() },
       { id: "har", icon: "file-down", label: "Export as HAR", run: () => void doExportHar() },
-      { id: "mcponly", icon: "plug", label: chip === "mcp" ? "Show all traffic (clear MCP filter)" : "Show only MCP traffic", run: () => { goChip(chip === "mcp" ? "all" : "mcp"); goSection("flows"); } },
+      { id: "mcponly", icon: "plug", label: mcpOnly ? "Show all traffic (clear MCP filter)" : "Show only MCP traffic", run: () => { patchFilter({ type: mcpOnly ? new Set() : new Set(["mcp"]) }); goSection("flows"); } },
       { id: "bp", icon: "circle-pause", label: "Arm breakpoint on next request", run: () => { armBreakpoint(true); goSection("break"); showToast("Breakpoint armed"); } },
       { id: "rules", icon: "git-branch", label: "Open Rules", run: () => goSection("rules") },
       { id: "scripts", icon: "braces", label: "Open Scripts", run: () => goSection("scripts") },
       { id: "certs", icon: "shield-check", label: "Open Certificate", run: () => goSection("certs") },
       { id: "walkthrough", icon: "play", label: "Show the getting-started walkthrough", run: () => { setSettingsOpen(false); setCoach(null); openOnboarding(); } },
     ],
-    [recording, proxy.running, proxy.system_proxy, chip, selected],
+    [recording, proxy.running, proxy.system_proxy, mcpOnly, selected],
   );
   const palFiltered = useMemo(() => {
     const q = paletteQuery.toLowerCase();
@@ -614,7 +502,6 @@ export function App() {
      fixed identifiers are ever passed; see `api.trackUi`. */
   const goSection = (id: Section) => { setSection(id); api.trackUi("ui.section", id); };
   const goDetailTab = (t: DetailTab) => { setDetailTab(t); api.trackUi("ui.detail_tab", t); };
-  const goChip = (c: FlowChip) => { setChip(c); api.trackUi("ui.flow.chip", c); };
   const openSettings = () => { setSettingsOpen(true); setRevealUpdates(false); api.trackUi("ui.settings.open"); };
   const openOnboarding = () => { setOnboardingOpen(true); api.trackUi("ui.onboarding", "open"); };
 
@@ -641,16 +528,18 @@ export function App() {
 
   const hostCount = useMemo(() => new Set(flows.map((f) => f.host)).size, [flows]);
 
-  // Distinct originating apps observed in captured traffic, for the app filter.
-  const apps = useMemo(() => distinctApps(flows), [flows]);
-  // A filter set from the palette (or from a flow that has since been evicted)
-  // may name an app no longer in the capture; keep it listed so the dropdown
-  // shows the filter that is actually in force.
-  const appFilterItems = useMemo(
-    () => (appFilter && !apps.includes(appFilter) ? [appFilter, ...apps] : apps)
-      .map((a) => ({ value: a, label: a, icon: "app-window" as const })),
-    [apps, appFilter],
+  /**
+   * Throughput for the status bar.
+   *
+   * Recomputed when the capture changes rather than on a timer: an idle proxy
+   * should not repaint this once a second forever. It lives in the status bar
+   * because the flows section spends its height on rows (design.md §3).
+   */
+  const throughput = useMemo(
+    () => formatRate(throughputRate(throughputSeries(flows, Date.now()), SPARK_WINDOW_MS)),
+    [flows],
   );
+
 
   return (
     <div className="nova">
@@ -696,20 +585,6 @@ export function App() {
               <Icon name="eraser" />
               Clear
             </div>
-            {section === "flows" && (
-              <Dropdown
-                className="dd-app"
-                label="Filter by app"
-                title="Show only requests from the selected app"
-                value={appFilter}
-                placeholder="All apps"
-                emptyLabel="No app captured yet"
-                items={appFilterItems}
-                onChange={setAppFilter}
-                clearLabel="All apps"
-                onClear={appFilter ? () => setAppFilter("") : undefined}
-              />
-            )}
             <div className="spacer" />
             <div className="cmd-btn" onClick={openPalette}>
               <Icon name="command" size={13} />
@@ -740,28 +615,22 @@ export function App() {
           {section === "flows" && (
             <FlowsSection
               flows={flows}
-              query={query}
-              setQuery={setQuery}
-              appFilter={appFilter}
-              chip={chip}
-              setChip={goChip}
-              showInternal={showInternal}
-              toggleInternal={() => setShowInternal((v) => !v)}
-              groupByHost={groupByHost}
-              toggleGroup={() => { setGroupByHost((v) => !v); api.trackUi("ui.flow.action", "group_toggle"); }}
+              filter={filter}
+              patch={patchFilter}
+              reset={() => setFilter(EMPTY_FILTER)}
+              columns={columns}
               recording={recording}
-              listRef={flowListRef}
               selected={selected}
               select={select}
               detailTab={detailTab}
               setDetailTab={goDetailTab}
-              listWidth={listWidth}
-              setListWidth={setListWidth}
-              commitListWidth={(w) => setPrefs({ ...prefs, flowListWidth: w })}
+              autoSelect={autoSelect}
               onResend={() => void resendSelected()}
               onCopyCurl={copyCurl}
-              openPalette={openPalette}
               showToast={showToast}
+              searchRef={searchRef}
+              treeFilterRef={treeFilterRef}
+              tableRef={flowListRef}
             />
           )}
           {section === "rules" && <RulesSection rules={rules} saveRules={saveRules} />}
@@ -789,7 +658,16 @@ export function App() {
           {!proxy.running ? "stopped" : recording ? "recording" : "paused"}
         </span>
         <span>{flows.length} flows · {hostCount} hosts</span>
+        <span
+          className={`autosel ${autoSelect ? "on" : ""}`}
+          title="Keep the newest row selected as it arrives"
+          onClick={() => setAutoSelect((v) => !v)}
+        >
+          <Icon name={autoSelect ? "circle-dot" : "circle"} size={11} />
+          Auto Select
+        </span>
         <span className="spacer" />
+        <span title="Throughput over the last minute">{throughput}</span>
         <span>upstream: direct</span>
         <span className={ca?.trusted ? "foot-ok" : "foot-warn"}>CA {ca?.trusted ? "trusted" : "not installed"}</span>
         <span>{proxy.running ? `${proxy.host}:${proxy.port}` : "127.0.0.1:9090"}</span>
@@ -909,826 +787,6 @@ export function App() {
 }
 
 /* ------------------------------ flows section ------------------------------ */
-
-function FlowsSection(props: {
-  flows: Flow[];
-  query: string;
-  setQuery: (q: string) => void;
-  appFilter: string;
-  chip: FlowChip;
-  setChip: (c: FlowChip) => void;
-  showInternal: boolean;
-  toggleInternal: () => void;
-  groupByHost: boolean;
-  toggleGroup: () => void;
-  recording: boolean;
-  /** Anchor for the walkthrough's second coachmark. */
-  listRef: React.RefObject<HTMLDivElement | null>;
-  selected: Flow | null;
-  select: (id: string | null) => void;
-  detailTab: DetailTab;
-  setDetailTab: (t: DetailTab) => void;
-  /** Live width of the flow list while dragging. */
-  listWidth: number;
-  setListWidth: (w: number) => void;
-  /** Called once at the end of a drag, so a drag writes one preference, not 200. */
-  commitListWidth: (w: number) => void;
-  onResend: () => void;
-  onCopyCurl: () => void;
-  openPalette: () => void;
-  showToast: (t: string) => void;
-}) {
-  const { flows, query, appFilter, chip, showInternal, groupByHost, selected, select } = props;
-  const splitRef = useRef<HTMLDivElement | null>(null);
-
-  const filtered = useMemo(
-    () =>
-      filterFlows(flows, query, {
-        app: appFilter,
-        chip,
-        includeInternal: showInternal,
-      }),
-    [flows, query, appFilter, chip, showInternal],
-  );
-
-  const stats = useMemo(() => flowStats(flows, filtered), [flows, filtered]);
-  // Recomputed whenever the capture changes rather than on a timer: an idle
-  // proxy should not repaint the sparkline once a second forever.
-  const spark = useMemo(() => {
-    const series = throughputSeries(flows, Date.now());
-    return { ...sparkPath(series, 220, 46), rate: throughputRate(series, SPARK_WINDOW_MS) };
-  }, [flows]);
-  // How much of the capture is NovaProxy's own doing, so the count can be
-  // surfaced rather than silently swallowed.
-  const internalCount = useMemo(() => flows.filter((f) => f.internal).length, [flows]);
-
-  const groups = useMemo(() => {
-    if (!groupByHost) {
-      return [{ key: "all", host: "", tls: false, showHeader: false, flows: filtered }];
-    }
-    const map = new Map<string, Flow[]>();
-    for (const f of filtered) {
-      if (!map.has(f.host)) map.set(f.host, []);
-      map.get(f.host)!.push(f);
-    }
-    return [...map.entries()].map(([host, fl]) => ({
-      key: host, host, tls: fl[0].scheme === "https", showHeader: true, flows: fl,
-    }));
-  }, [filtered, groupByHost]);
-
-  // An empty list has three causes, and they want three different sentences —
-  // telling someone to loosen a filter they never set is worse than saying
-  // nothing.
-  const filtering = query.trim() !== "" || chip !== "all" || appFilter !== "";
-  const empty: { icon: IconName; msg: string; hint: string } | null =
-    filtered.length > 0
-      ? null
-      : flows.length === 0
-      ? props.recording
-        ? { icon: "activity", msg: "Waiting for traffic…", hint: "Flows land here as your apps make requests." }
-        : { icon: "circle-pause", msg: "Recording paused", hint: "Press Recording in the toolbar to start capturing." }
-      : filtering
-      ? { icon: "search-x", msg: "No flows match", hint: `${flows.length} captured, none matching. Try a shorter filter.` }
-      : { icon: "search-x", msg: "Nothing to show", hint: "Every captured flow is hidden." };
-
-  /**
-   * Drag the divider. Pointer capture (rather than window listeners) is what
-   * keeps the drag alive when the cursor outruns the handle or leaves the
-   * window, and it releases itself if the pointer is lost.
-   */
-  const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const handle = splitRef.current;
-    const listEl = handle?.previousElementSibling as HTMLElement | null;
-    const detailEl = handle?.nextElementSibling as HTMLElement | null;
-    if (!handle || !listEl || !detailEl) return;
-    // Measure from the list's own edge, not the row's: the row is padded, so
-    // the two are not the same point and the cursor would drift off the handle.
-    const left = listEl.getBoundingClientRect().left;
-    // Never let the inspector be squeezed out of existence, however wide the
-    // list is allowed to be in isolation.
-    const roomForDetail =
-      detailEl.getBoundingClientRect().right - left - handle.offsetWidth - 360;
-    handle.setPointerCapture(e.pointerId);
-
-    const onMove = (ev: PointerEvent) =>
-      props.setListWidth(Math.min(clampListWidth(ev.clientX - left), Math.max(MIN_LIST_WIDTH, roomForDetail)));
-    const onUp = (ev: PointerEvent) => {
-      handle.removeEventListener("pointermove", onMove);
-      handle.removeEventListener("pointerup", onUp);
-      handle.removeEventListener("pointercancel", onUp);
-      handle.releasePointerCapture(ev.pointerId);
-      props.commitListWidth(Math.min(clampListWidth(ev.clientX - left), Math.max(MIN_LIST_WIDTH, roomForDetail)));
-    };
-    handle.addEventListener("pointermove", onMove);
-    handle.addEventListener("pointerup", onUp);
-    handle.addEventListener("pointercancel", onUp);
-  };
-
-  /** Keyboard resizing, so the divider is not mouse-only. */
-  const nudge = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const step = e.shiftKey ? 48 : 12;
-    const delta = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
-    if (!delta) return;
-    e.preventDefault();
-    const next = clampListWidth(props.listWidth + delta);
-    props.setListWidth(next);
-    props.commitListWidth(next);
-  };
-
-  return (
-    <div className="flows-wrap">
-      <div className="stat-row">
-        <div className="stat">
-          <div className="k"><span className="icon"><Icon name="list" size={15} /></span>Flows</div>
-          <div className="row">
-            <span className="v">{stats.visible}</span>
-            <span className="u">of {stats.total}</span>
-          </div>
-        </div>
-        <div className="stat green">
-          <div className="k"><span className="icon"><Icon name="gauge" size={15} /></span>Median</div>
-          <div className="row">
-            <span className="v">{stats.medianMs != null ? formatDuration(stats.medianMs) : "—"}</span>
-            <span className="u">ms</span>
-          </div>
-        </div>
-        <div className="stat red">
-          <div className="k"><span className="icon"><Icon name="triangle-alert" size={15} /></span>Failed</div>
-          <div className="row">
-            <span className="v">{stats.failed}</span>
-            <span className="u">4xx / 5xx</span>
-          </div>
-        </div>
-        <div className="stat violet">
-          <div className="k"><span className="icon"><Icon name="plug" size={15} /></span>MCP calls</div>
-          <div className="row">
-            <span className="v">{stats.mcp}</span>
-            <span className="u">tool traffic</span>
-          </div>
-        </div>
-        <div className="stat spark">
-          <div className="k">
-            <span>Throughput</span>
-            <span className="rate">{formatRate(spark.rate)}</span>
-          </div>
-          <svg viewBox="0 0 220 46" preserveAspectRatio="none" aria-hidden>
-            <defs>
-              <linearGradient id="npSpark" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.32" />
-                <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
-              </linearGradient>
-            </defs>
-            <path d={spark.area} fill="url(#npSpark)" />
-            <path
-              d={spark.line}
-              fill="none"
-              stroke="var(--accent)"
-              strokeWidth={2}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            <circle cx={spark.last.x} cy={spark.last.y} r={3.5} fill="var(--accent)" />
-          </svg>
-        </div>
-      </div>
-
-      <div className="flows">
-      <div ref={props.listRef} className="flow-list" style={{ width: props.listWidth }}>
-        <div className="flow-list-head">
-          <div className="search">
-            <span className="mag"><Icon name="search" /></span>
-            <input
-              value={query}
-              onChange={(e) => props.setQuery(e.target.value)}
-              placeholder="host, path, method:GET, status:401…"
-            />
-            {query && (
-              <span className="clear" title="Clear filter" onClick={() => props.setQuery("")}>
-                <Icon name="x" />
-              </span>
-            )}
-          </div>
-          <div className="chip-row">
-            {FLOW_CHIPS.map((c) => (
-              <div
-                key={c.id}
-                className={`fchip ${chip === c.id ? "on" : ""}`}
-                onClick={() => props.setChip(c.id)}
-              >
-                {c.label}
-              </div>
-            ))}
-          </div>
-          <div className="fl-meta">
-            <span>{filtered.length} flow{filtered.length === 1 ? "" : "s"}</span>
-            <span className="spacer" />
-            {internalCount > 0 && (
-              <span
-                className="grouptog"
-                title="NovaProxy's own MCP endpoint calls and replays"
-                onClick={props.toggleInternal}
-              >
-                <Icon name={showInternal ? "circle-dot" : "circle"} size={12} />
-                {internalCount} own
-              </span>
-            )}
-            <span className="grouptog" onClick={props.toggleGroup}>
-              <Icon name={groupByHost ? "chevron-down" : "list"} size={12} />
-              {groupByHost ? "grouped" : "flat"}
-            </span>
-          </div>
-        </div>
-        <FlowList
-          groups={groups}
-          selectedId={selected?.id ?? null}
-          select={select}
-          empty={empty}
-        />
-      </div>
-
-      <div
-        ref={splitRef}
-        className="splitter"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize the flow list"
-        aria-valuenow={props.listWidth}
-        aria-valuemin={MIN_LIST_WIDTH}
-        aria-valuemax={MAX_LIST_WIDTH}
-        tabIndex={0}
-        onPointerDown={startDrag}
-        onKeyDown={nudge}
-        onDoubleClick={() => {
-          props.setListWidth(DEFAULT_PREFS.flowListWidth);
-          props.commitListWidth(DEFAULT_PREFS.flowListWidth);
-        }}
-      >
-        <span className="grip" />
-      </div>
-
-      <div className="detail">
-        {!selected ? (
-          <div className="detail-empty">
-            <div className="glyph"><Icon name="activity" size={21} /></div>
-            <div className="big">Select a flow to inspect</div>
-            <div className="hint">or press <span className="kbd">⌘K</span> for commands</div>
-          </div>
-        ) : (
-          <Detail
-            flow={selected}
-            tab={props.detailTab}
-            setTab={props.setDetailTab}
-            onResend={props.onResend}
-            onCopyCurl={props.onCopyCurl}
-            showToast={props.showToast}
-          />
-        )}
-      </div>
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------ windowed list ------------------------------ */
-
-/** One host's flows, or all of them when the list is flat. */
-interface FlowGroup {
-  key: string;
-  host: string;
-  tls: boolean;
-  showHeader: boolean;
-  flows: Flow[];
-}
-
-/** Rows kept rendered beyond each viewport edge, so a fast flick stays covered. */
-const OVERSCAN = 8;
-/** First-frame estimates only — the real heights are measured from the DOM. */
-const ROW_H_GUESS = 54;
-const HEADER_H_GUESS = 33;
-
-/**
- * The flow list, windowed.
- *
- * Retention allows `MAX_FLOWS` rows, and rendering them all put well over a
- * hundred thousand nodes in the webview: scrolling stuttered, every snapshot
- * walked the lot, and a long recording session ended with the renderer dying and
- * the UI reloading itself. Only the rows overlapping the viewport are mounted
- * now; `sliceGroups` holds the rest open with spacers so the scrollbar and the
- * host headers behave exactly as they did.
- */
-function FlowList({
-  groups,
-  selectedId,
-  select,
-  empty,
-}: {
-  groups: FlowGroup[];
-  selectedId: string | null;
-  select: (id: string) => void;
-  empty: { icon: IconName; msg: string; hint: string } | null;
-}) {
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [viewportH, setViewportH] = useState(0);
-  const [rowH, setRowH] = useState(ROW_H_GUESS);
-  const [headerH, setHeaderH] = useState(HEADER_H_GUESS);
-
-  // Measure the viewport in a layout effect, so the first paint is already
-  // windowed, and observe it: a window resize or a divider drag changes how many
-  // rows fit.
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const sync = () => {
-      setViewportH(el.clientHeight);
-      setScrollTop(el.scrollTop);
-    };
-    sync();
-    const ro = new ResizeObserver(sync);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  /**
-   * Row and header heights are read from the DOM rather than hard-coded: they
-   * follow the font, and a window whose arithmetic disagrees with the layout
-   * drifts. The fractional rect height is what makes the spacers add up exactly.
-   */
-  const measure = (current: number, set: (h: number) => void) => (el: HTMLElement | null) => {
-    if (!el) return;
-    const h = el.getBoundingClientRect().height;
-    if (h > 0 && Math.abs(h - current) > 0.5) set(h);
-  };
-
-  const hasHeaders = groups.length > 0 && groups[0].showHeader;
-  const slices = sliceGroups(
-    groups.map((g) => g.flows.length),
-    { rowH, headerH: hasHeaders ? headerH : 0, overscan: OVERSCAN },
-    scrollTop,
-    viewportH,
-  );
-  // Measure against the first group that is actually on screen.
-  const firstOnScreen = slices.findIndex((s) => s.onScreen);
-
-  return (
-    <div
-      className="flow-scroll"
-      ref={scrollRef}
-      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
-    >
-      {empty && (
-        <div className="list-empty">
-          <div className="icon"><Icon name={empty.icon} size={26} /></div>
-          <div className="big">{empty.msg}</div>
-          <div>{empty.hint}</div>
-        </div>
-      )}
-      {groups.map((g, gi) => {
-        const s = slices[gi];
-        // An off-screen group is one spacer: no header, no rows, no cost.
-        if (!s.onScreen) return <div key={g.key} style={{ height: s.height }} />;
-        return (
-          <div key={g.key}>
-            {g.showHeader && (
-              <div
-                className="group-head"
-                ref={gi === firstOnScreen ? measure(headerH, setHeaderH) : undefined}
-              >
-                <span className="hdot" />
-                <span className="hname">{g.host}</span>
-                {g.tls && <span className="tls-chip">TLS</span>}
-                <span className="spacer" />
-                <span className="hcount">{g.flows.length}</span>
-              </div>
-            )}
-            {s.padTop > 0 && <div style={{ height: s.padTop }} />}
-            {g.flows.slice(s.from, s.to).map((f, i) => (
-              <FlowRow
-                key={f.id}
-                flow={f}
-                selected={f.id === selectedId}
-                select={select}
-                measure={gi === firstOnScreen && i === 0 ? measure(rowH, setRowH) : undefined}
-              />
-            ))}
-            {s.padBottom > 0 && <div style={{ height: s.padBottom }} />}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/** One row. Memoised: a snapshot for one flow must not re-render its neighbours. */
-const FlowRow = memo(function FlowRow({
-  flow: f,
-  selected,
-  select,
-  measure,
-}: {
-  flow: Flow;
-  selected: boolean;
-  select: (id: string) => void;
-  measure?: (el: HTMLElement | null) => void;
-}) {
-  return (
-    <button
-      ref={measure}
-      className={`flow-row ${selected ? "sel" : ""}`}
-      onClick={() => select(f.id)}
-    >
-      <span className={`badge ${methodClass(f.method)}`}>{f.method}</span>
-      <span className="col">
-        <div className="fpath">{f.mcp ? <span className="fmcp">{mcpLabel(f)}</span> : f.path}</div>
-        <div className="fsub">
-          {f.mapped_from && <span className="fmap" title={`mapped from ${f.mapped_from}`}><Icon name="git-branch" size={11} /></span>}
-          {f.host}
-          {f.mcp && <span className="fdim"> · {f.path}</span>}
-          {f.resent && <span className="fresent"> · resent</span>}
-          {f.internal && <span className="fdim"> · NovaProxy</span>}
-        </div>
-      </span>
-      <span className="fright">
-        <div className={`fstatus ${statusClass(f.status, f.error)}`}>
-          {statusText(f.status, f.error)}
-        </div>
-        <div className="ftime">{f.duration_ms != null ? formatMs(f.duration_ms) : "—"}</div>
-      </span>
-    </button>
-  );
-});
-
-const DETAIL_TABS: { id: DetailTab; label: string }[] = [
-  { id: "overview", label: "Overview" },
-  { id: "request", label: "Request" },
-  { id: "response", label: "Response" },
-  { id: "timing", label: "Timing" },
-  { id: "curl", label: "cURL" },
-];
-
-function Detail({
-  flow, tab, setTab, onResend, onCopyCurl, showToast,
-}: {
-  flow: Flow;
-  tab: DetailTab;
-  setTab: (t: DetailTab) => void;
-  onResend: () => void;
-  onCopyCurl: () => void;
-  showToast: (t: string) => void;
-}) {
-  const wsMessages = useStore((s) => s.wsMessages[flow.id]);
-  const wsDropped = useStore((s) => s.wsDropped[flow.id] ?? 0);
-  const tabs = flow.is_websocket
-    ? [...DETAIL_TABS, { id: "ws" as DetailTab, label: `WebSocket${wsMessages ? ` (${wsMessages.length})` : ""}` }]
-    : DETAIL_TABS;
-  const totalSize = num(flow.request_size) + num(flow.response_size);
-  const facts = [
-    { k: "Method", v: flow.method },
-    { k: "Status", v: flow.error ? "error" : String(flow.status ?? "pending") },
-    { k: "Protocol", v: flow.http_version },
-    { k: "Scheme", v: flow.scheme.toUpperCase() },
-    { k: "Remote host", v: flow.host },
-    { k: "App", v: flow.process ? `${flow.process}${flow.pid != null ? ` (${flow.pid})` : ""}` : "—" },
-    { k: "Duration", v: flow.duration_ms != null ? `${formatDuration(flow.duration_ms)} ms` : "—" },
-    { k: "Size", v: formatBytes(totalSize) },
-    { k: "Started", v: formatAgo(flow.started_at) },
-  ];
-
-  return (
-    <>
-      <div className="detail-head">
-        <div className="detail-url">
-          <span className={`badge ${methodClass(flow.method)}`}>{flow.method}</span>
-          <span className="u">{flow.url}</span>
-          <span className={`status-pill ${statusClass(flow.status, flow.error)}`}>{statusText(flow.status, flow.error)}</span>
-          <div className="resend" onClick={onResend}>
-            <Icon name="repeat" size={13} />
-            Resend
-          </div>
-        </div>
-        <div className="detail-tabs">
-          {tabs.map((t) => (
-            <div key={t.id} className={`dtab ${tab === t.id ? "active" : ""}`} onClick={() => setTab(t.id)}>{t.label}</div>
-          ))}
-        </div>
-      </div>
-
-      <div className="detail-body">
-        {tab === "overview" && (
-          <>
-            <div className="fact-grid">
-              {facts.map((f) => (
-                <div className="fact" key={f.k}>
-                  <div className="k">{f.k}</div>
-                  <div className="v">{f.v}</div>
-                </div>
-              ))}
-            </div>
-            {flow.mcp && (
-              <div className="fact-grid">
-                <div className="fact"><div className="k">MCP method</div><div className="v">{flow.mcp.method ?? "—"}</div></div>
-                <div className="fact"><div className="k">MCP tool</div><div className="v">{flow.mcp.tool ?? "—"}</div></div>
-                <div className="fact"><div className="k">JSON-RPC id</div><div className="v">{flow.mcp.id ?? "notification"}</div></div>
-                <div className="fact"><div className="k">Transport</div><div className="v">{flow.mcp.transport === "Sse" ? "SSE" : "HTTP"}</div></div>
-              </div>
-            )}
-            <div className="chips">
-              {flow.scheme === "https" ? (
-                <span className="chip green"><Icon name="lock" size={12} /> TLS · decrypted</span>
-              ) : (
-                <span className="chip blue">plaintext</span>
-              )}
-              <span className="chip blue">{flow.http_version}</span>
-              {flow.is_websocket && <span className="chip cyan"><Icon name="activity" size={12} /> WebSocket</span>}
-              {flow.tunneled && <span className="chip amber"><Icon name="arrow-up-down" size={12} /> tunneled · not decrypted</span>}
-              {flow.mapped_from && <span className="chip violet"><Icon name="git-branch" size={12} /> mapped from {flow.mapped_from}</span>}
-              {flow.mcp && <span className="chip violet"><Icon name="plug" size={12} /> MCP · {mcpLabel(flow)}</span>}
-              {flow.internal && <span className="chip amber">NovaProxy's own traffic</span>}
-              {flow.resent && <span className="chip cyan"><Icon name="repeat" size={12} /> resent</span>}
-              {flow.error && <span className="chip red"><Icon name="triangle-alert" size={12} /> {flow.error}</span>}
-            </div>
-          </>
-        )}
-
-        {tab === "request" && (
-          <>
-            <div className="sec-label">Request headers</div>
-            {flow.request_headers.length === 0 ? (
-              <div className="hlist-empty">— no headers —</div>
-            ) : (
-              <div className="hlist">
-                {flow.request_headers.map((h, i) => (
-                  <div className="hrow" key={i}><span className="hk">{h.name}</span><span className="hv">{h.value}</span></div>
-                ))}
-              </div>
-            )}
-            <div className="sec-label">Body</div>
-            <BodyBlock body={flow.request_body} kind="req" flowId={flow.id} showToast={showToast} />
-          </>
-        )}
-
-        {tab === "response" && (
-          <>
-            <div className="sec-label">Response headers</div>
-            {flow.response_headers.length === 0 ? (
-              <div className="hlist-empty">— no headers —</div>
-            ) : (
-              <div className="hlist">
-                {flow.response_headers.map((h, i) => (
-                  <div className="hrow" key={i}><span className="hk">{h.name}</span><span className="hv">{h.value}</span></div>
-                ))}
-              </div>
-            )}
-            <div className="sec-label meta">
-              Body
-              <span className="metaval">{(flow.content_type ?? "—")} · {formatBytes(flow.response_size)}</span>
-            </div>
-            <BodyBlock body={flow.response_body} kind="res" status={flow.status} flowId={flow.id} showToast={showToast} />
-          </>
-        )}
-
-        {tab === "timing" && <TimingPanel flow={flow} />}
-
-        {tab === "curl" && <CurlPanel flow={flow} onCopy={onCopyCurl} showToast={showToast} />}
-
-        {tab === "ws" && <WsPanel key={flow.id} messages={wsMessages} dropped={wsDropped} />}
-      </div>
-    </>
-  );
-}
-
-/**
- * Waterfall of the phases the engine actually measured. Every bar here comes
- * from an instrumented timer — phases that did not happen (no DNS lookup for an
- * IP literal, no handshake on plain HTTP) or could not be attributed (a reused
- * connection) are stated as such instead of being drawn.
- */
-function TimingPanel({ flow }: { flow: Flow }) {
-  const b = timingBreakdown(flow);
-
-  if (b.empty) {
-    return (
-      <div className="timing">
-        <div className="timing-note">
-          No timing was measured for this flow.
-          {flow.tunneled
-            ? " It was tunneled without decryption, so only the CONNECT is visible."
-            : flow.state === "Started"
-            ? " It is still in flight."
-            : " Rule-served and imported flows carry no measurements."}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="timing">
-      {b.phases.map((p) => (
-        <div className="timing-row" key={p.key}>
-          <span className="tl">{p.label}</span>
-          <div className="timing-bar">
-            <span
-              style={{
-                left: `${(p.startMs / b.spanMs) * 100}%`,
-                // Keep a hairline visible for phases that rounded to ~0ms.
-                width: `${Math.max((p.ms / b.spanMs) * 100, 0.5)}%`,
-                background: p.color,
-              }}
-            />
-          </div>
-          <span className="tv">{formatMs(p.ms)}</span>
-        </div>
-      ))}
-
-      {b.reused && (
-        <div className="timing-note">
-          Reused an open connection — no DNS, connect or TLS cost belongs to this request.
-        </div>
-      )}
-      {b.requestMs != null && (
-        <div className="timing-note">
-          Request body streamed upstream in {formatMs(b.requestMs)} ({formatBytes(flow.request_size)}).
-        </div>
-      )}
-
-      <div className="timing-total">
-        <span>Total</span>
-        <span className="mono">{b.totalMs != null ? formatMs(b.totalMs) : "in flight"}</span>
-      </div>
-      <div className="timing-total">
-        <span>Transferred</span>
-        <span className="mono">{formatBytes(num(flow.request_size) + num(flow.response_size))}</span>
-      </div>
-      <div className="timing-total">
-        <span>Started</span>
-        <span className="mono">{formatAgo(flow.started_at)}</span>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Frames rendered at once. A busy socket fills its retention window in seconds,
- * and every frame is a DOM row — the rest stay one click away rather than being
- * mounted where nobody is looking.
- */
-const WS_PAGE = 400;
-
-function WsPanel({ messages, dropped }: { messages: WsMessage[] | undefined; dropped: number }) {
-  const [showAll, setShowAll] = useState(false);
-  if (!messages || messages.length === 0) {
-    return <pre className="code res">— no WebSocket frames captured yet —</pre>;
-  }
-  // Newest frames are the ones being read, so the window is the tail.
-  const visible = showAll ? messages : messages.slice(Math.max(0, messages.length - WS_PAGE));
-  const earlier = messages.length - visible.length;
-  return (
-    <>
-      {(dropped > 0 || earlier > 0) && (
-        <div className="ws-note">
-          {dropped > 0 && (
-            <span>
-              {dropped.toLocaleString()} earlier frame{dropped === 1 ? "" : "s"} dropped at the{" "}
-              {MAX_WS_FRAMES.toLocaleString()}-frame cap.
-            </span>
-          )}
-          {earlier > 0 && (
-            <span className="ws-more" onClick={() => setShowAll(true)}>
-              Show {earlier.toLocaleString()} earlier retained frame{earlier === 1 ? "" : "s"}
-            </span>
-          )}
-        </div>
-      )}
-      <div className="ws-log">
-      {visible.map((m) => {
-        const sent = m.direction === "Sent";
-        const label = m.opcode.toLowerCase();
-        const payload =
-          m.text != null
-            ? m.text
-            : m.base64 != null
-            ? `[binary ${formatBytes(m.size)}]`
-            : m.opcode === "Close"
-            ? "(closed)"
-            : "";
-        return (
-          <div className={`ws-frame ${sent ? "sent" : "recv"}`} key={m.flow_id + "-" + String(m.seq)}>
-            <span className={`ws-dir ${sent ? "sent" : "recv"}`}>
-              <Icon name={sent ? "arrow-up" : "arrow-down"} size={11} />
-              {sent ? "sent" : "recv"}
-            </span>
-            <span className="ws-op">{label}</span>
-            <span className="ws-payload">{payload}{m.truncated ? " …(truncated)" : ""}</span>
-            <span className="ws-meta">{formatBytes(m.size)} · {formatAgo(m.at)}</span>
-          </div>
-        );
-      })}
-      </div>
-    </>
-  );
-}
-
-/**
- * The cURL tab. Its own component so the request body is fetched when the tab is
- * actually open, rather than on every flow selection.
- */
-function CurlPanel({
-  flow,
-  onCopy,
-  showToast,
-}: {
-  flow: Flow;
-  onCopy: () => void;
-  showToast: (t: string) => void;
-}) {
-  const { shown, loading, fetched } = useBodyBytes(flow.id, "request", flow.request_body, showToast);
-  return (
-    <>
-      <div className="sec-label meta">
-        Export as cURL
-        <span className="copy" onClick={onCopy}>Copy</span>
-      </div>
-      <pre className="code curl">
-        {buildCurl(loading && !fetched ? flow : { ...flow, request_body: shown })}
-      </pre>
-    </>
-  );
-}
-
-function BodyBlock({
-  body, kind, status, flowId, showToast,
-}: {
-  body: Flow["request_body"];
-  kind: "req" | "res";
-  status?: number | null;
-  flowId: string;
-  showToast?: (t: string) => void;
-}) {
-  // Bodies are not held in the list. The bytes of the one on screen are fetched
-  // here — from the on-disk store when the body was too large to preview in
-  // full, otherwise from the flow the engine retains.
-  const side = kind === "req" ? "request" : "response";
-  const { shown, fetched: full, loading, put, setLoading } = useBodyBytes(flowId, side, body, showToast);
-
-  if (!shown) {
-    return <pre className={`code ${kind}`}>{status === 204 ? "— no content (204) —" : "— no body —"}</pre>;
-  }
-  if (loading && !full) {
-    return <pre className={`code ${kind}`}>Loading body ({formatBytes(shown.size)})…</pre>;
-  }
-
-  async function loadFull() {
-    if (!body) return;
-    setLoading(true);
-    try {
-      put(await api.readBody(flowId, side, body.media_type, body.decoded_from));
-    } catch (e) {
-      showToast?.(String(e));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  const loadMore =
-    body?.spilled && !full ? (
-      <div className="body-more" onClick={() => !loading && loadFull()}>
-        {loading ? "Loading…" : `Load full body (${formatBytes(body.size)})`}
-      </div>
-    ) : null;
-
-  const ct = (shown.media_type ?? "").toLowerCase();
-  if (shown.base64 && ct.startsWith("image/")) {
-    return (
-      <div className={`code ${kind}`}>
-        <img src={`data:${shown.media_type};base64,${shown.base64}`} alt="body preview" />
-        {loadMore}
-      </div>
-    );
-  }
-  if (shown.base64) {
-    return (
-      <>
-        <pre className={`code ${kind}`}>Binary body — {formatBytes(shown.size)} ({shown.media_type ?? "unknown"}){shown.truncated ? ", truncated" : ""}</pre>
-        {loadMore}
-      </>
-    );
-  }
-  const text = bodyToText(shown);
-  return (
-    <>
-      <pre className={`code ${kind}`}>
-        {text ?? "— empty body —"}
-        {shown.truncated
-          ? shown.spilled && !full
-            ? "\n… preview truncated — the full body is stored on disk"
-            : "\n… truncated at the capture cap"
-          : ""}
-      </pre>
-      {loadMore}
-    </>
-  );
-}
 
 /* ------------------------------ rules section ------------------------------ */
 
