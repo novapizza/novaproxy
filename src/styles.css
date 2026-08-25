@@ -1237,6 +1237,7 @@ input, textarea, select { font-family: inherit; }
   border-left: 2px solid transparent; border-bottom: 1px solid var(--bsoft);
   /* No entry animation: rows mount as they scroll into view (design.md §7). */
 }
+.ft-row.even { background: rgba(255,255,255,.72); }
 .ft-row.odd { background: var(--row-alt); }
 .ft-row:hover { background: var(--hover); }
 .ft-row.sel { border-left-color: var(--accent); background: rgba(62,181,109,.11); }
@@ -1297,3 +1298,99 @@ input, textarea, select { font-family: inherit; }
 }
 .statusbar .autosel:hover { color: var(--text2); }
 .statusbar .autosel.on { color: var(--accent); }
+
+
+/* --------------------------- summary bar + panes -------------------------- */
+
+/* The inspector's head. Stated once here so the two panes below can be nothing
+   but tabs and bodies (design.md §4.1). */
+.summary-bar {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  height: 38px; padding: 0 16px;
+  background: rgba(255,255,255,.8);
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+}
+.summary-bar .url {
+  font: 400 12px var(--font-mono); color: var(--text2);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.summary-bar .url .scheme { color: var(--faint); }
+.summary-bar .url .host { color: var(--text); font-weight: 500; }
+.summary-bar .none { font: 400 12px var(--font-ui); color: var(--faint); }
+.summary-bar .rows { flex: none; font: 400 11.5px var(--font-mono); color: var(--faint); }
+.summary-bar .act {
+  flex: none; display: flex; align-items: center; gap: 5px;
+  padding: 4px 10px; border-radius: var(--r-pill);
+  border: 1px solid var(--border2); font: 500 11.5px var(--font-ui); color: var(--text2);
+  cursor: pointer;
+}
+.summary-bar .act:hover { border-color: var(--accent); color: var(--accent-hover); }
+
+.insp { flex: 1; display: flex; min-height: 0; }
+.insp-pane {
+  flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  border-right: 1px solid var(--border);
+}
+.insp-pane:last-child { border-right: none; }
+/* A collapsed pane keeps its head — the tabs are how you get it back. */
+.insp-pane.collapsed { flex: none; }
+
+.insp-head {
+  flex: none; display: flex; align-items: center; gap: 12px;
+  padding: 8px 14px; background: rgba(243,243,248,.7);
+  border-bottom: 1px solid var(--border);
+}
+.insp-head .title { flex: none; font: 600 12.5px var(--font-ui); color: var(--text); }
+.insp-head .tabs { flex: none; display: flex; gap: 10px; }
+.insp-head .meta {
+  min-width: 0; flex: 0 1 auto; text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 400 11px var(--font-mono); color: var(--faint);
+}
+.insp-head .collapse { flex: none; display: flex; color: var(--faint); cursor: pointer; }
+.insp-head .collapse:hover { color: var(--text2); }
+
+.itab {
+  flex: none; font: 500 12px var(--font-ui); color: var(--muted); cursor: pointer;
+  padding-bottom: 1px; border-bottom: 2px solid transparent;
+}
+.itab:hover { color: var(--text2); }
+.itab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+.insp-body { flex: 1; overflow: auto; min-height: 0; padding: 12px 14px 20px; }
+
+/* ------------------------------ key/value grid ---------------------------- */
+
+.kv { display: flex; flex-direction: column; }
+.kv-head, .kv-row { display: grid; grid-template-columns: 176px minmax(0, 1fr); gap: 10px; }
+.kv-head {
+  padding: 0 2px 8px;
+  font: 600 10.5px var(--font-ui); letter-spacing: .08em; text-transform: uppercase; color: var(--faint);
+  border-bottom: 1px solid var(--border);
+}
+.kv-row { padding: 7px 2px; border-bottom: 1px solid var(--bsoft); }
+.kv-row .k { font: 400 11.5px var(--font-mono); color: var(--muted); word-break: break-all; }
+.kv-row .v { font: 400 11.5px var(--font-mono); color: var(--text); word-break: break-all; }
+.kv-empty { font: 400 12px var(--font-mono); color: var(--faint); padding: 4px 2px; }
+
+/* Raw is reconstructed, and says so rather than implying wire fidelity. */
+.raw-note {
+  font: 400 10.5px var(--font-ui); color: var(--c-amber);
+  background: rgba(192,138,74,.08); border-radius: var(--r-tag);
+  padding: 6px 9px; margin-bottom: 10px;
+}
+
+/* -------------------------------- json tree ------------------------------- */
+
+.jtree { font: 400 11.5px var(--font-mono); }
+.jrow { display: flex; align-items: baseline; gap: 6px; padding: 1px 0; white-space: pre-wrap; word-break: break-all; }
+.jrow.branch { cursor: pointer; }
+.jrow.branch:hover { background: var(--hover); }
+.jtwist { flex: none; width: 10px; color: var(--faint); }
+.jkey { color: var(--muted); }
+.jkey::after { content: ":"; color: var(--faint); }
+.jbracket { color: var(--faint); }
+.jval.string { color: var(--accent); }
+.jval.number { color: var(--c-indigo); }
+.jval.boolean { color: var(--c-violet); }
+.jval.null { color: var(--faint); }

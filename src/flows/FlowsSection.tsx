@@ -3,7 +3,9 @@ import type { Flow } from "../api";
 import type { IconName } from "../icons";
 import { applyFilter, isFiltering, type FlowFilter } from "../filter";
 import { buildScopeTree, type Scope } from "../scope";
-import { Detail, type DetailTab } from "../inspector/Detail";
+import { Inspector } from "../inspector/Inspector";
+import { methodClass, statusClass, statusText } from "../badges";
+import { Icon } from "../icons";
 import { ScopeTree } from "./ScopeTree";
 import { FilterBar } from "./FilterBar";
 import { FlowTable } from "./FlowTable";
@@ -26,8 +28,6 @@ export function FlowsSection(props: {
   recording: boolean;
   selected: Flow | null;
   select: (id: string | null) => void;
-  detailTab: DetailTab;
-  setDetailTab: (t: DetailTab) => void;
   /** Follow the tail: keep the newest row selected as it arrives. */
   autoSelect: boolean;
   onResend: () => void;
@@ -111,24 +111,50 @@ export function FlowsSection(props: {
           scrollRef={props.tableRef}
         />
 
+        {/* The summary bar is the inspector's head: the panes below carry tabs
+            and bodies only, so the URL is stated once (design.md §4.1). */}
+        <div className="summary-bar">
+          {selected ? (
+            <>
+              <span className={`badge ${methodClass(selected.method)}`}>{selected.method}</span>
+              <span className={`status-pill ${statusClass(selected.status, selected.error)}`}>
+                {statusText(selected.status, selected.error)}
+              </span>
+              <span className="url" title={selected.url}>
+                <span className="scheme">{selected.scheme}://</span>
+                <span className="host">{selected.host}</span>
+                {selected.url.slice(selected.url.indexOf(selected.host) + selected.host.length)}
+              </span>
+              <span className="spacer" />
+              <span className="act" onClick={props.onResend}>
+                <Icon name="repeat" size={12} /> Resend
+              </span>
+              <span className="act" onClick={props.onCopyCurl}>
+                <Icon name="copy" size={12} /> cURL
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="none">No row selected</span>
+              <span className="spacer" />
+            </>
+          )}
+          <span className="rows">
+            {filtered.length} row{filtered.length === 1 ? "" : "s"}
+            {selected ? " · 1 selected" : ""}
+          </span>
+        </div>
+
         <div className="insp-strip">
-          {!selected ? (
+          {selected ? (
+            <Inspector flow={selected} showToast={props.showToast} />
+          ) : (
             <div className="detail-empty">
               <div className="big">Select a flow to inspect</div>
               <div className="hint">
-                {filtered.length} row{filtered.length === 1 ? "" : "s"} · press{" "}
-                <span className="kbd">⌘P</span> for commands
+                click a row, or press <span className="kbd">⌘K</span> for commands
               </div>
             </div>
-          ) : (
-            <Detail
-              flow={selected}
-              tab={props.detailTab}
-              setTab={props.setDetailTab}
-              onResend={props.onResend}
-              onCopyCurl={props.onCopyCurl}
-              showToast={props.showToast}
-            />
           )}
         </div>
       </div>

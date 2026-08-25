@@ -1,0 +1,15 @@
+<!doctype html>
+<!--
+  Dev-only visual harness for the Flows section (src/preview.tsx).
+
+  Vite builds `index.html` only, so this is never bundled into the app. It exists
+  because the section is dense enough that typechecking proves nothing about it:
+  open http://127.0.0.1:5173/preview.html while `npm run dev` is up, or
+  screenshot it headless, and every row state, panel and empty state is on screen
+  without needing a proxy, a CA or live traffic.
+
+    ?rev=1     newest-last, so the odd row states are above the fold
+    ?panels=1  every inspector panel at once
+-->
+<html><head><meta charset="utf-8"><title>NovaProxy preview</title></head>
+<body><div id="root"></div><script type="module" src="/src/preview.tsx"></script></body></html>

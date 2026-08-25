@@ -32,7 +32,7 @@ import { Dropdown, type DropdownItem } from "./Dropdown";
 import { Icon, type IconName } from "./icons";
 import { formatRate, SPARK_WINDOW_MS, throughputRate, throughputSeries } from "./stats";
 import { methodClass } from "./badges";
-import { buildCurl, withRequestBody, type DetailTab } from "./inspector/Detail";
+import { buildCurl, withRequestBody } from "./inspector/curl";
 import { FlowsSection } from "./flows/FlowsSection";
 import { DEFAULT_COLUMNS } from "./flows/columns";
 import { trustHint, trustLabel } from "./trust";
@@ -120,7 +120,6 @@ export function App() {
   const [columns] = useState(DEFAULT_COLUMNS);
   // Which slice of the capture the list shows, and (separately) whether
   // NovaProxy's own MCP/replay traffic is part of it.
-  const [detailTab, setDetailTab] = useState<DetailTab>("overview");
 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
@@ -501,7 +500,6 @@ export function App() {
      lives in a single place instead of at every click that reaches it. Only
      fixed identifiers are ever passed; see `api.trackUi`. */
   const goSection = (id: Section) => { setSection(id); api.trackUi("ui.section", id); };
-  const goDetailTab = (t: DetailTab) => { setDetailTab(t); api.trackUi("ui.detail_tab", t); };
   const openSettings = () => { setSettingsOpen(true); setRevealUpdates(false); api.trackUi("ui.settings.open"); };
   const openOnboarding = () => { setOnboardingOpen(true); api.trackUi("ui.onboarding", "open"); };
 
@@ -622,8 +620,6 @@ export function App() {
               recording={recording}
               selected={selected}
               select={select}
-              detailTab={detailTab}
-              setDetailTab={goDetailTab}
               autoSelect={autoSelect}
               onResend={() => void resendSelected()}
               onCopyCurl={copyCurl}
