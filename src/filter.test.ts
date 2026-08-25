@@ -10,6 +10,7 @@ import {
   EMPTY_FILTER,
   isFiltering,
   matchQuery,
+  suggestFilterName,
   mcpLabel,
   toastDuration,
   toggleIn,
@@ -326,5 +327,63 @@ describe("describeFilter", () => {
 
   it("says `everything` rather than nothing at all", () => {
     expect(describeFilter(EMPTY_FILTER)).toBe("everything");
+  });
+
+  it("leaves out an axis with everything selected — it describes no restriction", () => {
+    // All three protocols is the same filter as none of them, so saying
+    // "HTTP · HTTPS · WebSocket" would name a restriction that is not there.
+    const f = filter({
+      proto: new Set(["http", "https", "ws"]),
+      status: new Set(["4xx", "5xx"]),
+    });
+    expect(describeFilter(f)).toBe("4xx · 5xx");
+    expect(describeFilter(filter({ proto: new Set(["http", "https", "ws"]) }))).toBe("everything");
+  });
+});
+
+describe("suggestFilterName", () => {
+  it("leads with what identifies the work, not with the first axis", () => {
+    // `describeFilter` would start "HTTPS · JSON"; a host says which piece of
+    // work this is and `HTTPS` says almost nothing.
+    const f = filter({
+      proto: new Set(["https"]),
+      type: new Set(["json"]),
+      scope: { kind: "host", host: "api.example.com" },
+    });
+    expect(suggestFilterName(f)).toBe("api.example.com · JSON");
+  });
+
+  it("puts the search term first of all", () => {
+    expect(suggestFilterName(filter({ query: "shoots", type: new Set(["json"]) }))).toBe(
+      "shoots · JSON",
+    );
+  });
+
+  it("ignores an axis with everything selected — it filters nothing", () => {
+    const all = filter({
+      status: new Set(["1xx", "2xx", "3xx", "4xx", "5xx", "err"]),
+      scope: { kind: "host", host: "api.example.com" },
+    });
+    expect(suggestFilterName(all)).toBe("api.example.com");
+  });
+
+  it("keeps at most two parts and stays short enough to be a chip", () => {
+    const f = filter({
+      query: "a-fairly-long-search-term-here",
+      scope: { kind: "host", host: "api.example.com" },
+      type: new Set(["json"]),
+    });
+    const name = suggestFilterName(f);
+    expect(name.length).toBeLessThanOrEqual(28);
+    expect(name.endsWith("…")).toBe(true);
+  });
+
+  it("names a conditions-only filter, and never returns nothing", () => {
+    expect(
+      suggestFilterName(
+        filter({ clauses: [{ id: "c", enabled: true, field: "header", op: "contains", value: "x" }] }),
+      ),
+    ).toBe("conditions");
+    expect(suggestFilterName(EMPTY_FILTER)).toBe("Filter");
   });
 });

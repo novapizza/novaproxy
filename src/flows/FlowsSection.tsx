@@ -3,7 +3,6 @@ import type { Flow } from "../api";
 import type { IconName } from "../icons";
 import {
   applyFilter,
-  describeFilter,
   filterFromJson,
   filterToJson,
   isFiltering,
@@ -26,6 +25,7 @@ import { FilterBar } from "./FilterBar";
 import { clauseActive, newClause } from "../builder";
 import { FlowTable } from "./FlowTable";
 import { ColumnPicker } from "./ColumnPicker";
+import { SaveFilterDialog } from "./SaveFilterDialog";
 import { Splitter } from "../Splitter";
 import { DEFAULT_PREFS, INSPECTOR_PCT, TREE_W } from "../prefs";
 import { sortFlows, type Sort } from "./sort";
@@ -117,6 +117,7 @@ export const FlowsSection = forwardRef<FlowsHandle, {
    * a filter the user cannot read — which matters most for a saved filter that
    * carries rows, since nothing else on screen says they exist.
    */
+  const [saveOpen, setSaveOpen] = useState(false);
   const [builderOpen, setBuilderOpen] = useState(() => filter.clauses.some(clauseActive));
   /**
    * Rows marked for a bulk action, as ids rather than flows: a flow object is
@@ -267,17 +268,7 @@ export const FlowsSection = forwardRef<FlowsHandle, {
             if (next.clauses.some(clauseActive)) setBuilderOpen(true);
             props.patch(next);
           }}
-          saveCurrent={() => {
-            const label = describeFilter(filter);
-            // Saving the same filter twice is a no-op rather than a duplicate
-            // chip: the label *is* the filter, so two identical chips would be
-            // two identical buttons.
-            if (props.saved.some((s) => s.label === label)) return;
-            props.setSaved([
-              ...props.saved,
-              { id: `sf${Date.now()}`, label, filter: filterToJson(filter) },
-            ]);
-          }}
+          saveCurrent={() => setSaveOpen(true)}
           removeSaved={(id) => props.setSaved(props.saved.filter((s) => s.id !== id))}
           builderOpen={builderOpen}
           toggleBuilder={() => setBuilderOpen((v) => !v)}
@@ -411,6 +402,30 @@ export const FlowsSection = forwardRef<FlowsHandle, {
           )}
         </div>
       </div>
+
+      {saveOpen && (
+        <SaveFilterDialog
+          filter={filter}
+          saved={props.saved}
+          onClose={() => setSaveOpen(false)}
+          onSave={(label) => {
+            const json = filterToJson(filter);
+            // A name that already exists replaces that filter in place, keeping
+            // its position in the row — a chip that jumps to the end on every
+            // re-save is a chip you have to hunt for.
+            const at = props.saved.findIndex(
+              (s) => s.label.toLowerCase() === label.toLowerCase(),
+            );
+            if (at >= 0) {
+              const next = [...props.saved];
+              next[at] = { ...next[at], label, filter: json };
+              props.setSaved(next);
+            } else {
+              props.setSaved([...props.saved, { id: `sf${Date.now()}`, label, filter: json }]);
+            }
+          }}
+        />
+      )}
     </div>
   );
 });

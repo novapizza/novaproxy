@@ -244,17 +244,22 @@ function isClause(raw: unknown): raw is Clause {
 }
 
 /**
- * A name for a filter nobody named.
+ * What a filter actually narrows, in words.
  *
- * Derived rather than prompted for: asking for a name is a modal in the middle
- * of "I want this filter back later", and the parts of the filter *are* its
- * name. Groups keep their order (protocol, kind, status, then scope and query)
- * so two saved filters built the same way read the same way.
+ * Groups keep their order (protocol, kind, status, then scope, conditions and
+ * query) so two filters built the same way read the same way.
+ *
+ * An axis with **everything** selected is left out, because it narrows nothing —
+ * an empty axis means the same thing. Listing all three protocols under a filter
+ * that lets every protocol through would describe a restriction that is not
+ * there.
  */
 export function describeFilter(f: FlowFilter): string {
   const parts: string[] = [];
-  const label = <T extends string>(set: ReadonlySet<T>, defs: readonly { id: T; label: string }[]) =>
-    defs.filter((d) => set.has(d.id)).map((d) => d.label);
+  const label = <T extends string>(
+    set: ReadonlySet<T>,
+    defs: readonly { id: T; label: string }[],
+  ) => (set.size === defs.length ? [] : defs.filter((d) => set.has(d.id)).map((d) => d.label));
   parts.push(...label(f.proto, PROTOS));
   parts.push(...label(f.type, FLOW_TYPES));
   parts.push(...label(f.status, STATUS_CLASSES));
@@ -266,6 +271,40 @@ export function describeFilter(f: FlowFilter): string {
   const q = f.query.trim();
   if (q) parts.push(`“${q}”`);
   return parts.length > 0 ? parts.join(" · ") : "everything";
+}
+
+/**
+ * A short name to pre-fill the Save dialog with.
+ *
+ * `describeFilter` spells out every part, which is right for a tooltip and far
+ * too long for a chip — "HTTPS · JSON · 4xx · 5xx · api.example.com · “shoots”"
+ * is not a name. This keeps the two most *identifying* parts instead of the
+ * first two: a host or a search term says which piece of work this is, where
+ * `HTTPS` says almost nothing, so the order here is deliberately not
+ * `describeFilter`'s.
+ */
+export function suggestFilterName(f: FlowFilter): string {
+  const parts: string[] = [];
+  const q = f.query.trim();
+  if (q) parts.push(q);
+  if (f.scope.kind === "app") parts.push(f.scope.name || "unknown app");
+  if (f.scope.kind === "host") parts.push(f.scope.host);
+  if (f.scope.kind === "path") parts.push(f.scope.prefix);
+  if (f.scope.kind === "pinned") parts.push("pinned");
+  const pick = <T extends string>(set: ReadonlySet<T>, defs: readonly { id: T; label: string }[]) =>
+    defs.filter((d) => set.has(d.id)).map((d) => d.label);
+  // A full axis is not a distinguishing feature — it filters nothing — so it
+  // never contributes to the name.
+  if (f.type.size > 0 && f.type.size < FLOW_TYPES.length) parts.push(...pick(f.type, FLOW_TYPES));
+  if (f.status.size > 0 && f.status.size < STATUS_CLASSES.length) {
+    parts.push(...pick(f.status, STATUS_CLASSES));
+  }
+  if (f.proto.size > 0 && f.proto.size < PROTOS.length) parts.push(...pick(f.proto, PROTOS));
+  if (f.clauses.filter(clauseActive).length > 0 && parts.length === 0) parts.push("conditions");
+
+  const name = parts.slice(0, 2).join(" · ");
+  if (name === "") return "Filter";
+  return name.length > 28 ? `${name.slice(0, 27)}…` : name;
 }
 
 /** A named filter, kept across launches. */

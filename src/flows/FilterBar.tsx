@@ -1,13 +1,7 @@
 import { Icon } from "../icons";
 import { FLOW_TYPES, PROTOS, STATUS_CLASSES } from "../classify";
 import { clauseActive } from "../builder";
-import {
-  activeFilterCount,
-  describeFilter,
-  toggleIn,
-  type FlowFilter,
-  type SavedFilter,
-} from "../filter";
+import { activeFilterCount, toggleIn, type FlowFilter, type SavedFilter } from "../filter";
 import { usePopover } from "../usePopover";
 import { ChipMenu } from "./ChipMenu";
 import { FilterBuilder } from "./FilterBuilder";
@@ -70,7 +64,7 @@ export function FilterBar({
             ref={searchRef}
             value={filter.query}
             onChange={(e) => patch({ query: e.target.value })}
-            placeholder="host, path, method:GET, status:401, app:Chrome, mcp:"
+            placeholder="host, path, method:GET, status:401…"
             aria-label="Search the capture"
           />
           {filter.query && (
@@ -128,7 +122,7 @@ export function FilterBar({
             two permanent buttons that usually do nothing is furniture. */}
         {active > 0 && (
           <>
-            <span className="fb-act" title={`Save “${describeFilter(filter)}”`} onClick={saveCurrent}>
+            <span className="fb-act" title="Name and keep this filter" onClick={saveCurrent}>
               Save
             </span>
             <span className="fb-act accent" onClick={reset}>
@@ -137,6 +131,9 @@ export function FilterBar({
           </>
         )}
 
+        {/* Pushes the view controls to the right edge, so they stay put while
+            the menus above change width. */}
+        <span className="fbar-gap" />
         {trailing}
       </div>
 

@@ -31,14 +31,18 @@ export function ChipMenu<T extends string>({
   /**
    * What the button says.
    *
-   * Up to two selected labels are spelled out, because "Status: 4xx, 5xx" is the
+   * Up to two selected labels are spelled out, because "Status 4xx, 5xx" is the
    * whole filter and reading it beats counting it. Beyond two there is no room,
-   * so it falls back to a count.
+   * so it falls back to a count — except when *everything* is selected, which
+   * says `All`: a full axis narrows nothing at all (an empty one means the same
+   * thing), so "8 of 8" would be a number describing the absence of a filter.
    */
   const picked = chips.filter((c) => on.has(c.id));
   const summary =
     picked.length === 0
       ? null
+      : picked.length === chips.length
+      ? "All"
       : picked.length <= 2
       ? picked.map((c) => c.label).join(", ")
       : `${picked.length} of ${chips.length}`;
@@ -71,10 +75,12 @@ export function ChipMenu<T extends string>({
             </div>
           ))}
           {/* Only when there is something to clear: an empty axis already means
-              "all of it", so the row would do nothing. */}
+              "all of it", so the row would do nothing. The label says just
+              "Clear" — it sits inside the menu of the axis it clears, so naming
+              that axis again is repetition. */}
           {picked.length > 0 && (
             <div className="cm-clear" onClick={clear}>
-              Clear {label.toLowerCase()}
+              Clear
             </div>
           )}
         </div>

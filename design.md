@@ -426,6 +426,13 @@ uses **no second hue**: `--c-indigo` / `--c-violet` / `--c-cyan` are semantic to
   Search icon + input + `esc` keycap; rows are a 15px icon, a 12.5px/500 label, and a mono
   keycap, with the active row on `rgba(62,181,109,.10)` and its icon in accent.
 - **Settings modal (z40):** 560px, four tabs — General / Network / MCP / Getting started.
+- **Save filter (z40):** the settings shell at 440px. One text field, pre-filled
+  with a short suggested name and selected, so accepting the default is still one
+  keystroke; under it, the filter it will keep spelled out — the name is free
+  text, so without that line the dialog asks you to name something it never
+  shows you. A name that already exists turns the button into **Replace** and
+  says so, because typing an existing name is how a person says "update this
+  one".
 - **Shortcuts dialog (z40):** the settings shell at 640px, opened from **Help → Keyboard
   Shortcuts**, `⌘/`, or the palette. A search field (matching label *and* chord) over rows
   grouped by scope: label left, key badges right in the `.kbd` form, formatted per platform
