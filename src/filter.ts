@@ -1,4 +1,6 @@
 import type { Flow } from "./api";
+import { protoOf, statusClassOf, typeOf, type Proto, type FlowType, type StatusClass } from "./classify";
+import { ALL_TRAFFIC, matchScope, type Scope, type ScopeContext } from "./scope";
 
 /**
  * Match a flow against the search query. Supports `method:`, `status:`,
@@ -34,8 +36,14 @@ export function mcpLabel(f: Flow): string {
 }
 
 /**
- * The one-click filters above the list. Mutually exclusive — they answer
+ * The one-click filters above the *old* list. Mutually exclusive — they answer
  * "which slice am I looking at", not "which flags are set".
+ *
+ * Superseded by the three chip groups below (`FlowFilter`), and removed with
+ * the list view itself. Kept only so the shipped UI keeps compiling until the
+ * table replaces it.
+ *
+ * @deprecated use `FlowFilter`
  */
 export type FlowChip = "all" | "errors" | "slow" | "mcp";
 
@@ -107,4 +115,105 @@ export function distinctApps(flows: Flow[]): string[] {
  */
 export function toastDuration(text: string, ms?: number): number {
   return ms ?? Math.min(9000, Math.max(2600, 2000 + text.length * 55));
+}
+
+
+/* ------------------------------ the filter ------------------------------- */
+
+/**
+ * Everything narrowing the flows table, in one value.
+ *
+ * The three chip sets are **OR inside a set, AND between sets**, and an empty
+ * set means "all of it" — which is why there is no `All` chip to switch back
+ * to, only Reset. That shape is the point: `type: {json} + status: {4xx, 5xx}`
+ * — "which API is failing" — is the query the tool exists for, and it is
+ * exactly what one mutually-exclusive chip row cannot say.
+ *
+ * `scope` comes from the sidebar tree and ANDs with the rest, so picking an app
+ * does not disturb the chips.
+ */
+export interface FlowFilter {
+  proto: ReadonlySet<Proto>;
+  type: ReadonlySet<FlowType>;
+  status: ReadonlySet<StatusClass>;
+  scope: Scope;
+  /** Free text, with the `method:` / `host:` / `app:` / `mcp:` prefixes. */
+  query: string;
+  /** Show NovaProxy's own traffic (its MCP endpoint, and replays it issued). */
+  includeInternal: boolean;
+}
+
+export const EMPTY_FILTER: FlowFilter = {
+  proto: new Set(),
+  type: new Set(),
+  status: new Set(),
+  scope: ALL_TRAFFIC,
+  query: "",
+  includeInternal: false,
+};
+
+/**
+ * How many things are narrowing the view right now.
+ *
+ * Counts *groups*, not chips: three status chips are one decision, and "Reset
+ * filters (5)" for a single idea reads as a bug. `includeInternal` is not
+ * counted — it is a default, not something the user set.
+ */
+export function activeFilterCount(f: FlowFilter): number {
+  let n = 0;
+  if (f.proto.size) n++;
+  if (f.type.size) n++;
+  if (f.status.size) n++;
+  if (f.scope.kind !== "all") n++;
+  if (f.query.trim()) n++;
+  return n;
+}
+
+export function isFiltering(f: FlowFilter): boolean {
+  return activeFilterCount(f) > 0;
+}
+
+/**
+ * Compile a filter into one predicate.
+ *
+ * Compiled once per filter change rather than re-read per flow: the table runs
+ * this over up to `MAX_FLOWS` rows on every capture frame, so the set lookups
+ * and the empty-set checks are hoisted out of the loop.
+ *
+ * Order is cheapest-first — the query, which lowercases and concatenates, runs
+ * last and only for flows that survived everything else.
+ */
+export function buildPredicate(f: FlowFilter, ctx: ScopeContext = {}): (flow: Flow) => boolean {
+  const { proto, type, status, scope, includeInternal } = f;
+  const query = f.query.trim();
+  const anyProto = proto.size === 0;
+  const anyType = type.size === 0;
+  const anyStatus = status.size === 0;
+  const anyScope = scope.kind === "all";
+
+  return (flow) => {
+    if (flow.internal && !includeInternal) return false;
+    if (!anyProto && !proto.has(protoOf(flow))) return false;
+    if (!anyStatus) {
+      const sc = statusClassOf(flow);
+      // A flow still in flight belongs to no status class, so a status filter
+      // hides it rather than guessing which one it will land in.
+      if (sc == null || !status.has(sc)) return false;
+    }
+    if (!anyType && !type.has(typeOf(flow))) return false;
+    if (!anyScope && !matchScope(flow, scope, ctx)) return false;
+    return query === "" || matchQuery(flow, query);
+  };
+}
+
+/** Apply a whole filter. */
+export function applyFilter(flows: Flow[], f: FlowFilter, ctx: ScopeContext = {}): Flow[] {
+  return flows.filter(buildPredicate(f, ctx));
+}
+
+/** Toggle one chip in a set, returning a new set (empty means "all"). */
+export function toggleIn<T>(set: ReadonlySet<T>, value: T): Set<T> {
+  const next = new Set(set);
+  if (!next.delete(value)) next.add(value);
+  return next;
 }

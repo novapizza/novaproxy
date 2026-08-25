@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type { Flow } from "./api";
-import { distinctApps, filterFlows, matchChip, matchQuery, mcpLabel, SLOW_MS, toastDuration } from "./filter";
+import {
+  activeFilterCount,
+  applyFilter,
+  buildPredicate,
+  distinctApps,
+  EMPTY_FILTER,
+  filterFlows,
+  isFiltering,
+  matchChip,
+  matchQuery,
+  mcpLabel,
+  SLOW_MS,
+  toastDuration,
+  toggleIn,
+  type FlowFilter,
+} from "./filter";
 
 // Minimal Flow factory — only the fields the filter helpers touch matter here.
 function mkFlow(over: Partial<Flow> = {}): Flow {
@@ -219,5 +234,111 @@ describe("MCP filtering", () => {
       mcp("b", "tools/call", "read_file", { process: "Claude" }),
     ];
     expect(filterFlows(flows, "", { chip: "mcp", app: "node" }).map((f) => f.id)).toEqual(["a"]);
+  });
+});
+
+/* --------------------------- the composed filter --------------------------- */
+
+const f2 = (over: Partial<Flow> = {}) =>
+  mkFlow({ is_websocket: false, tunneled: false, mcp: null, internal: false, ...over } as Partial<Flow>);
+
+const filter = (over: Partial<FlowFilter> = {}): FlowFilter => ({ ...EMPTY_FILTER, ...over });
+
+describe("buildPredicate", () => {
+  it("an empty filter takes everything except NovaProxy's own traffic", () => {
+    const keep = buildPredicate(EMPTY_FILTER);
+    expect(keep(f2({ status: 500 }))).toBe(true);
+    expect(keep(f2({ internal: true }))).toBe(false);
+    expect(buildPredicate(filter({ includeInternal: true }))(f2({ internal: true }))).toBe(true);
+  });
+
+  it("an empty group means all of it — there is no `All` chip to press", () => {
+    expect(EMPTY_FILTER.status.size).toBe(0);
+    const keep = buildPredicate(EMPTY_FILTER);
+    expect(keep(f2({ status: 200 }))).toBe(true);
+    expect(keep(f2({ status: 404 }))).toBe(true);
+  });
+
+  it("chips inside one group are OR", () => {
+    const keep = buildPredicate(filter({ status: new Set(["4xx", "5xx"]) }));
+    expect(keep(f2({ status: 404 }))).toBe(true);
+    expect(keep(f2({ status: 502 }))).toBe(true);
+    expect(keep(f2({ status: 200 }))).toBe(false);
+  });
+
+  it("groups are AND — which is the whole point of splitting them", () => {
+    // "which API is failing": JSON *and* 4xx/5xx.
+    const keep = buildPredicate(
+      filter({ type: new Set(["json"]), status: new Set(["4xx", "5xx"]) }),
+    );
+    expect(keep(f2({ content_type: "application/json", status: 401 }))).toBe(true);
+    expect(keep(f2({ content_type: "application/json", status: 200 }))).toBe(false);
+    expect(keep(f2({ content_type: "image/png", status: 401 }))).toBe(false);
+  });
+
+  it("a status filter hides flows still in flight rather than guessing a class", () => {
+    const pending = f2({ status: null, error: null });
+    expect(buildPredicate(filter({ status: new Set(["2xx"]) }))(pending)).toBe(false);
+    expect(buildPredicate(EMPTY_FILTER)(pending)).toBe(true);
+  });
+
+  it("the scope ANDs with the chips instead of replacing them", () => {
+    const keep = buildPredicate(
+      filter({ scope: { kind: "app", name: "git" }, status: new Set(["4xx"]) }),
+    );
+    expect(keep(f2({ process: "git", status: 401 }))).toBe(true);
+    expect(keep(f2({ process: "git", status: 200 }))).toBe(false);
+    expect(keep(f2({ process: "Chrome", status: 401 }))).toBe(false);
+  });
+
+  it("the pinned scope reads the set it is handed", () => {
+    const keep = buildPredicate(filter({ scope: { kind: "pinned" } }), { pinned: new Set(["keep"]) });
+    expect(keep(f2({ id: "keep" }))).toBe(true);
+    expect(keep(f2({ id: "drop" }))).toBe(false);
+  });
+
+  it("the query still applies, prefixes and all", () => {
+    const keep = buildPredicate(filter({ query: "method:post" }));
+    expect(keep(f2({ method: "POST" }))).toBe(true);
+    expect(keep(f2({ method: "GET" }))).toBe(false);
+  });
+
+  it("protocol takes the WebSocket upgrade off the https pile", () => {
+    const ws = buildPredicate(filter({ proto: new Set(["ws"]) }));
+    expect(ws(f2({ is_websocket: true }))).toBe(true);
+    expect(ws(f2({ is_websocket: false }))).toBe(false);
+    expect(buildPredicate(filter({ proto: new Set(["https"]) }))(f2({ is_websocket: true }))).toBe(false);
+  });
+});
+
+describe("applyFilter", () => {
+  it("keeps the input order — the table decides sorting, not the filter", () => {
+    const flows = [f2({ id: "a", seq: 3n }), f2({ id: "b", seq: 2n }), f2({ id: "c", seq: 1n })];
+    expect(applyFilter(flows, EMPTY_FILTER).map((f) => f.id)).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("activeFilterCount", () => {
+  it("counts groups, not chips: three status chips are one decision", () => {
+    expect(activeFilterCount(EMPTY_FILTER)).toBe(0);
+    expect(activeFilterCount(filter({ status: new Set(["2xx", "4xx", "5xx"]) }))).toBe(1);
+    expect(activeFilterCount(filter({ status: new Set(["2xx"]), type: new Set(["json"]) }))).toBe(2);
+  });
+
+  it("a scope and a query each count; showing internal traffic does not", () => {
+    expect(activeFilterCount(filter({ scope: { kind: "host", host: "x" } }))).toBe(1);
+    expect(activeFilterCount(filter({ query: "  " }))).toBe(0);
+    expect(activeFilterCount(filter({ query: "x" }))).toBe(1);
+    expect(activeFilterCount(filter({ includeInternal: true }))).toBe(0);
+    expect(isFiltering(EMPTY_FILTER)).toBe(false);
+  });
+});
+
+describe("toggleIn", () => {
+  it("adds what is missing, removes what is there, and never mutates the input", () => {
+    const a: ReadonlySet<string> = new Set(["x"]);
+    expect([...toggleIn(a, "y")].sort()).toEqual(["x", "y"]);
+    expect([...toggleIn(a, "x")]).toEqual([]);
+    expect([...a]).toEqual(["x"]);
   });
 });
