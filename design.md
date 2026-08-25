@@ -166,7 +166,9 @@ Four zones in the section body, and the status bar carries the fifth reading (§
 
 **Scope tree** (`--tree-w`, `rgba(255,255,255,.66)`, right hairline). Uppercase eyebrows over
 1px-gap rows: 12.5px/500 `--text2`, 14px icon, 9px radius, `--hover` on hover.
-- **Favorites** — Pinned, Saved (a saved filter shows its count).
+- **Favorites** — Pinned, shown only once something is pinned; an empty row for a
+  feature nobody has used is a control that does nothing. (Saved filters are
+  chips in the filter bar, not rows here: a saved filter *is* a filter.)
 - **All traffic** — selected by default: white, accent border tint, accent text.
 - **Apps** — one row per `Flow.process`, count right-aligned in 11px mono `--faint`, expanding
   to that app's hosts. A generic Lucide glyph until real bundle icons land.
@@ -203,7 +205,11 @@ row hairlines.
 | Request / Response | 78px each | right-aligned size — **`–`, never `0 B`, when there is none** |
 | SSL | 44px | `lock` decrypted HTTPS · `lock-open` `--faint` plaintext · `lock` `--c-amber` tunneled |
 
-Opt-in columns behind the picker: Protocol (`http_version`), Edited, Comment.
+Opt-in columns behind the picker: **Protocol** (`http_version`), **Edited** —
+`R`/`S`/`B` for a rule, the script or a breakpoint, each only when it actually
+changed something — and **Comment**, the note written on that row in
+`--c-indigo`. A pinned row carries an amber pin before its URL, so what is pinned
+is visible without switching to the Pinned scope.
 
 > `--table-min` (1140px) is what the full set needs; the **default set is seven** (`#`, URL,
 > Client, Method, Status, Duration, SSL) and needs 746. The window's `minWidth` is 940, the

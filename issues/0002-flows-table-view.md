@@ -1,7 +1,7 @@
 # 0002 — Flows: table view theo design mới (Proxyman-style)
 
-*Trạng thái: **chưa code gì**. Review + lộ trình design.
-Đã chốt hết quyết định sau khi đối chiếu UI Proxyman thật (§8).*
+*Trạng thái: **phase 1–10 đã code xong** trên branch `docs/flows-table-redesign`.
+Doc này giữ nguyên làm bản ghi quyết định; §9 là lộ trình đã đi.*
 
 Nguồn: `~/Downloads/NovaProxy.html` (design canvas bundle, 5 screen:
 `flows`, `table`, `rules`, `scripts`, `certs`). Screen cần bàn là **`table`** —
