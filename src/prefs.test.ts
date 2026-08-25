@@ -1,13 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  DEFAULT_PREFS,
-  MAX_LIST_WIDTH,
-  MIN_LIST_WIDTH,
-  clampListWidth,
-  loadPrefs,
-  normalizePrefs,
-  savePrefs,
-} from "./prefs";
+import { DEFAULT_PREFS, loadPrefs, normalizePrefs, savePrefs } from "./prefs";
+import { DEFAULT_COLUMNS } from "./flows/columns";
 
 /** A `localStorage` stand-in, plus one that fails the way a locked-down browser does. */
 function fakeStore(seed?: string) {
@@ -22,39 +15,47 @@ function fakeStore(seed?: string) {
 }
 
 describe("prefs", () => {
-  it("defaults to grouped flows and leaves the system proxy alone", () => {
+  it("leaves the system proxy alone and does not follow the tail", () => {
     // The launch default matters: turning the OS proxy on rewrites a setting the
     // user needs for working internet, so it must be opt-in.
     expect(DEFAULT_PREFS.systemProxyAtLaunch).toBe("none");
-    expect(DEFAULT_PREFS.flowGrouping).toBe("grouped");
+    expect(DEFAULT_PREFS.autoSelect).toBe(false);
+    expect(DEFAULT_PREFS.columns).toEqual(DEFAULT_COLUMNS);
   });
 
   it("round-trips a saved preference", () => {
     const store = fakeStore();
-    savePrefs({ ...DEFAULT_PREFS, flowGrouping: "flat", systemProxyAtLaunch: "system" }, store);
+    savePrefs(
+      { ...DEFAULT_PREFS, autoSelect: true, columns: ["url", "status"], systemProxyAtLaunch: "system" },
+      store,
+    );
     const loaded = loadPrefs(store);
-    expect(loaded.flowGrouping).toBe("flat");
+    expect(loaded.autoSelect).toBe(true);
+    expect(loaded.columns).toEqual(["url", "status"]);
     expect(loaded.systemProxyAtLaunch).toBe("system");
   });
 
   it("falls back to defaults on absent, malformed or foreign values", () => {
     expect(loadPrefs(fakeStore())).toEqual(DEFAULT_PREFS);
     expect(loadPrefs(fakeStore("{not json"))).toEqual(DEFAULT_PREFS);
-    expect(loadPrefs(fakeStore('{"flowGrouping":"sideways"}')).flowGrouping).toBe("grouped");
+    expect(loadPrefs(fakeStore('{"columns":["nope"]}')).columns).toEqual(DEFAULT_COLUMNS);
     expect(loadPrefs(fakeStore('{"systemProxyAtLaunch":true}')).systemProxyAtLaunch).toBe("none");
     expect(normalizePrefs(null)).toEqual(DEFAULT_PREFS);
   });
 
-  it("keeps the flow list width usable whatever was stored", () => {
-    expect(clampListWidth(10)).toBe(MIN_LIST_WIDTH);
-    expect(clampListWidth(5000)).toBe(MAX_LIST_WIDTH);
-    expect(clampListWidth(500.6)).toBe(501);
-    // NaN survives Math.min/Math.max, so it is rejected explicitly — a NaN width
-    // would collapse the pane to nothing.
-    expect(clampListWidth(NaN)).toBe(DEFAULT_PREFS.flowListWidth);
-    expect(loadPrefs(fakeStore('{"flowListWidth":"wide"}')).flowListWidth).toBe(
-      DEFAULT_PREFS.flowListWidth,
-    );
+  it("drops what the list view stored, rather than trying to translate it", () => {
+    // A blob from a build that had the list carries `flowGrouping` and
+    // `flowListWidth` and no `columns`. Grouping is not a column choice, so
+    // there is nothing to migrate *from*: the default set stands in and the two
+    // dead keys go away.
+    const old = '{"flowGrouping":"flat","flowListWidth":412,"systemProxyAtLaunch":"system"}';
+    const loaded = loadPrefs(fakeStore(old));
+    expect(loaded.columns).toEqual(DEFAULT_COLUMNS);
+    expect(loaded.autoSelect).toBe(false);
+    // …while the preferences that still exist survive the upgrade untouched.
+    expect(loaded.systemProxyAtLaunch).toBe("system");
+    expect(Object.keys(loaded)).not.toContain("flowGrouping");
+    expect(Object.keys(loaded)).not.toContain("flowListWidth");
   });
 
   it("treats a pref blob without an onboarding flag as not yet onboarded", () => {

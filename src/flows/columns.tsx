@@ -164,10 +164,14 @@ export const COLUMN_ORDER: ColumnId[] = [
 /**
  * What is shown until the user says otherwise.
  *
- * Seven, not eleven. All eleven need ~1140px; the window's `minWidth` is 940 and
- * the rail plus the scope tree take 330 of it, so the table can be handed as
- * little as ~610px. Columns drop rather than squeeze — ten unreadable slivers is
- * worse than seven readable cells (design.md §8).
+ * Seven, not eleven, and the arithmetic is the reason rather than taste: these
+ * seven need 746px, all eleven need ~1140px. The window's `minWidth` is 940;
+ * the rail takes 78 and the scope tree another 252. So the default set fits with
+ * the tree hidden (862px) and the table scrolls sideways with it open (610px),
+ * while the full set fits neither.
+ *
+ * Columns drop rather than squeeze: ten unreadable slivers is worse than seven
+ * readable cells (design.md §8).
  */
 export const DEFAULT_COLUMNS: ColumnId[] = [
   "seq",

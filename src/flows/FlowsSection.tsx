@@ -33,6 +33,11 @@ export function FlowsSection(props: {
   onResend: () => void;
   onCopyCurl: () => void;
   showToast: (t: string) => void;
+  /**
+   * Usage counting, passed in rather than imported: the section is also mounted
+   * by the dev harness (`preview.html`), which has no Tauri runtime to invoke.
+   */
+  track?: (ev: "ui.flow.chip" | "ui.flow.scope" | "ui.detail_tab", name: string) => void;
   /** Focus targets for the keyboard shortcuts (issues/0003). */
   searchRef?: React.RefObject<HTMLInputElement | null>;
   treeFilterRef?: React.RefObject<HTMLInputElement | null>;
@@ -81,7 +86,10 @@ export function FlowsSection(props: {
         }
       : { icon: "search-x", msg: "Nothing to show", hint: "Every captured flow is hidden." };
 
-  const setScope = (scope: Scope) => props.patch({ scope });
+  const setScope = (scope: Scope) => {
+    props.patch({ scope });
+    props.track?.("ui.flow.scope", scope.kind);
+  };
 
   return (
     <div className="flows2">
@@ -100,6 +108,7 @@ export function FlowsSection(props: {
           patch={props.patch}
           reset={props.reset}
           searchRef={props.searchRef}
+          onChip={(id) => props.track?.("ui.flow.chip", id)}
         />
 
         <FlowTable
@@ -147,7 +156,11 @@ export function FlowsSection(props: {
 
         <div className="insp-strip">
           {selected ? (
-            <Inspector flow={selected} showToast={props.showToast} />
+            <Inspector
+              flow={selected}
+              showToast={props.showToast}
+              onTab={(_pane, tab) => props.track?.("ui.detail_tab", tab.toLowerCase())}
+            />
           ) : (
             <div className="detail-empty">
               <div className="big">Select a flow to inspect</div>

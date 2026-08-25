@@ -4,14 +4,10 @@ import {
   activeFilterCount,
   applyFilter,
   buildPredicate,
-  distinctApps,
   EMPTY_FILTER,
-  filterFlows,
   isFiltering,
-  matchChip,
   matchQuery,
   mcpLabel,
-  SLOW_MS,
   toastDuration,
   toggleIn,
   type FlowFilter,
@@ -49,42 +45,6 @@ function mkFlow(over: Partial<Flow> = {}): Flow {
   } as Flow;
 }
 
-describe("matchChip", () => {
-  it("`all` lets everything through", () => {
-    expect(matchChip(mkFlow({ status: 500 }), "all")).toBe(true);
-    expect(matchChip(mkFlow({ status: 200 }), "all")).toBe(true);
-  });
-
-  it("`errors` takes 4xx, 5xx and transport failures, but not 3xx", () => {
-    expect(matchChip(mkFlow({ status: 404 }), "errors")).toBe(true);
-    expect(matchChip(mkFlow({ status: 500 }), "errors")).toBe(true);
-    expect(matchChip(mkFlow({ status: null, error: "refused" }), "errors")).toBe(true);
-    expect(matchChip(mkFlow({ status: 304 }), "errors")).toBe(false);
-    expect(matchChip(mkFlow({ status: 200 }), "errors")).toBe(false);
-  });
-
-  it("`slow` takes durations at or over the threshold", () => {
-    expect(matchChip(mkFlow({ duration_ms: SLOW_MS }), "slow")).toBe(true);
-    expect(matchChip(mkFlow({ duration_ms: SLOW_MS - 1 }), "slow")).toBe(false);
-  });
-
-  it("in-flight flows are neither slow nor failed — they are simply not done", () => {
-    const pending = mkFlow({ status: null, duration_ms: null, error: null });
-    expect(matchChip(pending, "slow")).toBe(false);
-    expect(matchChip(pending, "errors")).toBe(false);
-    expect(matchChip(pending, "all")).toBe(true);
-  });
-
-  it("composes with the query rather than replacing it", () => {
-    const flows = [
-      mkFlow({ id: "a", status: 500, host: "api.example.com" }),
-      mkFlow({ id: "b", status: 500, host: "cdn.example.com" }),
-      mkFlow({ id: "c", status: 200, host: "api.example.com" }),
-    ];
-    expect(filterFlows(flows, "host:api", { chip: "errors" }).map((f) => f.id)).toEqual(["a"]);
-  });
-});
-
 describe("matchQuery", () => {
   it("matches everything on an empty or whitespace query", () => {
     expect(matchQuery(mkFlow(), "")).toBe(true);
@@ -115,49 +75,6 @@ describe("matchQuery", () => {
     expect(matchQuery(f, "method:get")).toBe(false);
     expect(matchQuery(f, "status:404")).toBe(true);
     expect(matchQuery(f, "host:api.")).toBe(true);
-  });
-});
-
-describe("filterFlows", () => {
-  const flows = [
-    mkFlow({ id: "a", process: "Google Chrome", host: "a.com" }),
-    mkFlow({ id: "b", process: "Slack", host: "b.com" }),
-    mkFlow({ id: "c", process: null, host: "c.com" }),
-  ];
-
-  it("passes everything through with no app filter and no query", () => {
-    expect(filterFlows(flows, "").map((f) => f.id)).toEqual(["a", "b", "c"]);
-  });
-
-  it("app filter requires an exact process match", () => {
-    expect(filterFlows(flows, "", { app: "Slack" }).map((f) => f.id)).toEqual(["b"]);
-    // Not a substring match, unlike the app: query prefix.
-    expect(filterFlows(flows, "", { app: "Chrome" })).toHaveLength(0);
-  });
-
-  it("excludes unattributed flows when an app filter is set", () => {
-    expect(filterFlows(flows, "", { app: "Google Chrome" }).map((f) => f.id)).toEqual(["a"]);
-  });
-
-  it("combines the app filter with the search query", () => {
-    expect(filterFlows(flows, "host:b.com", { app: "Slack" }).map((f) => f.id)).toEqual(["b"]);
-    expect(filterFlows(flows, "host:a.com", { app: "Slack" })).toHaveLength(0);
-  });
-});
-
-describe("distinctApps", () => {
-  it("collects unique process names, sorted, skipping unattributed flows", () => {
-    const flows = [
-      mkFlow({ process: "Slack" }),
-      mkFlow({ process: "Google Chrome" }),
-      mkFlow({ process: "Slack" }),
-      mkFlow({ process: null }),
-    ];
-    expect(distinctApps(flows)).toEqual(["Google Chrome", "Slack"]);
-  });
-
-  it("returns an empty list when nothing is attributed", () => {
-    expect(distinctApps([mkFlow(), mkFlow()])).toEqual([]);
   });
 });
 
@@ -198,42 +115,52 @@ describe("MCP filtering", () => {
     expect(mcpLabel(mkFlow({ id: "c" }))).toBe("");
   });
 
-  it("the MCP chip keeps just the MCP exchanges", () => {
+  it("the MCP type chip keeps just the MCP exchanges", () => {
     const flows = [mcp("a", "tools/call", "read_file"), mkFlow({ id: "b" })];
-    expect(filterFlows(flows, "", { chip: "mcp" }).map((f) => f.id)).toEqual(["a"]);
-    expect(filterFlows(flows, "").map((f) => f.id)).toEqual(["a", "b"]);
+    const mcpOnly = { ...EMPTY_FILTER, type: new Set(["mcp" as const]) };
+    expect(applyFilter(flows, mcpOnly).map((f) => f.id)).toEqual(["a"]);
+    expect(applyFilter(flows, EMPTY_FILTER).map((f) => f.id)).toEqual(["a", "b"]);
   });
 
   it("hides NovaProxy's own traffic unless asked for", () => {
     // With the MCP endpoint on, the agent's own calls would otherwise swamp the
     // list the user is reading.
     const flows = [mcp("own", "tools/call", "list_flows", { internal: true }), mkFlow({ id: "b" })];
-    expect(filterFlows(flows, "").map((f) => f.id)).toEqual(["b"]);
-    expect(filterFlows(flows, "", { includeInternal: true }).map((f) => f.id)).toEqual(["own", "b"]);
-    // Still hidden under the MCP chip, which is the case that matters when debugging
-    // someone else's MCP server.
-    expect(filterFlows(flows, "", { chip: "mcp" })).toHaveLength(0);
+    expect(applyFilter(flows, EMPTY_FILTER).map((f) => f.id)).toEqual(["b"]);
+    expect(applyFilter(flows, { ...EMPTY_FILTER, includeInternal: true }).map((f) => f.id)).toEqual([
+      "own",
+      "b",
+    ]);
+    // Still hidden under the MCP chip, which is the case that matters when
+    // debugging someone else's MCP server.
+    expect(applyFilter(flows, { ...EMPTY_FILTER, type: new Set(["mcp" as const]) })).toHaveLength(0);
   });
 
   it("mcp: query matches any MCP flow, or a method/tool substring", () => {
     const flows = [mcp("a", "tools/call", "read_file"), mcp("b", "resources/read", null), mkFlow({ id: "c" })];
-    expect(filterFlows(flows, "mcp:").map((f) => f.id)).toEqual(["a", "b"]);
-    expect(filterFlows(flows, "mcp:read_file").map((f) => f.id)).toEqual(["a"]);
-    expect(filterFlows(flows, "mcp:resources").map((f) => f.id)).toEqual(["b"]);
-    expect(filterFlows(flows, "mcp:absent")).toHaveLength(0);
+    const q = (query: string) => applyFilter(flows, { ...EMPTY_FILTER, query }).map((f) => f.id);
+    expect(q("mcp:")).toEqual(["a", "b"]);
+    expect(q("mcp:read_file")).toEqual(["a"]);
+    expect(q("mcp:resources")).toEqual(["b"]);
+    expect(q("mcp:absent")).toEqual([]);
   });
 
   it("free-text search also reaches the MCP method and tool", () => {
     const flows = [mcp("a", "tools/call", "read_file"), mkFlow({ id: "b" })];
-    expect(filterFlows(flows, "read_file").map((f) => f.id)).toEqual(["a"]);
+    expect(applyFilter(flows, { ...EMPTY_FILTER, query: "read_file" }).map((f) => f.id)).toEqual(["a"]);
   });
 
-  it("filters compose with the app dropdown", () => {
+  it("the type chip composes with an app scope", () => {
     const flows = [
       mcp("a", "tools/call", "read_file", { process: "node" }),
       mcp("b", "tools/call", "read_file", { process: "Claude" }),
     ];
-    expect(filterFlows(flows, "", { chip: "mcp", app: "node" }).map((f) => f.id)).toEqual(["a"]);
+    const scoped = {
+      ...EMPTY_FILTER,
+      type: new Set(["mcp" as const]),
+      scope: { kind: "app" as const, name: "node" },
+    };
+    expect(applyFilter(flows, scoped).map((f) => f.id)).toEqual(["a"]);
   });
 });
 

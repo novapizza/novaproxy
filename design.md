@@ -205,10 +205,11 @@ row hairlines.
 
 Opt-in columns behind the picker: Protocol (`http_version`), Edited, Comment.
 
-> `--table-min` (1140px) is what all ten columns need. The window's `minWidth` is 940 and the
-> rail plus the tree take 330 of it, leaving the table ~610px — so the **default set is
-> seven** (`#`, URL, Client, Method, Status, Duration, SSL) and the rest are opt-in.
-> **Columns drop; they never squeeze below their content.**
+> `--table-min` (1140px) is what the full set needs; the **default set is seven** (`#`, URL,
+> Client, Method, Status, Duration, SSL) and needs 746. The window's `minWidth` is 940, the
+> rail takes 78 and the tree 252 — so the default set fits with the tree hidden (862px) and
+> the table scrolls sideways with it open (610px). That is the intended answer at that size:
+> **columns drop or the table scrolls; they never squeeze below their content.**
 
 Row states: **selected** takes a 2px accent left border over `rgba(62,181,109,.11)`; hover is
 `--hover`; **in flight** shows `···` in `--faint` for status, an empty duration and a pulsing

@@ -34,7 +34,6 @@ import { formatRate, SPARK_WINDOW_MS, throughputRate, throughputSeries } from ".
 import { methodClass } from "./badges";
 import { buildCurl, withRequestBody } from "./inspector/curl";
 import { FlowsSection } from "./flows/FlowsSection";
-import { DEFAULT_COLUMNS } from "./flows/columns";
 import { trustHint, trustLabel } from "./trust";
 import { launchDecision } from "./onboarding";
 import { Coachmark, OnboardingWizard, type CoachTarget } from "./Walkthrough";
@@ -115,9 +114,13 @@ export function App() {
    */
   const [filter, setFilter] = useState<FlowFilter>(EMPTY_FILTER);
   const patchFilter = (p: Partial<FlowFilter>) => setFilter((f) => ({ ...f, ...p }));
-  /** Follow the tail: keep the newest row selected as it lands. */
-  const [autoSelect, setAutoSelect] = useState(false);
-  const [columns] = useState(DEFAULT_COLUMNS);
+  /**
+   * The table's own persisted view choices. Held in prefs rather than in state
+   * because both outlive the session, and `Auto Select` is reachable from two
+   * places (the status bar and Settings) that must not disagree.
+   */
+  const columns = prefs.columns;
+  const autoSelect = prefs.autoSelect;
   // Which slice of the capture the list shows, and (separately) whether
   // NovaProxy's own MCP/replay traffic is part of it.
 
@@ -624,6 +627,7 @@ export function App() {
               onResend={() => void resendSelected()}
               onCopyCurl={copyCurl}
               showToast={showToast}
+              track={(ev, name) => api.trackUi(ev, name as Parameters<typeof api.trackUi>[1])}
               searchRef={searchRef}
               treeFilterRef={treeFilterRef}
               tableRef={flowListRef}
@@ -657,7 +661,7 @@ export function App() {
         <span
           className={`autosel ${autoSelect ? "on" : ""}`}
           title="Keep the newest row selected as it arrives"
-          onClick={() => setAutoSelect((v) => !v)}
+          onClick={() => setPrefs({ ...prefs, autoSelect: !autoSelect })}
         >
           <Icon name={autoSelect ? "circle-dot" : "circle"} size={11} />
           Auto Select
@@ -1312,11 +1316,6 @@ export NODE_EXTRA_CA_CERTS="${ca?.cert_path ?? "<ca.pem path>"}"`}
  * The defaults a session starts from, plus the one piece of machinery that
  * decides whether changing the system proxy costs a password.
  */
-const GROUPING_ITEMS: DropdownItem[] = [
-  { value: "grouped", label: "Grouped by host", icon: "globe" },
-  { value: "flat", label: "Flat", icon: "list" },
-];
-
 const LAUNCH_ITEMS: DropdownItem[] = [
   { value: "none", label: "None — leave the OS alone", icon: "circle" },
   { value: "system", label: "System proxy — capture everything", icon: "power" },
@@ -1338,19 +1337,20 @@ function GeneralTab({
 }) {
   return (
     <>
-      <h3>Flow list</h3>
+      <h3>Flows table</h3>
       <div className="pref-row">
-        <span className="k">Default grouping</span>
-        <Dropdown
-          label="Default grouping"
-          value={prefs.flowGrouping}
-          items={GROUPING_ITEMS}
-          onChange={(v) => setPrefs({ ...prefs, flowGrouping: v as Prefs["flowGrouping"] })}
-        />
+        <span className="k">Follow the tail</span>
+        <span
+          className={`switch sm ${prefs.autoSelect ? "on" : ""}`}
+          onClick={() => setPrefs({ ...prefs, autoSelect: !prefs.autoSelect })}
+        >
+          <span className="knob" />
+        </span>
       </div>
       <p>
-        How the list opens. The <b>grouped / flat</b> control above the list still switches the
-        current session without changing this default.
+        Keep the newest row selected as it arrives — the same <b>Auto Select</b> toggle the status
+        bar carries, remembered across launches. Off by default: a selection that moves while you
+        are reading a body is worse than one click.
       </p>
 
       <h3>System proxy</h3>

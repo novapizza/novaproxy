@@ -281,7 +281,6 @@ input, textarea, select { font-family: inherit; }
 
 /* the app filter in the toolbar sits at the design's 208px, and the settings
    rows hand it the rest of the row */
-.dd-app { width: 208px; flex: none; }
 .pref-row .dd { flex: 1; min-width: 0; }
 
 .spacer { flex: 1; }
@@ -339,87 +338,13 @@ input, textarea, select { font-family: inherit; }
 .restore-bar .rb-x { color: var(--faint); cursor: pointer; display: flex; }
 .restore-bar .rb-x:hover { color: var(--text2); }
 
-/* ------------------------------ flows section ------------------------------ */
-.flows-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-
-/* stat strip above the two panes */
-.stat-row { flex: none; display: flex; gap: 14px; padding: 20px 24px 4px; }
-.stat {
-  flex: 1; min-width: 0; padding: 14px 16px; border-radius: 18px;
-  background: rgba(255,255,255,.78); backdrop-filter: blur(14px);
-  border: 1px solid var(--border); box-shadow: var(--e-xs);
-  transition: box-shadow var(--t-base) var(--ease);
-}
-.stat:hover { box-shadow: var(--e-sm); }
-.stat .k {
-  display: flex; align-items: center; gap: 9px;
-  font: 600 11px var(--font-ui); letter-spacing: .09em; text-transform: uppercase; color: var(--muted);
-}
-.stat .k .icon { display: flex; flex: none; }
-.stat .row { display: flex; align-items: baseline; gap: 7px; margin-top: 9px; min-width: 0; }
-/* a stat is a fixed-width card, so an unexpectedly long value has to clip
-   inside it rather than run over the card beside it */
-.stat .v {
-  font: 500 25px var(--font-mono); letter-spacing: -.02em; font-variant-numeric: tabular-nums;
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.stat .u { font: 400 11.5px var(--font-ui); color: var(--faint); }
-.stat.green .v { color: var(--accent); }
-.stat.red .v { color: var(--c-red); }
-.stat.violet .v { color: var(--c-violet); }
-
-.spark { width: 240px; flex: none; padding: 14px 16px 10px; }
-.spark .k { justify-content: space-between; }
-.spark .rate { font: 400 11.5px var(--font-mono); color: var(--c-indigo); letter-spacing: 0; text-transform: none; }
-.spark svg { width: 100%; height: 46px; margin-top: 8px; display: block; overflow: visible; }
-
-.flows { flex: 1; display: flex; min-height: 0; padding: 14px 24px 20px; }
-
-.flow-list {
-  /* Width is set inline from the persisted preference; this is the fallback. */
-  width: 412px; flex: none;
-  display: flex; flex-direction: column; min-height: 0; min-width: 0;
-  background: var(--list); backdrop-filter: blur(16px);
-  border: 1px solid var(--border); border-radius: var(--r-panel);
-  box-shadow: var(--e-xs); overflow: hidden;
-}
-
-/*
- * Draggable divider between the list and the inspector. It doubles as the
- * design's 14px gutter — the panels are separated by the wash, so no visible
- * line is needed until the pointer is on the handle.
- */
-.splitter {
-  flex: none; width: 14px; position: relative; cursor: col-resize;
-  background: transparent; outline: none; touch-action: none;
-}
-.splitter:focus-visible .grip { opacity: 1; }
-/* Grip, shown only on hover so the chrome stays quiet. */
-.splitter .grip {
-  position: absolute; top: 50%; left: 50%; width: 3px; height: 32px;
-  transform: translate(-50%, -50%); border-radius: var(--r-pill); opacity: 0;
-  background: var(--accent); transition: opacity var(--t-micro) var(--ease);
-}
-.splitter:hover .grip { opacity: .9; }
-
-.flow-list-head {
-  flex: none; padding: 14px 16px 12px;
-  border-bottom: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 11px;
-}
-.flow-list-head .fl-meta {
-  display: flex; align-items: center; gap: 12px;
-  font: 600 11px var(--font-ui);
-  letter-spacing: .09em; text-transform: uppercase; color: var(--muted);
-}
-.flow-list-head .grouptog {
-  display: flex; align-items: center; gap: 5px;
-  cursor: pointer; color: var(--text2); white-space: nowrap;
-}
-.flow-list-head .grouptog:hover { color: var(--accent-hover); }
+/* ------------------------ shared flow vocabulary --------------------------
+   Chips, badges, the status scale and the empty states. Shared because the
+   table, the summary bar, the inspector and the intercept modal all speak them;
+   the layout that used to live here (stat strip, list, splitter) went with the
+   list view. */
 
 /* filter chips */
-.chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .fchip {
   padding: 5px 11px; border-radius: var(--r-pill);
   border: 1px solid var(--border2); background: rgba(255,255,255,.7);
@@ -429,54 +354,12 @@ input, textarea, select { font-family: inherit; }
 .fchip:hover { border-color: rgba(27,26,61,.24); }
 .fchip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-.flow-scroll { flex: 1; overflow-y: auto; min-height: 0; }
-
-.group-head {
-  display: flex; align-items: center; gap: 8px;
-  padding: 9px 16px;
-  font: 600 12.5px var(--font-ui);
-  color: var(--text);
-  position: sticky; top: 0; z-index: 1;
-  background: rgba(247,251,248,.95); backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--border);
-}
-.group-head .hdot { width: 6px; height: 6px; border-radius: var(--r-pill); background: var(--accent); flex: none; }
-.group-head .hname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.group-head .hcount { flex: none; font: 400 11px var(--font-mono); color: var(--faint); }
 .tls-chip {
   font: 500 9px var(--font-mono); letter-spacing: .08em;
   color: var(--accent);
   background: rgba(62,181,109,.10);
   border-radius: 4px; padding: 2px 5px; flex: none;
 }
-
-.flow-row {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 16px; cursor: pointer; width: 100%; text-align: left;
-  border-left: 2px solid transparent;
-  border-bottom: 1px solid var(--bsoft);
-  transition: background var(--t-micro) var(--ease);
-  /* No entry animation: the list is windowed, so rows mount as they are
-     scrolled into view and an animation would flash on every scroll. */
-}
-.flow-row:hover { background: rgba(27,26,61,.03); }
-.flow-row.sel {
-  border-left-color: var(--accent);
-  background: rgba(62,181,109,.11);
-}
-.flow-row .col { flex: 1; min-width: 0; }
-.flow-row .fpath {
-  font: 400 12px var(--font-mono);
-  color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.flow-row .fsub {
-  display: flex; align-items: center; gap: 6px;
-  font: 400 10.5px var(--font-ui);
-  color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 3px;
-}
-.flow-row .fright { text-align: right; flex: none; }
-.flow-row .fstatus { font: 500 12px var(--font-mono); font-variant-numeric: tabular-nums; }
-.flow-row .ftime { font: 400 10.5px var(--font-mono); color: var(--faint); margin-top: 3px; }
 
 /* method badge */
 .badge {
@@ -509,14 +392,7 @@ input, textarea, select { font-family: inherit; }
 .list-empty .icon { display: flex; justify-content: center; color: var(--faint); margin-bottom: 12px; }
 .list-empty .big { font: 500 13.5px var(--font-ui); color: var(--text); margin-bottom: 5px; }
 
-/* ------------------------------ detail inspector ------------------------------ */
-.detail {
-  flex: 1; display: flex; flex-direction: column; min-width: 0;
-  background: rgba(255,255,255,.9);
-  border: 1px solid var(--border); border-radius: var(--r-panel);
-  box-shadow: var(--e-xs); overflow: hidden;
-}
-
+/* nothing selected, in the inspector strip */
 .detail-empty {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
   color: var(--faint);
@@ -529,69 +405,14 @@ input, textarea, select { font-family: inherit; }
 .detail-empty .big { font: 600 14px var(--font-ui); color: var(--text); }
 .detail-empty .hint { font: 400 12.5px var(--font-ui); color: var(--muted); }
 
-.detail-head { flex: none; display: flex; flex-direction: column; padding: 18px 22px 0; }
-.detail-url { display: flex; align-items: center; gap: 11px; }
-.detail-url .u {
-  flex: 1; min-width: 0; font: 400 13px var(--font-mono);
-  color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
 .status-pill {
   font: 500 12px var(--font-mono);
   padding: 4px 10px; border-radius: var(--r-pill); flex: none;
   background: color-mix(in srgb, currentColor 12%, transparent);
 }
-.resend {
-  display: flex; align-items: center; gap: 7px;
-  padding: 7px 14px; border-radius: var(--r-pill);
-  background: var(--accent); color: #fff;
-  font: 500 12.5px var(--font-ui);
-  cursor: pointer; flex: none; white-space: nowrap;
-  box-shadow: 0 4px 12px rgba(62,181,109,.30);
-  transition: background var(--t-base) var(--ease);
-}
-.resend:hover { background: var(--accent-hover); }
-.resend:active { transform: scale(.98); }
 
-.detail-tabs { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 16px; border-bottom: 1px solid var(--border); }
-.dtab {
-  position: relative; padding: 9px 13px 12px; cursor: pointer;
-  font: 500 13px var(--font-ui);
-  color: var(--muted);
-  transition: color var(--t-micro) var(--ease);
-}
-.dtab:hover { color: var(--text2); }
-.dtab.active { color: var(--text); }
-.dtab.active::after {
-  content: ""; position: absolute; left: 6px; right: 6px; bottom: -1px;
-  height: 2px; border-radius: 2px; background: var(--accent);
-}
-
-.detail-body { flex: 1; overflow-y: auto; min-height: 0; padding: 20px 22px 32px; }
 
 /* overview */
-.fact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.fact { background: var(--input); border: 1px solid var(--border); border-radius: 14px; padding: 13px 16px; }
-.fact .k {
-  font: 600 10.5px var(--font-ui);
-  letter-spacing: .09em; text-transform: uppercase; color: var(--faint);
-}
-.fact .v {
-  font: 400 13px var(--font-mono);
-  color: var(--text); margin-top: 6px; word-break: break-all;
-}
-.chips { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; }
-.chip {
-  display: inline-flex; gap: 6px; align-items: center;
-  font: 500 11.5px var(--font-ui);
-  border-radius: var(--r-pill); padding: 5px 11px;
-}
-.chip .icon { display: flex; }
-.chip.green  { color: var(--accent);      border: 1px solid rgba(62,181,109,.32);  background: rgba(62,181,109,.10); }
-.chip.blue   { color: var(--c-blue);      border: 1px solid rgba(94,134,201,.32);  background: rgba(94,134,201,.10); }
-.chip.violet { color: var(--c-violet);    border: 1px solid rgba(124,92,224,.30);  background: rgba(124,92,224,.10); }
-.chip.red    { color: var(--c-red-deep);  border: 1px solid rgba(216,134,137,.40); background: rgba(216,134,137,.12); }
-.chip.cyan   { color: var(--c-cyan);      border: 1px solid rgba(63,169,160,.32);  background: rgba(63,169,160,.10); }
-.chip.amber  { color: var(--c-amber);     border: 1px solid rgba(192,138,74,.32);  background: rgba(192,138,74,.10); }
 
 /* headers + body */
 .sec-label {
@@ -610,16 +431,6 @@ input, textarea, select { font-family: inherit; }
 }
 .sec-label .copy:hover { border-color: var(--accent); color: var(--accent-hover); }
 
-.hlist { border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
-.hlist-empty { font: 400 12px var(--font-mono); color: var(--faint); }
-.hrow {
-  display: grid; grid-template-columns: 230px minmax(0, 1fr);
-  font: 400 12px var(--font-mono);
-  border-bottom: 1px solid var(--bsoft);
-}
-.hrow:last-child { border-bottom: none; }
-.hrow .hk { color: var(--muted); background: var(--input); padding: 10px 15px; word-break: break-all; }
-.hrow .hv { color: var(--text); padding: 10px 15px; word-break: break-all; }
 
 .code {
   margin: 0; padding: 16px 18px;
@@ -767,8 +578,6 @@ input, textarea, select { font-family: inherit; }
   color: var(--text);
 }
 
-.flow-row .fmap { color: var(--c-violet); display: inline-flex; }
-.flow-row .fresent { color: var(--c-cyan); }
 
 /* intercept modal (paused at breakpoint) */
 .intercept {

@@ -175,20 +175,61 @@ export type UiEvent =
   | "ui.palette.open"
   | "ui.flow.action"
   | "ui.flow.chip"
+  /** Which kind of row in the scope tree was selected. */
+  | "ui.flow.scope"
   | "ui.onboarding";
 
 /** Values those events may carry. Mirrors `ui_event_name` in `commands.rs`. */
 export type UiEventName =
   | Section
-  | DetailTab
+  | PaneTab
   | FlowAction
   | FlowChipName
+  | ScopeKind
   | OnboardingStep;
 
 type Section = "flows" | "rules" | "break" | "scripts" | "certs";
-type DetailTab = "overview" | "request" | "response" | "timing" | "curl" | "ws";
-type FlowAction = "resend" | "copy_curl" | "group_toggle";
-type FlowChipName = "all" | "errors" | "slow" | "mcp";
+/**
+ * Panels in the two inspector panes. `ui.detail_tab` keeps its old name even
+ * though its values all changed with the dual-pane rebuild: renaming the event
+ * would split the usage history of one question ("which panel do people read?")
+ * across two names.
+ */
+type PaneTab =
+  | "header"
+  | "query"
+  | "body"
+  | "cookies"
+  | "raw"
+  | "summary"
+  | "treeview"
+  | "timing"
+  | "messages";
+type FlowAction = "resend" | "copy_curl";
+/**
+ * Chip ids across the three filter groups. They share one vocabulary because
+ * they are all answers to `ui.flow.chip`; the group is recoverable from the id.
+ */
+type FlowChipName =
+  | "http"
+  | "https"
+  | "ws"
+  | "json"
+  | "graphql"
+  | "mcp"
+  | "form"
+  | "xml"
+  | "document"
+  | "media"
+  | "other"
+  | "1xx"
+  | "2xx"
+  | "3xx"
+  | "4xx"
+  | "5xx"
+  | "err";
+/** Kinds of scope row, not the host or app itself — those are user data. */
+type ScopeKind = "all" | "pinned" | "app" | "host" | "path";
 type OnboardingStep = "open" | "done" | "skip";
 
 export { Channel };

@@ -19,12 +19,15 @@ export function FilterBar({
   patch,
   reset,
   searchRef,
+  onChip,
 }: {
   filter: FlowFilter;
   patch: (p: Partial<FlowFilter>) => void;
   reset: () => void;
   /** Focus target for ⌘F. */
   searchRef?: React.RefObject<HTMLInputElement | null>;
+  /** Which chip was pressed — the id only, never the search text. */
+  onChip?: (id: string) => void;
 }) {
   const active = activeFilterCount(filter);
 
@@ -56,19 +59,28 @@ export function FilterBar({
         label="Proto"
         chips={PROTOS}
         on={filter.proto}
-        toggle={(id) => patch({ proto: toggleIn(filter.proto, id) })}
+        toggle={(id) => {
+          patch({ proto: toggleIn(filter.proto, id) });
+          onChip?.(id);
+        }}
       />
       <ChipGroup
         label="Type"
         chips={FLOW_TYPES}
         on={filter.type}
-        toggle={(id) => patch({ type: toggleIn(filter.type, id) })}
+        toggle={(id) => {
+          patch({ type: toggleIn(filter.type, id) });
+          onChip?.(id);
+        }}
       />
       <ChipGroup
         label="Status"
         chips={STATUS_CLASSES}
         on={filter.status}
-        toggle={(id) => patch({ status: toggleIn(filter.status, id) })}
+        toggle={(id) => {
+          patch({ status: toggleIn(filter.status, id) });
+          onChip?.(id);
+        }}
       />
     </div>
   );

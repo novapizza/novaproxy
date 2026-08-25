@@ -1,3 +1,5 @@
+import { DEFAULT_COLUMNS, normalizeColumns, type ColumnId } from "./flows/columns";
+
 /**
  * Preferences that outlive a session.
  *
@@ -11,9 +13,6 @@
  * failing a launch over.
  */
 
-/** How the flow list is grouped when the app opens. */
-export type FlowGrouping = "grouped" | "flat";
-
 /**
  * What to do with the OS proxy at launch. `none` leaves the machine alone —
  * the default, because turning it on rewrites a setting the user depends on
@@ -22,10 +21,19 @@ export type FlowGrouping = "grouped" | "flat";
 export type LaunchProxyMode = "none" | "system";
 
 export interface Prefs {
-  flowGrouping: FlowGrouping;
   systemProxyAtLaunch: LaunchProxyMode;
-  /** Width of the flow list, in px, when the splitter has been dragged. */
-  flowListWidth: number;
+  /**
+   * Which table columns are shown, in display order. Eleven exist and seven fit
+   * a small window, so this is a real choice rather than a cosmetic one — see
+   * `src/flows/columns.tsx`.
+   */
+  columns: ColumnId[];
+  /**
+   * Follow the tail: keep the newest row selected as it arrives. Off by
+   * default — a selection that moves while you are reading a body is worse than
+   * one click.
+   */
+  autoSelect: boolean;
   /**
    * Look for a new version at launch. On by default: a debugging proxy holds a
    * root CA and a TLS stack, so running an old build is a security decision the
@@ -45,16 +53,12 @@ export interface Prefs {
 }
 
 export const DEFAULT_PREFS: Prefs = {
-  flowGrouping: "grouped",
   systemProxyAtLaunch: "none",
-  flowListWidth: 412,
+  columns: [...DEFAULT_COLUMNS],
+  autoSelect: false,
   autoCheckUpdates: true,
   onboardingDone: false,
 };
-
-/** Bounds for the flow list, so a stale or hand-edited width cannot hide a pane. */
-export const MIN_LIST_WIDTH = 280;
-export const MAX_LIST_WIDTH = 900;
 
 const KEY = "novaproxy.prefs";
 
@@ -62,11 +66,13 @@ const KEY = "novaproxy.prefs";
 export function normalizePrefs(raw: unknown): Prefs {
   const v = (raw ?? {}) as Partial<Record<keyof Prefs, unknown>>;
   return {
-    flowGrouping: v.flowGrouping === "flat" ? "flat" : "grouped",
     systemProxyAtLaunch: v.systemProxyAtLaunch === "system" ? "system" : "none",
-    flowListWidth: clampListWidth(
-      typeof v.flowListWidth === "number" ? v.flowListWidth : DEFAULT_PREFS.flowListWidth,
-    ),
+    // A pref blob written by a build that had the list view carries
+    // `flowGrouping` and `flowListWidth` and no `columns`; both are dropped and
+    // the default column set stands in. Nothing to migrate *from* — grouping is
+    // not a column choice — so this is a reset, not a translation.
+    columns: normalizeColumns(Array.isArray(v.columns) ? (v.columns as string[]) : null),
+    autoSelect: v.autoSelect === true,
     // Only an explicit `false` opts out, so a pref file written by an older
     // build keeps the safer default.
     autoCheckUpdates: v.autoCheckUpdates !== false,
@@ -75,12 +81,6 @@ export function normalizePrefs(raw: unknown): Prefs {
     // silently swallowing it.
     onboardingDone: v.onboardingDone === true,
   };
-}
-
-/** Keep a width inside the usable range (and reject NaN, which `Math.min` lets through). */
-export function clampListWidth(width: number): number {
-  if (!Number.isFinite(width)) return DEFAULT_PREFS.flowListWidth;
-  return Math.min(MAX_LIST_WIDTH, Math.max(MIN_LIST_WIDTH, Math.round(width)));
 }
 
 export function loadPrefs(store: Pick<Storage, "getItem"> = localStorage): Prefs {
