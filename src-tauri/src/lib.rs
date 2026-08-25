@@ -4,8 +4,10 @@
 // Public so the integration tests can drive the MCP endpoint directly.
 pub mod commands;
 pub mod crash;
+pub mod logbundle;
 pub mod logging;
 pub mod mcp;
+pub mod menu;
 pub mod state;
 pub mod update;
 
@@ -109,6 +111,13 @@ pub fn run() {
         .setup(|app| {
             use tauri::Manager;
             let st: Arc<AppState> = (*app.state::<Arc<AppState>>()).clone();
+
+            // The whole menu is ours, default included — see `menu`. Best
+            // effort: a failure here costs the menu bar, never the launch.
+            if let Err(e) = menu::install(app.handle()) {
+                tracing::warn!("could not install the menu: {e}");
+            }
+            app.on_menu_event(|app, event| menu::on_event(app, event.id().as_ref()));
             match CaMaterial::load_or_create(&st.data_dir) {
                 Ok(ca) => {
                     tracing::info!(
