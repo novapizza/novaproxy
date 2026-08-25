@@ -120,6 +120,13 @@ export const api = {
 
   resendFlow: (flow: Flow) => invoke<void>("resend_flow", { flow }),
 
+  /**
+   * The originating app's icon as a `data:` URL, by the process name a flow
+   * carries. Resolves with `null` when that app has no bundle to read one from —
+   * a normal answer, not a failure.
+   */
+  appIcon: (name: string) => invoke<string | null>("app_icon", { name }),
+
   caStatus: () => invoke<CaStatus>("ca_status"),
   /**
    * Install & trust the CA. Defaults to the current user's trust domain, which
@@ -154,6 +161,16 @@ export const api = {
    */
   onMenuCheckUpdates: (run: () => void): Promise<UnlistenFn> =>
     listen<null>("menu://check-updates", () => run()),
+
+  /**
+   * Subscribe to the native menu's "Keyboard Shortcuts" item.
+   *
+   * Same split as the update check: the menu owns the accelerator (⌘/ has to
+   * work with focus anywhere), the window owns the panel — which renders from
+   * `src/shortcuts.ts`, the only place that knows what the chords are.
+   */
+  onMenuShortcuts: (run: () => void): Promise<UnlistenFn> =>
+    listen<null>("menu://shortcuts", () => run()),
 };
 
 /**
@@ -175,20 +192,61 @@ export type UiEvent =
   | "ui.palette.open"
   | "ui.flow.action"
   | "ui.flow.chip"
+  /** Which kind of row in the scope tree was selected. */
+  | "ui.flow.scope"
   | "ui.onboarding";
 
 /** Values those events may carry. Mirrors `ui_event_name` in `commands.rs`. */
 export type UiEventName =
   | Section
-  | DetailTab
+  | PaneTab
   | FlowAction
   | FlowChipName
+  | ScopeKind
   | OnboardingStep;
 
 type Section = "flows" | "rules" | "break" | "scripts" | "certs";
-type DetailTab = "overview" | "request" | "response" | "timing" | "curl" | "ws";
-type FlowAction = "resend" | "copy_curl" | "group_toggle";
-type FlowChipName = "all" | "errors" | "slow" | "mcp";
+/**
+ * Panels in the two inspector panes. `ui.detail_tab` keeps its old name even
+ * though its values all changed with the dual-pane rebuild: renaming the event
+ * would split the usage history of one question ("which panel do people read?")
+ * across two names.
+ */
+type PaneTab =
+  | "header"
+  | "query"
+  | "body"
+  | "cookies"
+  | "raw"
+  | "summary"
+  | "treeview"
+  | "timing"
+  | "messages";
+type FlowAction = "resend" | "copy_curl";
+/**
+ * Chip ids across the three filter groups. They share one vocabulary because
+ * they are all answers to `ui.flow.chip`; the group is recoverable from the id.
+ */
+type FlowChipName =
+  | "http"
+  | "https"
+  | "ws"
+  | "json"
+  | "graphql"
+  | "mcp"
+  | "form"
+  | "xml"
+  | "document"
+  | "media"
+  | "other"
+  | "1xx"
+  | "2xx"
+  | "3xx"
+  | "4xx"
+  | "5xx"
+  | "err";
+/** Kinds of scope row, not the host or app itself — those are user data. */
+type ScopeKind = "all" | "pinned" | "app" | "host" | "path";
 type OnboardingStep = "open" | "done" | "skip";
 
 export { Channel };

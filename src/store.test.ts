@@ -334,3 +334,32 @@ describe("prependWithinCap (retention window)", () => {
     expect(MAX_FLOWS).toBe(10_000);
   });
 });
+
+describe("annotations", () => {
+  it("pins toggle, and are a set rather than a list", () => {
+    const s = useStore.getState();
+    s.togglePin("a");
+    s.togglePin("b");
+    s.togglePin("a");
+    expect([...useStore.getState().pinned]).toEqual(["b"]);
+  });
+
+  it("an empty comment removes the note instead of storing a blank", () => {
+    const s = useStore.getState();
+    s.setComment("a", "  look at this  ");
+    expect(useStore.getState().comments.a).toBe("look at this");
+    s.setComment("a", "   ");
+    expect(useStore.getState().comments).toEqual({});
+  });
+
+  it("Clear drops annotations with the flows they annotate", () => {
+    // A pin on a flow that no longer exists is a sidebar count pointing at
+    // nothing.
+    const s = useStore.getState();
+    s.togglePin("a");
+    s.setComment("a", "note");
+    useStore.getState().clear();
+    expect([...useStore.getState().pinned]).toEqual([]);
+    expect(useStore.getState().comments).toEqual({});
+  });
+});

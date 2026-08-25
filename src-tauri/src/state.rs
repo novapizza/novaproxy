@@ -1,6 +1,7 @@
 //! App-wide state: the CA material, the running engine handle, and the sink that
 //! bridges engine flow updates onto the frontend IPC channel.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -116,6 +117,10 @@ pub struct AppState {
     /// so the UI can offer the restore rather than the app raising a password
     /// dialog by itself during launch.
     pub pending_restore: AtomicBool,
+    /// App name → icon `data:` URL, or `None` when that app has no bundle to
+    /// read one from. Cached both ways: extracting an icon shells out to `sips`,
+    /// and a row that mentions a CLI tool must not pay for that on every repaint.
+    pub app_icons: Mutex<HashMap<String, Option<String>>>,
 }
 
 impl AppState {
@@ -148,6 +153,7 @@ impl AppState {
             mcp: Mutex::new(None),
             mcp_port: Arc::new(AtomicU16::new(0)),
             pending_restore: AtomicBool::new(false),
+            app_icons: Mutex::new(HashMap::new()),
         }
     }
 

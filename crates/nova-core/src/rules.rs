@@ -10,8 +10,13 @@ use nova_proto::{Rule, RuleKind};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// Forward the (possibly-mutated) request. `mapped_from` is set if a
-    /// Map Remote rule rewrote the destination.
-    Forward { mapped_from: Option<String> },
+    /// Map Remote rule rewrote the destination, and `rewritten` when a Rewrite
+    /// rule changed a header — the UI marks the flow as edited either way, and
+    /// a header rewrite is otherwise invisible in the outcome.
+    Forward {
+        mapped_from: Option<String>,
+        rewritten: bool,
+    },
     /// Short-circuit with a 403.
     Block,
     /// Short-circuit by serving a local file.
@@ -55,6 +60,7 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
 /// `url` is the reconstructed `scheme://host/path` used for matching.
 pub fn apply_request(rules: &[Rule], url: &str, parts: &mut Parts) -> Outcome {
     let mut mapped_from: Option<String> = None;
+    let mut rewritten = false;
 
     for rule in rules.iter().filter(|r| r.enabled) {
         if !glob_match(&rule.pattern, url) {
@@ -72,7 +78,12 @@ pub fn apply_request(rules: &[Rule], url: &str, parts: &mut Parts) -> Outcome {
                     if let (Ok(n), Ok(v)) =
                         (HeaderName::try_from(name.as_str()), HeaderValue::try_from(value.as_str()))
                     {
-                        parts.headers.insert(n, v);
+                        // Only a header that actually changed counts as a
+                        // rewrite: re-setting the value that was already there
+                        // is not an edit the user needs told about.
+                        let before = parts.headers.get(&n).cloned();
+                        parts.headers.insert(n, v.clone());
+                        rewritten = rewritten || before.as_ref() != Some(&v);
                     }
                 }
             }
@@ -86,7 +97,10 @@ pub fn apply_request(rules: &[Rule], url: &str, parts: &mut Parts) -> Outcome {
         }
     }
 
-    Outcome::Forward { mapped_from }
+    Outcome::Forward {
+        mapped_from,
+        rewritten,
+    }
 }
 
 /// Point `parts` at `target`'s host/scheme, preserving the original path+query.
@@ -210,7 +224,7 @@ mod tests {
         let mut parts = parts_for("http://api.example.com/v1");
         assert_eq!(
             apply_request(&[], "http://api.example.com/v1", &mut parts),
-            Outcome::Forward { mapped_from: None }
+            Outcome::Forward { mapped_from: None, rewritten: false }
         );
     }
 
@@ -221,7 +235,7 @@ mod tests {
         let mut parts = parts_for("http://x.com/a");
         assert_eq!(
             apply_request(&[r], "http://x.com/a", &mut parts),
-            Outcome::Forward { mapped_from: None }
+            Outcome::Forward { mapped_from: None, rewritten: false }
         );
     }
 
@@ -232,7 +246,7 @@ mod tests {
         let mut parts = parts_for("http://allowed.com/a");
         assert_eq!(
             apply_request(&[r], "http://allowed.com/a", &mut parts),
-            Outcome::Forward { mapped_from: None }
+            Outcome::Forward { mapped_from: None, rewritten: false }
         );
     }
 
@@ -265,7 +279,28 @@ mod tests {
         let mut parts = parts_for("http://x.com/a");
         assert_eq!(
             apply_request(&[r], "http://x.com/a", &mut parts),
-            Outcome::Forward { mapped_from: None }
+            Outcome::Forward { mapped_from: None, rewritten: false }
+        );
+    }
+
+    #[test]
+    fn re_setting_the_same_header_is_not_an_edit() {
+        // A rule that keeps a header at the value it already had changed
+        // nothing, and a marker on that row would be noise on every request the
+        // rule matches.
+        let mut r = rule(RuleKind::Rewrite);
+        r.header_name = Some("x-custom".into());
+        r.header_value = Some("same".into());
+        let mut parts = parts_for("http://x.com/a");
+        parts
+            .headers
+            .insert(HeaderName::from_static("x-custom"), HeaderValue::from_static("same"));
+        assert_eq!(
+            apply_request(&[r], "http://x.com/a", &mut parts),
+            Outcome::Forward {
+                mapped_from: None,
+                rewritten: false
+            }
         );
     }
 
@@ -276,7 +311,15 @@ mod tests {
         r.header_value = Some("novaproxy".into());
         let mut parts = parts_for("http://x.com/a");
         let outcome = apply_request(&[r], "http://x.com/a", &mut parts);
-        assert_eq!(outcome, Outcome::Forward { mapped_from: None });
+        // `rewritten` is what tells the UI this row was edited: a header rewrite
+        // leaves no other trace in the outcome.
+        assert_eq!(
+            outcome,
+            Outcome::Forward {
+                mapped_from: None,
+                rewritten: true
+            }
+        );
         assert_eq!(parts.headers.get("x-custom").unwrap(), "novaproxy");
     }
 
@@ -289,7 +332,10 @@ mod tests {
         let outcome = apply_request(&[r], "http://api.example.com/v1/users?q=1", &mut parts);
         assert_eq!(
             outcome,
-            Outcome::Forward { mapped_from: Some("api.example.com".into()) }
+            Outcome::Forward {
+                mapped_from: Some("api.example.com".into()),
+                rewritten: false
+            }
         );
         // Host + scheme point at the target; path/query are preserved.
         assert_eq!(parts.uri.host(), Some("staging.example.com"));
@@ -308,7 +354,7 @@ mod tests {
         r.target = Some("/local/only".into());
         let mut parts = parts_for("http://api.example.com/v1");
         let outcome = apply_request(&[r], "http://api.example.com/v1", &mut parts);
-        assert_eq!(outcome, Outcome::Forward { mapped_from: None });
+        assert_eq!(outcome, Outcome::Forward { mapped_from: None, rewritten: false });
         assert_eq!(parts.uri.host(), Some("api.example.com"));
     }
 

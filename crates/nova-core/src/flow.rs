@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use nova_proto::{
-    BodyPreview, Flow, FlowState, Header, NetworkConditions, Rule, TlsScope, WsMessage,
+    BodyPreview, Edits, Flow, FlowState, Header, NetworkConditions, Rule, TlsScope, WsMessage,
 };
 
 use crate::bodystore::BodyStore;
@@ -307,6 +307,7 @@ pub fn new_flow(
         tunneled: false,
         mcp: None,
         internal: false,
+        edits: Edits::default(),
     }
 }
 

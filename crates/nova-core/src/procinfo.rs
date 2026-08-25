@@ -20,11 +20,19 @@ use std::time::{Duration, Instant};
 pub struct ProcInfo {
     pub pid: u32,
     pub name: String,
+    /// Path of the outermost `.app` bundle, when the process is in one. Kept so
+    /// the UI can ask for the app's icon by name later, without holding a path
+    /// on every flow — a `.app` path per flow is bytes the table never renders.
+    pub bundle: Option<String>,
 }
 
 /// Caches a source-port → owning-process map, refreshed lazily.
 pub struct ProcResolver {
     cache: Mutex<Cache>,
+    /// App name → bundle path, accumulated as ports are resolved. Separate from
+    /// `cache` because it must *not* expire: the icon for "Google Chrome" is
+    /// still the icon for "Google Chrome" long after that connection closed.
+    bundles: Mutex<HashMap<String, String>>,
 }
 
 struct Cache {
@@ -42,6 +50,7 @@ impl ProcResolver {
                 ports: HashMap::new(),
                 refreshed_at: None,
             }),
+            bundles: Mutex::new(HashMap::new()),
         }
     }
 
@@ -61,7 +70,28 @@ impl ProcResolver {
             cache.ports = snapshot();
             cache.refreshed_at = Some(Instant::now());
         }
-        cache.ports.get(&port).cloned()
+        let found = cache.ports.get(&port).cloned();
+        // Remember the bundle for this app name. Done on the resolve path rather
+        // than in `snapshot` so the map only holds apps that actually appeared
+        // in the capture.
+        if let Some(info) = &found {
+            if let Some(bundle) = &info.bundle {
+                self.bundles
+                    .lock()
+                    .unwrap()
+                    .entry(info.name.clone())
+                    .or_insert_with(|| bundle.clone());
+            }
+        }
+        found
+    }
+
+    /// Where the app called `name` lives, if it was ever attributed to a flow.
+    ///
+    /// By name rather than by pid because that is what a flow carries, and
+    /// because the pid is long gone by the time someone scrolls back to the row.
+    pub fn bundle_for(&self, name: &str) -> Option<String> {
+        self.bundles.lock().unwrap().get(name).cloned()
     }
 }
 
@@ -91,9 +121,9 @@ fn snapshot() -> HashMap<u16, ProcInfo> {
         return map;
     };
 
-    // Cache pid→name within one snapshot so multiple sockets of one app don't
-    // re-query the process table.
-    let mut names: HashMap<u32, String> = HashMap::new();
+    // Cache pid→(name, bundle) within one snapshot so multiple sockets of one
+    // app don't re-query the process table.
+    let mut names: HashMap<u32, (String, Option<String>)> = HashMap::new();
     for si in sockets {
         let ProtocolSocketInfo::Tcp(tcp) = si.protocol_socket_info else {
             continue;
@@ -101,32 +131,46 @@ fn snapshot() -> HashMap<u16, ProcInfo> {
         let Some(&pid) = si.associated_pids.first() else {
             continue;
         };
-        let name = names
+        let (name, bundle) = names
             .entry(pid)
-            .or_insert_with(|| app_name(pid).unwrap_or_else(|| format!("pid {pid}")))
+            .or_insert_with(|| {
+                let path = libproc::proc_pid::pidpath(pid as i32).ok();
+                let bundle = path.as_deref().and_then(bundle_path);
+                let name = path
+                    .as_deref()
+                    .and_then(bundle_app_name)
+                    .or_else(|| libproc::proc_pid::name(pid as i32).ok().filter(|n| !n.is_empty()))
+                    .unwrap_or_else(|| format!("pid {pid}"));
+                (name, bundle)
+            })
             .clone();
         // Keep the first process seen for a given local port.
-        map.entry(tcp.local_port)
-            .or_insert(ProcInfo { pid, name });
+        map.entry(tcp.local_port).or_insert(ProcInfo {
+            pid,
+            name,
+            bundle,
+        });
     }
     map
 }
 
-/// Resolve a PID to the app the user would recognize.
+/// Why the name comes from the bundle, not the executable.
 ///
 /// Many apps do their networking in a child process (Chrome's "Google Chrome
 /// Helper", Electron/Safari helpers, XPC services). Those helper binaries live
-/// *inside* the parent app's `.app` bundle, so we roll the socket-owning PID up
-/// to its outermost bundle name. Standalone executables that aren't part of a
-/// bundle (CLI tools, daemons, dev servers) keep their own process name.
+/// *inside* the parent app's `.app` bundle, so `snapshot` rolls the
+/// socket-owning PID up to its outermost bundle — for the name the user
+/// recognises, and for the icon that belongs to it. Standalone executables that
+/// aren't part of a bundle (CLI tools, daemons, dev servers) keep their own
+/// process name and have no icon.
+/// The path of the outermost `*.app` bundle in an executable path.
+///
+/// Same rule as [`bundle_app_name`], returning the directory rather than the
+/// name, because that is what reading the icon out of it needs.
 #[cfg(target_os = "macos")]
-fn app_name(pid: u32) -> Option<String> {
-    if let Ok(path) = libproc::proc_pid::pidpath(pid as i32) {
-        if let Some(app) = bundle_app_name(&path) {
-            return Some(app);
-        }
-    }
-    libproc::proc_pid::name(pid as i32).ok().filter(|n| !n.is_empty())
+fn bundle_path(path: &str) -> Option<String> {
+    let idx = path.find(".app/")?;
+    Some(path[..idx + 4].to_string())
 }
 
 /// The outermost `*.app` bundle name in an executable path, if any. The *first*

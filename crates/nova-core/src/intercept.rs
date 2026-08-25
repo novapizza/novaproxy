@@ -165,6 +165,7 @@ impl HttpHandler for NovaHandler {
 
         match outcome {
             Outcome::Block => {
+                flow.edits.rule = true;
                 let msg = b"Blocked by NovaProxy rule".to_vec();
                 let len = msg.len() as u64;
                 flow.status = Some(403);
@@ -183,6 +184,7 @@ impl HttpHandler for NovaHandler {
                 RequestOrResponse::Response(resp)
             }
             Outcome::MapLocal(file) => {
+                flow.edits.rule = true;
                 match std::fs::read(&file) {
                     Ok(bytes) => {
                         let ct = guess_media_type(&file);
@@ -218,7 +220,11 @@ impl HttpHandler for NovaHandler {
                     }
                 }
             }
-            Outcome::Forward { mapped_from } => {
+            Outcome::Forward {
+                mapped_from,
+                rewritten,
+            } => {
+                flow.edits.rule = mapped_from.is_some() || rewritten;
                 flow.mapped_from = mapped_from;
 
                 // WebSocket upgrade: record the flow and register a route so the
@@ -266,6 +272,7 @@ impl HttpHandler for NovaHandler {
                                 f.state = FlowState::Error;
                                 f.error = Some("Aborted at breakpoint".into());
                                 f.duration_ms = Some(now_ms() - started);
+                                f.edits.breakpoint = true;
                             });
                             let resp = Response::builder()
                                 .status(502)
@@ -285,6 +292,9 @@ impl HttpHandler for NovaHandler {
                             let new_headers = collect_headers(&parts.headers);
                             self.shared.update(&id, |f| {
                                 f.state = FlowState::Started;
+                                // Resuming without touching anything is not an
+                                // edit: the pause itself changed nothing.
+                                f.edits.breakpoint = f.request_headers != new_headers;
                                 f.request_headers = new_headers;
                             });
                         }
@@ -313,6 +323,7 @@ impl HttpHandler for NovaHandler {
                                 f.status = Some(403);
                                 f.error = Some("Aborted by script".into());
                                 f.duration_ms = Some(now_ms() - started);
+                                f.edits.script = true;
                             });
                             let resp = Response::builder()
                                 .status(403)
@@ -322,7 +333,12 @@ impl HttpHandler for NovaHandler {
                         }
                         apply_headers(&mut parts.headers, &res.headers);
                         let nh = collect_headers(&parts.headers);
-                        self.shared.update(&id, |f| f.request_headers = nh);
+                        self.shared.update(&id, |f| {
+                            // A hook that hands back the headers it was given
+                            // changed nothing, and should leave no marker.
+                            f.edits.script = f.edits.script || f.request_headers != nh;
+                            f.request_headers = nh;
+                        });
                     }
                 }
 

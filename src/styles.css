@@ -54,6 +54,9 @@ input, textarea, select { font-family: inherit; }
   --card: #ffffff;
   --input: #f7faf8;
   --hover: rgba(27,26,61,.05);
+  /* flows table: zebra row, sticky header fill */
+  --row-alt: rgba(242,246,243,.55);
+  --thead: rgba(242,246,243,.96);
 
   /* hairlines — depth comes from white on wash, never from heavy strokes */
   --border: rgba(27,26,61,.07);
@@ -65,6 +68,12 @@ input, textarea, select { font-family: inherit; }
   --text2: #3b3a5c;
   --muted: #6b6a86;
   --faint: #a9a8be;
+
+  /* flows table metrics — --row-h is measured back out of the DOM by
+     FlowTable, so changing it here is enough (design.md §4.1) */
+  --row-h: 34px;
+  --thead-h: 32px;
+  --tree-w: 252px;
 
   --shadow: rgba(27,26,61,.10);
   --overlay: rgba(27,26,61,.28);
@@ -170,7 +179,11 @@ input, textarea, select { font-family: inherit; }
 .rail-gear:hover { background: var(--hover); color: var(--text2); }
 
 /* ------------------------------ content column ------------------------------ */
-.content { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+/* `min-height: 0` is load-bearing, not boilerplate: without it this column
+   cannot shrink below its content, and the flows table's own min-height (its
+   five-row floor) pushes the whole column past the bottom of the window —
+   dragging the status bar off screen. */
+.content { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 /* ------------------------------ header bar ------------------------------ */
 .toolbar {
@@ -272,7 +285,6 @@ input, textarea, select { font-family: inherit; }
 
 /* the app filter in the toolbar sits at the design's 208px, and the settings
    rows hand it the rest of the row */
-.dd-app { width: 208px; flex: none; }
 .pref-row .dd { flex: 1; min-width: 0; }
 
 .spacer { flex: 1; }
@@ -287,10 +299,17 @@ input, textarea, select { font-family: inherit; }
   transition: border-color var(--t-micro) var(--ease);
 }
 .cmd-btn:hover { border-color: rgba(27,26,61,.22); }
+/* A keycap is not machine text: ⌘ ⇧ ↵ ↑ come from the *system* font, because
+   JetBrains Mono does not carry them and the fallback is tofu. The mono stack
+   stays behind it for the letters and digits, where its slashed zero is what
+   keeps ⌘0 (sidebar) apart from ⌘O (open session). */
 .kbd {
-  font: 500 10.5px var(--font-mono);
+  font: 500 10.5px -apple-system, BlinkMacSystemFont, "Segoe UI Symbol", var(--font-mono);
   background: rgba(27,26,61,.05); border-radius: 5px; padding: 2px 5px; color: var(--muted);
+  font-variant-numeric: slashed-zero;
 }
+/* One cap per key in the dialog, so they read as separate presses. */
+.sc-row .keys .kbd { min-width: 20px; text-align: center; }
 
 .proxy-toggle {
   display: flex; align-items: center; gap: 10px; cursor: pointer;
@@ -330,87 +349,13 @@ input, textarea, select { font-family: inherit; }
 .restore-bar .rb-x { color: var(--faint); cursor: pointer; display: flex; }
 .restore-bar .rb-x:hover { color: var(--text2); }
 
-/* ------------------------------ flows section ------------------------------ */
-.flows-wrap { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-
-/* stat strip above the two panes */
-.stat-row { flex: none; display: flex; gap: 14px; padding: 20px 24px 4px; }
-.stat {
-  flex: 1; min-width: 0; padding: 14px 16px; border-radius: 18px;
-  background: rgba(255,255,255,.78); backdrop-filter: blur(14px);
-  border: 1px solid var(--border); box-shadow: var(--e-xs);
-  transition: box-shadow var(--t-base) var(--ease);
-}
-.stat:hover { box-shadow: var(--e-sm); }
-.stat .k {
-  display: flex; align-items: center; gap: 9px;
-  font: 600 11px var(--font-ui); letter-spacing: .09em; text-transform: uppercase; color: var(--muted);
-}
-.stat .k .icon { display: flex; flex: none; }
-.stat .row { display: flex; align-items: baseline; gap: 7px; margin-top: 9px; min-width: 0; }
-/* a stat is a fixed-width card, so an unexpectedly long value has to clip
-   inside it rather than run over the card beside it */
-.stat .v {
-  font: 500 25px var(--font-mono); letter-spacing: -.02em; font-variant-numeric: tabular-nums;
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.stat .u { font: 400 11.5px var(--font-ui); color: var(--faint); }
-.stat.green .v { color: var(--accent); }
-.stat.red .v { color: var(--c-red); }
-.stat.violet .v { color: var(--c-violet); }
-
-.spark { width: 240px; flex: none; padding: 14px 16px 10px; }
-.spark .k { justify-content: space-between; }
-.spark .rate { font: 400 11.5px var(--font-mono); color: var(--c-indigo); letter-spacing: 0; text-transform: none; }
-.spark svg { width: 100%; height: 46px; margin-top: 8px; display: block; overflow: visible; }
-
-.flows { flex: 1; display: flex; min-height: 0; padding: 14px 24px 20px; }
-
-.flow-list {
-  /* Width is set inline from the persisted preference; this is the fallback. */
-  width: 412px; flex: none;
-  display: flex; flex-direction: column; min-height: 0; min-width: 0;
-  background: var(--list); backdrop-filter: blur(16px);
-  border: 1px solid var(--border); border-radius: var(--r-panel);
-  box-shadow: var(--e-xs); overflow: hidden;
-}
-
-/*
- * Draggable divider between the list and the inspector. It doubles as the
- * design's 14px gutter — the panels are separated by the wash, so no visible
- * line is needed until the pointer is on the handle.
- */
-.splitter {
-  flex: none; width: 14px; position: relative; cursor: col-resize;
-  background: transparent; outline: none; touch-action: none;
-}
-.splitter:focus-visible .grip { opacity: 1; }
-/* Grip, shown only on hover so the chrome stays quiet. */
-.splitter .grip {
-  position: absolute; top: 50%; left: 50%; width: 3px; height: 32px;
-  transform: translate(-50%, -50%); border-radius: var(--r-pill); opacity: 0;
-  background: var(--accent); transition: opacity var(--t-micro) var(--ease);
-}
-.splitter:hover .grip { opacity: .9; }
-
-.flow-list-head {
-  flex: none; padding: 14px 16px 12px;
-  border-bottom: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 11px;
-}
-.flow-list-head .fl-meta {
-  display: flex; align-items: center; gap: 12px;
-  font: 600 11px var(--font-ui);
-  letter-spacing: .09em; text-transform: uppercase; color: var(--muted);
-}
-.flow-list-head .grouptog {
-  display: flex; align-items: center; gap: 5px;
-  cursor: pointer; color: var(--text2); white-space: nowrap;
-}
-.flow-list-head .grouptog:hover { color: var(--accent-hover); }
+/* ------------------------ shared flow vocabulary --------------------------
+   Chips, badges, the status scale and the empty states. Shared because the
+   table, the summary bar, the inspector and the intercept modal all speak them;
+   the layout that used to live here (stat strip, list, splitter) went with the
+   list view. */
 
 /* filter chips */
-.chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
 .fchip {
   padding: 5px 11px; border-radius: var(--r-pill);
   border: 1px solid var(--border2); background: rgba(255,255,255,.7);
@@ -420,54 +365,12 @@ input, textarea, select { font-family: inherit; }
 .fchip:hover { border-color: rgba(27,26,61,.24); }
 .fchip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-.flow-scroll { flex: 1; overflow-y: auto; min-height: 0; }
-
-.group-head {
-  display: flex; align-items: center; gap: 8px;
-  padding: 9px 16px;
-  font: 600 12.5px var(--font-ui);
-  color: var(--text);
-  position: sticky; top: 0; z-index: 1;
-  background: rgba(247,251,248,.95); backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--border);
-}
-.group-head .hdot { width: 6px; height: 6px; border-radius: var(--r-pill); background: var(--accent); flex: none; }
-.group-head .hname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.group-head .hcount { flex: none; font: 400 11px var(--font-mono); color: var(--faint); }
 .tls-chip {
   font: 500 9px var(--font-mono); letter-spacing: .08em;
   color: var(--accent);
   background: rgba(62,181,109,.10);
   border-radius: 4px; padding: 2px 5px; flex: none;
 }
-
-.flow-row {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 16px; cursor: pointer; width: 100%; text-align: left;
-  border-left: 2px solid transparent;
-  border-bottom: 1px solid var(--bsoft);
-  transition: background var(--t-micro) var(--ease);
-  /* No entry animation: the list is windowed, so rows mount as they are
-     scrolled into view and an animation would flash on every scroll. */
-}
-.flow-row:hover { background: rgba(27,26,61,.03); }
-.flow-row.sel {
-  border-left-color: var(--accent);
-  background: rgba(62,181,109,.11);
-}
-.flow-row .col { flex: 1; min-width: 0; }
-.flow-row .fpath {
-  font: 400 12px var(--font-mono);
-  color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.flow-row .fsub {
-  display: flex; align-items: center; gap: 6px;
-  font: 400 10.5px var(--font-ui);
-  color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 3px;
-}
-.flow-row .fright { text-align: right; flex: none; }
-.flow-row .fstatus { font: 500 12px var(--font-mono); font-variant-numeric: tabular-nums; }
-.flow-row .ftime { font: 400 10.5px var(--font-mono); color: var(--faint); margin-top: 3px; }
 
 /* method badge */
 .badge {
@@ -492,22 +395,18 @@ input, textarea, select { font-family: inherit; }
 .s-pending { color: var(--faint); }
 
 /* empty state */
+/* 60px of top padding pushed the message out of sight whenever the table was
+   short — a filter bar with conditions open is exactly when an empty result
+   needs explaining. */
 .list-empty {
-  padding: 60px 24px; text-align: center; color: var(--muted);
+  padding: 28px 24px; text-align: center; color: var(--muted);
   font: 400 12.5px var(--font-ui);
   animation: novafade var(--t-page);
 }
 .list-empty .icon { display: flex; justify-content: center; color: var(--faint); margin-bottom: 12px; }
 .list-empty .big { font: 500 13.5px var(--font-ui); color: var(--text); margin-bottom: 5px; }
 
-/* ------------------------------ detail inspector ------------------------------ */
-.detail {
-  flex: 1; display: flex; flex-direction: column; min-width: 0;
-  background: rgba(255,255,255,.9);
-  border: 1px solid var(--border); border-radius: var(--r-panel);
-  box-shadow: var(--e-xs); overflow: hidden;
-}
-
+/* nothing selected, in the inspector strip */
 .detail-empty {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
   color: var(--faint);
@@ -520,69 +419,14 @@ input, textarea, select { font-family: inherit; }
 .detail-empty .big { font: 600 14px var(--font-ui); color: var(--text); }
 .detail-empty .hint { font: 400 12.5px var(--font-ui); color: var(--muted); }
 
-.detail-head { flex: none; display: flex; flex-direction: column; padding: 18px 22px 0; }
-.detail-url { display: flex; align-items: center; gap: 11px; }
-.detail-url .u {
-  flex: 1; min-width: 0; font: 400 13px var(--font-mono);
-  color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
 .status-pill {
   font: 500 12px var(--font-mono);
   padding: 4px 10px; border-radius: var(--r-pill); flex: none;
   background: color-mix(in srgb, currentColor 12%, transparent);
 }
-.resend {
-  display: flex; align-items: center; gap: 7px;
-  padding: 7px 14px; border-radius: var(--r-pill);
-  background: var(--accent); color: #fff;
-  font: 500 12.5px var(--font-ui);
-  cursor: pointer; flex: none; white-space: nowrap;
-  box-shadow: 0 4px 12px rgba(62,181,109,.30);
-  transition: background var(--t-base) var(--ease);
-}
-.resend:hover { background: var(--accent-hover); }
-.resend:active { transform: scale(.98); }
 
-.detail-tabs { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 16px; border-bottom: 1px solid var(--border); }
-.dtab {
-  position: relative; padding: 9px 13px 12px; cursor: pointer;
-  font: 500 13px var(--font-ui);
-  color: var(--muted);
-  transition: color var(--t-micro) var(--ease);
-}
-.dtab:hover { color: var(--text2); }
-.dtab.active { color: var(--text); }
-.dtab.active::after {
-  content: ""; position: absolute; left: 6px; right: 6px; bottom: -1px;
-  height: 2px; border-radius: 2px; background: var(--accent);
-}
-
-.detail-body { flex: 1; overflow-y: auto; min-height: 0; padding: 20px 22px 32px; }
 
 /* overview */
-.fact-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.fact { background: var(--input); border: 1px solid var(--border); border-radius: 14px; padding: 13px 16px; }
-.fact .k {
-  font: 600 10.5px var(--font-ui);
-  letter-spacing: .09em; text-transform: uppercase; color: var(--faint);
-}
-.fact .v {
-  font: 400 13px var(--font-mono);
-  color: var(--text); margin-top: 6px; word-break: break-all;
-}
-.chips { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; }
-.chip {
-  display: inline-flex; gap: 6px; align-items: center;
-  font: 500 11.5px var(--font-ui);
-  border-radius: var(--r-pill); padding: 5px 11px;
-}
-.chip .icon { display: flex; }
-.chip.green  { color: var(--accent);      border: 1px solid rgba(62,181,109,.32);  background: rgba(62,181,109,.10); }
-.chip.blue   { color: var(--c-blue);      border: 1px solid rgba(94,134,201,.32);  background: rgba(94,134,201,.10); }
-.chip.violet { color: var(--c-violet);    border: 1px solid rgba(124,92,224,.30);  background: rgba(124,92,224,.10); }
-.chip.red    { color: var(--c-red-deep);  border: 1px solid rgba(216,134,137,.40); background: rgba(216,134,137,.12); }
-.chip.cyan   { color: var(--c-cyan);      border: 1px solid rgba(63,169,160,.32);  background: rgba(63,169,160,.10); }
-.chip.amber  { color: var(--c-amber);     border: 1px solid rgba(192,138,74,.32);  background: rgba(192,138,74,.10); }
 
 /* headers + body */
 .sec-label {
@@ -601,16 +445,6 @@ input, textarea, select { font-family: inherit; }
 }
 .sec-label .copy:hover { border-color: var(--accent); color: var(--accent-hover); }
 
-.hlist { border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
-.hlist-empty { font: 400 12px var(--font-mono); color: var(--faint); }
-.hrow {
-  display: grid; grid-template-columns: 230px minmax(0, 1fr);
-  font: 400 12px var(--font-mono);
-  border-bottom: 1px solid var(--bsoft);
-}
-.hrow:last-child { border-bottom: none; }
-.hrow .hk { color: var(--muted); background: var(--input); padding: 10px 15px; word-break: break-all; }
-.hrow .hv { color: var(--text); padding: 10px 15px; word-break: break-all; }
 
 .code {
   margin: 0; padding: 16px 18px;
@@ -758,8 +592,6 @@ input, textarea, select { font-family: inherit; }
   color: var(--text);
 }
 
-.flow-row .fmap { color: var(--c-violet); display: inline-flex; }
-.flow-row .fresent { color: var(--c-cyan); }
 
 /* intercept modal (paused at breakpoint) */
 .intercept {
@@ -1112,3 +944,585 @@ input, textarea, select { font-family: inherit; }
   0% { transform: translateX(-100%); }
   100% { transform: translateX(285%); }
 }
+
+
+/* ==========================================================================
+   Flows — scope tree, filter bar, table, inspector strip (design.md §4.1)
+   ========================================================================== */
+
+.flows2 { flex: 1; display: flex; min-height: 0; min-width: 0; }
+
+/* ------------------------------- scope tree ------------------------------- */
+
+.tree {
+  /* Width comes from the divider; this is the first-paint fallback. */
+  width: var(--tree-w); flex: none;
+  display: flex; flex-direction: column; min-height: 0;
+  background: rgba(255,255,255,.66);
+  border-right: 1px solid var(--border);
+}
+.tree-body { flex: 1; overflow-y: auto; min-height: 0; padding: 14px 10px 10px; }
+
+.tree-eyebrow, .tree-head {
+  display: flex; align-items: center; gap: 8px; padding: 0 8px;
+  font: 600 10.5px var(--font-ui); letter-spacing: .09em; text-transform: uppercase;
+  color: var(--faint);
+}
+.tree-head { margin-top: 18px; margin-bottom: 6px; }
+.tree-head .n, .tree-row .n { font: 400 11px var(--font-mono); color: var(--faint); flex: none; }
+
+.tree-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 9px; border-radius: 9px; cursor: pointer;
+  font: 500 12.5px var(--font-ui); color: var(--text2);
+}
+.tree-row:hover { background: var(--hover); }
+.tree-row.mono .t { font: 400 11.5px var(--font-mono); }
+.tree-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Selection is the accent, but as a tint plus a hairline rather than a fill:
+   the tree is a permanent surface, and a solid green row would shout. */
+.tree-row.on {
+  background: #fff; border: 1px solid rgba(62,181,109,.28);
+  color: var(--accent); padding: 6px 8px;
+}
+.tree-row.indent { padding-left: 8px; }
+.tree-row.indent2 { padding-left: 26px; }
+.tree-row.indent3 { padding-left: 40px; }
+.tree-row .twist { display: flex; flex: none; color: var(--faint); width: 12px; }
+.tree-row .twist.hidden { visibility: hidden; }
+.tree-none { padding: 8px 10px; font: 400 11.5px var(--font-ui); color: var(--faint); }
+
+.tree-foot { flex: none; padding: 10px; border-top: 1px solid var(--border); display: flex; }
+.tree-foot > * { flex: none; }
+.tree-foot {
+  align-items: center; gap: 8px;
+}
+.tree-foot input {
+  flex: 1; min-width: 0; height: 32px; padding: 0 4px;
+  background: transparent; border: none; outline: none;
+  font: 400 12px var(--font-ui); color: var(--text);
+}
+.tree-foot {
+  padding: 8px 10px;
+}
+.tree-foot > .kbd { font: 400 10.5px var(--font-mono); color: var(--faint); }
+
+/* ------------------------------ filter bar ------------------------------- */
+
+.flows2-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+
+.fbar {
+  flex: none; display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 18px; border-bottom: 1px solid var(--border);
+}
+.fbar-search {
+  display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 12px;
+  border-radius: var(--r-field); background: var(--input); border: 1px solid var(--border);
+}
+.fbar-search:focus-within {
+  border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12);
+}
+.fbar-search .mag, .fbar-search .clear { display: flex; flex: none; color: var(--faint); }
+.fbar-search .clear { cursor: pointer; color: var(--muted); }
+.fbar-search input {
+  flex: 1; min-width: 0; background: transparent; border: none; outline: none;
+  font: 400 12px var(--font-mono); color: var(--text);
+}
+.fbar-search .reset, .fbar-search .save {
+  flex: none; font: 500 11.5px var(--font-ui); color: var(--accent); cursor: pointer; white-space: nowrap;
+}
+.fbar-search .save, .fbar-search .build { color: var(--muted); }
+.fbar-search .build {
+  flex: none; display: flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: var(--r-pill); border: 1px solid transparent;
+  font: 500 11.5px var(--font-ui); cursor: pointer; white-space: nowrap;
+}
+.fbar-search .build:hover { color: var(--text2); background: var(--hover); }
+.fbar-search .build.on { color: var(--accent); border-color: rgba(62,181,109,.32); background: rgba(62,181,109,.08); }
+.fbar-search .reset:hover, .fbar-search .save:hover { color: var(--accent-hover); }
+
+/* A saved filter is a chip among the chips, with its own way out. */
+.fchip.saved { display: inline-flex; align-items: center; gap: 6px; padding-right: 6px; }
+.fchip.saved .x { display: flex; color: var(--faint); }
+.fchip.saved .x:hover { color: var(--c-red-deep); }
+.fchip.saved:hover { border-color: rgba(27,26,61,.24); }
+
+/* Groups, not a single row: the eyebrow is what says which axis a chip is on,
+   and that is the whole reason the rows are split (design.md §4.1). */
+.chip-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.chip-group .cg-label {
+  width: 44px; flex: none;
+  font: 600 10px var(--font-ui); letter-spacing: .09em; text-transform: uppercase; color: var(--faint);
+}
+.chip-group .fchip { padding: 3px 10px; font-size: 11px; }
+
+/* -------------------------------- the table ------------------------------- */
+
+/* The table is the surface this section exists for, so it gets a floor: five
+   rows and a header. Without one, opening the filter conditions on a short
+   window squeezed it to a sliver and the inspector kept its 42%. */
+.ftable {
+  flex: 1 1 auto; overflow: auto; outline: none;
+  min-height: calc(var(--row-h) * 5 + var(--thead-h));
+}
+
+.ft-head, .ft-row { display: grid; align-items: center; gap: 0; padding: 0 14px; }
+
+.ft-head {
+  position: sticky; top: 0; z-index: 4; height: var(--thead-h);
+  background: var(--thead); backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border2);
+  font: 600 10.5px var(--font-ui); letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+}
+.ft-head .r { text-align: right; }
+.ft-head > span { position: relative; padding-right: 8px; }
+.ft-head .sortable { cursor: pointer; }
+.ft-head .sortable:hover { color: var(--text2); }
+.ft-head .sorted { color: var(--accent); }
+.ft-head .sg { margin-left: 4px; font-size: 8px; vertical-align: middle; }
+/* The resize grip: invisible until hovered, so the header stays quiet. */
+.ft-head .grip {
+  position: absolute; top: 0; right: -3px; width: 7px; height: 100%;
+  cursor: col-resize; touch-action: none;
+}
+.ft-head .grip::after {
+  content: ""; position: absolute; top: 6px; bottom: 6px; left: 3px; width: 1px;
+  background: var(--accent); opacity: 0; transition: opacity var(--t-micro) var(--ease);
+}
+.ft-head .grip:hover::after { opacity: .8; }
+
+.ft-row {
+  height: var(--row-h); cursor: pointer;
+  border-left: 2px solid transparent; border-bottom: 1px solid var(--bsoft);
+  /* No entry animation: rows mount as they scroll into view (design.md §7). */
+}
+.ft-row.even { background: rgba(255,255,255,.72); }
+.ft-row.odd { background: var(--row-alt); }
+.ft-row:hover { background: var(--hover); }
+.ft-row.sel { border-left-color: var(--accent); background: rgba(62,181,109,.11); }
+/* Marked rows are a *set*, so they read as a wash rather than as the one row
+   the inspector is showing: ⌘-click adds to a batch, it does not move focus. */
+.ft-row.marked { background: rgba(140,120,243,.13); }
+.ft-row.marked.sel { background: rgba(62,181,109,.16); border-left-color: var(--c-indigo); }
+/* A flow still in flight has no status and no duration yet; dim the row rather
+   than leaving it looking like a completed one with holes in it. */
+.ft-row.pending { color: var(--muted); }
+
+.ft-row > span {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 400 11.5px var(--font-mono); color: var(--text2);
+  font-variant-numeric: tabular-nums;
+  padding-right: 10px;
+}
+/* Right-aligned cells still need a right gutter: without one, `SSL` and the
+   label of whatever column follows it run together into `SSLEDITED`. */
+.ft-row > span.r, .ft-head > span.r { text-align: right; padding-right: 8px; padding-left: 10px; }
+
+.ft-row .c-seq { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
+.ft-row .rdot { width: 6px; height: 6px; border-radius: var(--r-pill); flex: none; background: var(--accent); }
+.ft-row .rdot.s-4xx, .ft-row .rdot.s-5xx, .ft-row .rdot.s-err { background: var(--c-red); }
+.ft-row .rdot.s-3xx { background: var(--c-violet); }
+.ft-row .rdot.s-1xx { background: var(--c-blue); }
+.ft-row .rdot.s-pending { background: var(--faint); animation: novapulse 1.4s var(--ease) infinite; }
+
+.ft-row .c-url { display: flex; align-items: center; gap: 6px; color: var(--text); }
+.ft-row .c-url .u { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ft-row .pinmark { display: flex; flex: none; color: var(--c-amber); }
+.ft-row .c-url .tag {
+  flex: none; font: 600 8.5px var(--font-ui); letter-spacing: .07em;
+  border-radius: 4px; padding: 1px 4px; border: 1px solid currentColor;
+}
+.ft-row .c-url .tag.mcp { color: var(--c-indigo); }
+.ft-row .c-url .tag.ws { color: var(--c-indigo); }
+.ft-row .c-url .tag.map { color: var(--c-amber); }
+.ft-row .c-url .tag.resent { color: var(--c-cyan); }
+
+.ft-row .c-client { display: flex; align-items: center; gap: 7px; font-family: var(--font-ui); }
+.ft-row .c-client svg { flex: none; color: var(--c-indigo); }
+.ft-row .appicon { width: 14px; height: 14px; flex: none; border-radius: 3px; }
+.ft-row .c-client .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ft-row .c-method, .ft-row .c-status { overflow: visible; }
+.ft-row .c-edited { display: flex; align-items: center; gap: 3px; }
+.ft-row .c-comment .note { font-family: var(--font-ui); color: var(--c-indigo); }
+.ft-row .etag {
+  font: 600 9px var(--font-ui); letter-spacing: .04em;
+  width: 14px; text-align: center; border-radius: 3px;
+  border: 1px solid currentColor;
+}
+.ft-row .etag.rule { color: var(--c-amber); }
+.ft-row .etag.script { color: var(--c-indigo); }
+.ft-row .etag.bp { color: var(--c-red-deep); }
+.ft-row .ssl { display: flex; justify-content: flex-end; }
+.ft-row .ssl.on { color: var(--accent); }
+.ft-row .ssl.off { color: var(--faint); }
+.ft-row .ssl.tunneled { color: var(--c-amber); }
+
+/* --------------------------- inspector strip ----------------------------- */
+
+/* 42% of the section, per the design. Fixed rather than a minimum so the table
+   above it does not jump every time a taller body loads. */
+/* 42% by default, but it yields to the table's floor before the table does —
+   `flex: 0 1 auto` is what lets it shrink at all. */
+.insp-strip {
+  /* Height comes from the divider; `flex: 0 1 auto` is what lets it yield to
+     the table's floor rather than the table yielding to it. */
+  flex: 0 1 auto; min-height: 96px;
+  display: flex; flex-direction: column;
+  border-top: 1px solid var(--border); background: rgba(255,255,255,.9);
+}
+.insp-strip .detail-empty { flex: 1; }
+
+/* Auto Select, in the status bar. */
+.statusbar .autosel {
+  display: flex; align-items: center; gap: 5px; cursor: pointer; color: var(--muted);
+}
+.statusbar .autosel:hover { color: var(--text2); }
+.statusbar .autosel.on { color: var(--accent); }
+
+
+/* --------------------------- summary bar + panes -------------------------- */
+
+/* The inspector's head. Stated once here so the two panes below can be nothing
+   but tabs and bodies (design.md §4.1). */
+.summary-bar {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  height: 38px; padding: 0 16px;
+  background: rgba(255,255,255,.8);
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+}
+.summary-bar .url {
+  font: 400 12px var(--font-mono); color: var(--text2);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.summary-bar .url .scheme { color: var(--faint); }
+.summary-bar .url .host { color: var(--text); font-weight: 500; }
+.summary-bar .none { font: 400 12px var(--font-ui); color: var(--faint); }
+.summary-bar .rows { flex: none; font: 400 11.5px var(--font-mono); color: var(--faint); }
+.summary-bar .act {
+  flex: none; display: flex; align-items: center; gap: 5px;
+  padding: 4px 10px; border-radius: var(--r-pill);
+  border: 1px solid var(--border2); font: 500 11.5px var(--font-ui); color: var(--text2);
+  cursor: pointer;
+}
+.summary-bar .act:hover { border-color: var(--accent); color: var(--accent-hover); }
+.summary-bar .act.on { border-color: var(--accent); color: var(--accent); background: rgba(62,181,109,.10); }
+/* One line, and only as wide as it needs: the URL beside it is the thing being
+   read, and a note is a margin scribble. */
+.summary-bar .note {
+  flex: none; width: 180px; height: 24px; padding: 0 9px;
+  border-radius: var(--r-pill); border: 1px solid var(--border);
+  background: var(--input); outline: none;
+  font: 400 11.5px var(--font-ui); color: var(--text);
+}
+.summary-bar .note:focus { border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12); }
+
+.insp { flex: 1; display: flex; min-height: 0; }
+.insp-pane {
+  flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0;
+  border-right: 1px solid var(--border);
+}
+.insp-pane:last-child { border-right: none; }
+/* A collapsed pane keeps its head — the tabs are how you get it back. */
+.insp-pane.collapsed { flex: none; }
+
+.insp-head {
+  flex: none; display: flex; align-items: center; gap: 12px;
+  padding: 8px 14px; background: rgba(243,243,248,.7);
+  border-bottom: 1px solid var(--border);
+}
+.insp-head .title { flex: none; font: 600 12.5px var(--font-ui); color: var(--text); }
+.insp-head .tabs { flex: none; display: flex; gap: 10px; }
+.insp-head .meta {
+  min-width: 0; flex: 0 1 auto; text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 400 11px var(--font-mono); color: var(--faint);
+}
+.insp-head .collapse { flex: none; display: flex; color: var(--faint); cursor: pointer; }
+.insp-head .collapse:hover { color: var(--text2); }
+
+.itab {
+  flex: none; font: 500 12px var(--font-ui); color: var(--muted); cursor: pointer;
+  padding-bottom: 1px; border-bottom: 2px solid transparent;
+}
+.itab:hover { color: var(--text2); }
+.itab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+.insp-body { flex: 1; overflow: auto; min-height: 0; padding: 12px 14px 20px; }
+
+/* ------------------------------ key/value grid ---------------------------- */
+
+.kv { display: flex; flex-direction: column; }
+.kv-head, .kv-row { display: grid; grid-template-columns: 176px minmax(0, 1fr); gap: 10px; }
+.kv-head {
+  padding: 0 2px 8px;
+  font: 600 10.5px var(--font-ui); letter-spacing: .08em; text-transform: uppercase; color: var(--faint);
+  border-bottom: 1px solid var(--border);
+}
+.kv-row { padding: 7px 2px; border-bottom: 1px solid var(--bsoft); }
+.kv-row .k { font: 400 11.5px var(--font-mono); color: var(--muted); word-break: break-all; }
+.kv-row .v { font: 400 11.5px var(--font-mono); color: var(--text); word-break: break-all; }
+.kv-empty { font: 400 12px var(--font-mono); color: var(--faint); padding: 4px 2px; }
+
+/* Raw is reconstructed, and says so rather than implying wire fidelity. */
+.raw-note {
+  font: 400 10.5px var(--font-ui); color: var(--c-amber);
+  background: rgba(192,138,74,.08); border-radius: var(--r-tag);
+  padding: 6px 9px; margin-bottom: 10px;
+}
+
+/* -------------------------------- json tree ------------------------------- */
+
+.jtree { font: 400 11.5px var(--font-mono); }
+.jrow { display: flex; align-items: baseline; gap: 6px; padding: 1px 0; white-space: pre-wrap; word-break: break-all; }
+.jrow.branch { cursor: pointer; }
+.jrow.branch:hover { background: var(--hover); }
+.jtwist { flex: none; width: 10px; color: var(--faint); }
+.jkey { color: var(--muted); }
+.jkey::after { content: ":"; color: var(--faint); }
+.jbracket { color: var(--faint); }
+.jval.string { color: var(--accent); }
+.jval.number { color: var(--c-indigo); }
+.jval.boolean { color: var(--c-violet); }
+.jval.null { color: var(--faint); }
+
+
+/* --------------------------- shortcuts dialog ----------------------------- */
+
+.sc-modal { width: 640px; }
+.sc-search {
+  display: flex; align-items: center; gap: 9px; margin: 14px 22px 0;
+  height: 34px; padding: 0 12px; border-radius: var(--r-field);
+  background: var(--input); border: 1px solid var(--border);
+}
+.sc-search:focus-within { border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12); }
+.sc-search .mag { display: flex; flex: none; color: var(--faint); }
+.sc-search input {
+  flex: 1; min-width: 0; background: transparent; border: none; outline: none;
+  font: 400 12.5px var(--font-ui); color: var(--text);
+}
+
+.sc-body { padding: 6px 22px 18px; overflow-y: auto; }
+.sc-none { padding: 22px 2px; font: 400 12.5px var(--font-ui); color: var(--faint); }
+.sc-group { margin-top: 18px; }
+.sc-eyebrow {
+  font: 600 10.5px var(--font-ui); letter-spacing: .09em; text-transform: uppercase;
+  color: var(--accent); margin-bottom: 6px;
+}
+.sc-row {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 7px 0; border-bottom: 1px solid var(--bsoft);
+}
+.sc-row .l { flex: 1; min-width: 0; font: 400 12.5px var(--font-ui); color: var(--text); }
+/* The condition sits under the label, not beside it: a shortcut that destroys
+   data has to be able to say so in a full sentence. */
+.sc-row .when { display: block; font: 400 11px var(--font-ui); color: var(--muted); margin-top: 2px; }
+.sc-row .keys { flex: none; display: flex; gap: 4px; }
+.sc-foot {
+  padding: 12px 22px; border-top: 1px solid var(--border);
+  font: 400 11.5px var(--font-ui); color: var(--faint);
+}
+
+
+/* ------------------------------ column picker ----------------------------- */
+
+.colpick { position: relative; flex: none; display: flex; }
+.cp-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: var(--r-tag);
+  color: var(--faint); cursor: pointer;
+}
+.cp-btn:hover, .cp-btn.on { color: var(--accent); background: var(--hover); }
+.cp-panel {
+  position: absolute; top: 28px; right: 0; width: 176px; z-index: 6;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--r-field); box-shadow: var(--e-pop); padding: 6px;
+}
+.cp-eyebrow {
+  font: 600 10px var(--font-ui); letter-spacing: .09em; text-transform: uppercase;
+  color: var(--faint); padding: 4px 8px 6px;
+}
+.cp-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  border-radius: var(--r-tag); cursor: pointer;
+  font: 500 12px var(--font-ui); color: var(--text2);
+}
+.cp-row:hover { background: var(--hover); }
+.cp-row.on { color: var(--text); }
+.cp-row.locked { cursor: default; opacity: .6; }
+.cp-row .tick { display: flex; width: 12px; flex: none; color: var(--accent); }
+.cp-reset {
+  margin-top: 4px; padding: 7px 8px; border-top: 1px solid var(--border);
+  font: 500 11.5px var(--font-ui); color: var(--accent); cursor: pointer;
+}
+.cp-reset:hover { color: var(--accent-hover); }
+
+
+/* --------------------------- structured filter ---------------------------- */
+
+.fbuild { display: flex; flex-direction: column; gap: 5px; padding: 2px 0 2px; }
+.fb-row { display: flex; align-items: center; gap: 7px; }
+/* A row switched off keeps its place and its value, and says so by fading. */
+.fb-row.off { opacity: .5; }
+
+.fb-check {
+  width: 16px; height: 16px; flex: none; border-radius: 5px;
+  border: 1px solid var(--border2); background: var(--card);
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; cursor: pointer;
+}
+.fb-check.on { background: var(--accent); border-color: var(--accent); }
+
+.fb-sel, .fb-val {
+  height: 26px; border-radius: var(--r-tag);
+  border: 1px solid var(--border); background: var(--input);
+  font: 400 11.5px var(--font-ui); color: var(--text); outline: none;
+}
+.fb-sel { flex: none; padding: 0 6px; cursor: pointer; }
+.fb-val { flex: 1; min-width: 0; padding: 0 9px; font-family: var(--font-mono); }
+.fb-val:focus, .fb-sel:focus { border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12); }
+.fb-x { display: flex; flex: none; color: var(--faint); cursor: pointer; }
+.fb-x:hover { color: var(--c-red-deep); }
+
+.fb-add {
+  display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
+  padding: 4px 10px; border-radius: var(--r-pill);
+  border: 1px dashed var(--border2); color: var(--muted);
+  font: 500 11.5px var(--font-ui); cursor: pointer;
+}
+.fb-add:hover { color: var(--accent); border-color: rgba(62,181,109,.45); }
+.fb-add .kbd { font-size: 10px; }
+
+
+/* -------------------------------- splitters ------------------------------- */
+
+/*
+ * A divider is a 7px hit target with a 1px line, and the line only appears on
+ * hover or focus: three permanent rules across the window would be three more
+ * things competing with the data. `touch-action: none` is what makes the pointer
+ * capture work on a trackpad.
+ */
+.splitter { flex: none; position: relative; background: transparent; outline: none; touch-action: none; }
+.splitter.vertical { width: 7px; cursor: col-resize; }
+.splitter.horizontal { height: 7px; cursor: row-resize; }
+.splitter .grip { position: absolute; background: var(--accent); opacity: 0; transition: opacity var(--t-micro) var(--ease); }
+.splitter.vertical .grip { top: 0; bottom: 0; left: 3px; width: 1px; }
+.splitter.horizontal .grip { left: 0; right: 0; top: 3px; height: 1px; }
+.splitter:hover .grip, .splitter:focus-visible .grip { opacity: .85; }
+/* The border the divider replaces: without it the panes touch with no seam at
+   rest, which reads as a rendering glitch rather than as a quiet divider. */
+.splitter.vertical { border-right: 1px solid var(--border); }
+.splitter.horizontal { border-bottom: 1px solid var(--border); }
+
+/* --------------------------- one-row filter bar --------------------------- */
+
+.fbar-row { display: flex; align-items: center; gap: 8px; }
+/*
+ * The search box does not stretch.
+ *
+ * It used to take the leftover width, which meant it resized every time a menu
+ * button's label changed — pressing a chip made the box you were typing in jump.
+ * A fixed width costs some empty row on a wide window and buys a field that
+ * stays where it is; `.fbar-gap` takes the slack instead.
+ */
+.fbar-row > .fbar-search { flex: 0 0 380px; }
+.fbar-row > .fbar-search input { min-width: 0; }
+.fbar-gap { flex: 1; min-width: 8px; }
+
+.fb-toggle, .fb-act {
+  flex: none; display: flex; align-items: center; gap: 5px;
+  height: 26px; padding: 0 10px; border-radius: var(--r-pill);
+  border: 1px solid transparent; white-space: nowrap; cursor: pointer;
+  font: 500 11.5px var(--font-ui); color: var(--muted);
+}
+.fb-toggle:hover, .fb-act:hover { color: var(--text2); background: var(--hover); }
+.fb-toggle.on { color: var(--accent); border-color: rgba(62,181,109,.32); background: rgba(62,181,109,.08); }
+.fb-act.accent { color: var(--accent); }
+.fb-act.accent:hover { color: var(--accent-hover); }
+
+/* ------------------------------- chip menus ------------------------------- */
+
+.chipmenu { position: relative; flex: none; }
+.cm-btn {
+  display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px 0 10px;
+  border-radius: var(--r-pill); border: 1px solid var(--border2);
+  background: rgba(255,255,255,.7); cursor: pointer; white-space: nowrap;
+}
+.cm-btn:hover { border-color: rgba(27,26,61,.24); }
+/* An axis with a selection is accent-tinted rather than solid: several of these
+   sit in a row, and four solid green buttons would be a wall. */
+.cm-btn.on { border-color: rgba(62,181,109,.42); background: rgba(62,181,109,.08); }
+.cm-label {
+  font: 600 10px var(--font-ui); letter-spacing: .09em; text-transform: uppercase;
+  color: var(--faint);
+}
+.cm-btn.on .cm-label { color: var(--accent); }
+.cm-sum {
+  font: 500 11.5px var(--font-ui); color: var(--text);
+  max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cm-btn svg { color: var(--faint); flex: none; }
+
+.cm-panel {
+  position: absolute; top: 30px; left: 0; min-width: 150px; z-index: 7;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--r-field); box-shadow: var(--e-pop); padding: 6px;
+  max-height: 300px; overflow-y: auto;
+}
+/* Saved filters are named by their own parts, so the labels are long and the
+   list grows without bound — right-aligned so a wide panel opens inward. */
+.cm-panel.wide { min-width: 240px; max-width: 320px; left: auto; right: 0; }
+.cm-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  border-radius: var(--r-tag); cursor: pointer;
+  font: 500 12px var(--font-ui); color: var(--text2);
+}
+.cm-row:hover { background: var(--hover); }
+.cm-row.on { color: var(--text); }
+.cm-row .tick { display: flex; width: 12px; flex: none; color: var(--accent); }
+.cm-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm-row .x { display: flex; flex: none; color: var(--faint); }
+.cm-row .x:hover { color: var(--c-red-deep); }
+.cm-clear {
+  margin-top: 4px; padding: 7px 8px; border-top: 1px solid var(--border);
+  font: 500 11.5px var(--font-ui); color: var(--c-red-deep); cursor: pointer;
+}
+.cm-clear:hover { background: rgba(216,134,137,.08); }
+
+
+/* --------------------------- save-filter dialog --------------------------- */
+
+.sf-modal { width: 440px; }
+.sf-body { padding: 16px 22px 4px; }
+.sf-label {
+  display: block; margin-bottom: 6px;
+  font: 600 10.5px var(--font-ui); letter-spacing: .09em; text-transform: uppercase;
+  color: var(--faint);
+}
+.sf-body input {
+  width: 100%; height: 34px; padding: 0 12px;
+  border-radius: var(--r-field); border: 1px solid var(--border);
+  background: var(--input); outline: none;
+  font: 400 13px var(--font-ui); color: var(--text);
+}
+.sf-body input:focus { border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12); }
+
+/* What is being saved. The name is free text, so without this the dialog asks
+   you to name something it never shows you. */
+.sf-what { display: flex; gap: 10px; margin-top: 12px; }
+.sf-what .k {
+  flex: none; font: 600 10.5px var(--font-ui); letter-spacing: .09em;
+  text-transform: uppercase; color: var(--faint); padding-top: 2px;
+}
+.sf-what .v { font: 400 12px var(--font-mono); color: var(--text2); word-break: break-word; }
+.sf-note {
+  margin-top: 12px; padding: 8px 10px; border-radius: var(--r-tag);
+  background: rgba(192,138,74,.10); color: var(--c-amber);
+  font: 400 11.5px var(--font-ui);
+}
+.sf-foot {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 16px 22px; margin-top: 4px;
+}
+.btn-primary.sm { padding: 8px 16px; font-size: 12.5px; }

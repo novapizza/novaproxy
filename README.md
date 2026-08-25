@@ -23,9 +23,11 @@ Implemented and verified end-to-end:
 - **Tauri backend** (`src-tauri`): start/stop proxy, CA commands, and flow
   streaming to the UI over a Tauri **Channel**.
 - **Shared types** (`crates/nova-proto`) generated to TypeScript with `ts-rs`.
-- **React UI** (`src/`): Proxyman-style dense dark dashboard — content-type
-  tabs, host sidebar, request list, request/response inspector (headers / query
-  / body / raw, JSON pretty-print, image preview), cert panel, setup help.
+- **React UI** (`src/`): a Proxyman-style dense dashboard on one light theme —
+  scope tree (apps / domains / pinned), three groups of filter chips, a windowed
+  flows table, and a Request | Response inspector (headers / query / body /
+  cookies / raw / treeview / timing, JSON pretty-print, image preview), plus the
+  cert panel and setup help. See `design.md` for the visual system.
 
 ### Phase 2 — traffic control (landed)
 
@@ -72,9 +74,24 @@ spill-to-disk, real timing instrumentation, transparent capture.
 ```
 crates/nova-proto   shared serde types → src/bindings/*.ts (ts-rs)
 crates/nova-core    proxy engine: ca.rs, trust.rs, intercept.rs, flow.rs, lib.rs
-src-tauri           Tauri shell: state.rs, commands.rs, lib.rs
-src/                React frontend (App.tsx, store.ts, api.ts, styles.css)
+crates/nova-os      OS surfaces: trust store, system proxy, helper, app icons
+src-tauri           Tauri shell: state.rs, commands.rs, menu.rs, lib.rs
+src/                React frontend
+  flows/            the Flows section: scope tree, filter bar, table, columns
+  inspector/        the two panes and their panels
+  filter.ts         one filter value + the predicate everything narrows through
+  builder.ts        structured conditions (field · operator · value)
+  classify.ts       protocol / payload kind / status class — the three chip axes
+  shortcuts.ts      every chord, read by both the dispatcher and the dialog
 ```
+
+**Keyboard**: `⌘/` (or **Help → Keyboard Shortcuts**) lists every chord, rendered
+from `src/shortcuts.ts`. `⌘P` opens the command palette; `⌘K` clears the capture.
+
+**Visual harness**: `preview.html` renders the Flows section against mock flows —
+`npm run dev`, then open `/preview.html` (`?panels=1` for every inspector panel,
+`?shortcuts=1` for the dialog). It needs no proxy, no CA and no traffic, which is
+what makes a layout regression cheap to see.
 
 ## Develop
 

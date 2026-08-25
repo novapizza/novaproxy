@@ -626,6 +626,7 @@ fn ui_event(ev: &str) -> &'static str {
         "ui.palette.open" => "ui.palette.open",
         "ui.flow.action" => "ui.flow.action",
         "ui.flow.chip" => "ui.flow.chip",
+        "ui.flow.scope" => "ui.flow.scope",
         "ui.onboarding" => "ui.onboarding",
         _ => "ui.other",
     }
@@ -645,22 +646,44 @@ fn ui_event_name(name: &str) -> &'static str {
         "break" => "break",
         "scripts" => "scripts",
         "certs" => "certs",
-        // Tabs in the flow detail pane.
-        "overview" => "overview",
-        "request" => "request",
-        "response" => "response",
+        // Panels in the two inspector panes.
+        "header" => "header",
+        "query" => "query",
+        "body" => "body",
+        "cookies" => "cookies",
+        "raw" => "raw",
+        "summary" => "summary",
+        "treeview" => "treeview",
         "timing" => "timing",
-        "curl" => "curl",
-        "ws" => "ws",
+        "messages" => "messages",
         // Flow actions.
         "resend" => "resend",
         "copy_curl" => "copy_curl",
-        "group_toggle" => "group_toggle",
-        // Flow list chips.
-        "all" => "all",
-        "errors" => "errors",
+        // Filter chips, all three groups: protocol, payload kind, status class.
+        "http" => "http",
+        "https" => "https",
+        "ws" => "ws",
+        "json" => "json",
+        "graphql" => "graphql",
         "mcp" => "mcp",
-        "slow" => "slow",
+        "form" => "form",
+        "xml" => "xml",
+        "document" => "document",
+        "media" => "media",
+        "other" => "other",
+        "1xx" => "1xx",
+        "2xx" => "2xx",
+        "3xx" => "3xx",
+        "4xx" => "4xx",
+        "5xx" => "5xx",
+        "err" => "err",
+        // Kinds of scope row in the tree — never the host or app itself, which
+        // is the user's data.
+        "all" => "all",
+        "pinned" => "pinned",
+        "app" => "app",
+        "host" => "host",
+        "path" => "path",
         // Onboarding.
         "open" => "open",
         "done" => "done",
@@ -681,6 +704,26 @@ mod ui_track_tests {
         assert_eq!(ui_event_name("flows"), "flows");
         assert_eq!(ui_event_name("resend"), "resend");
         assert_eq!(ui_event_name("other"), "other");
+    }
+
+    #[test]
+    fn the_vocabulary_covers_every_name_the_frontend_can_send() {
+        // Mirrors `UiEventName` in `src/api.ts`. A name added there and not here
+        // becomes `other`, which is a silent hole in the counts rather than an
+        // error — so the two lists are checked against each other by hand, here.
+        for name in [
+            "flows", "rules", "break", "scripts", "certs", // sections
+            "header", "query", "body", "cookies", "raw", "summary", "treeview", "timing",
+            "messages", // pane tabs
+            "resend", "copy_curl", // flow actions
+            "http", "https", "ws", // proto chips
+            "json", "graphql", "mcp", "form", "xml", "document", "media", "other", // type chips
+            "1xx", "2xx", "3xx", "4xx", "5xx", "err", // status chips
+            "all", "pinned", "app", "host", "path", // scope kinds
+            "open", "done", "skip", // onboarding
+        ] {
+            assert_eq!(ui_event_name(name), name, "{name} is not in the vocabulary");
+        }
     }
 
     #[test]
@@ -849,6 +892,41 @@ pub async fn install_ca(
     record("cert.install", t, outcome)?;
     crate::usage!("cert.install.scope", scope = scope);
     ca_status_inner(&state)
+}
+
+/// The icon of the app a flow came from, as a `data:` URL.
+///
+/// Keyed by the process name the flow already carries, so the UI asks for what
+/// it is displaying. Cached forever, and negatively too: a name with no bundle
+/// (a CLI tool, a daemon) must not re-run `sips` on every repaint of every row
+/// that mentions it.
+///
+/// Returns `Ok(None)` rather than an error when there is no icon — a missing
+/// picture is a normal answer, and the table falls back to a glyph.
+#[tauri::command]
+pub async fn app_icon(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+) -> Result<Option<String>, String> {
+    if let Some(hit) = state.app_icons.lock().unwrap().get(&name) {
+        return Ok(hit.clone());
+    }
+    let bundle = nova_core::procinfo::global().bundle_for(&name);
+    let icon = match bundle {
+        // Off the async runtime: this shells out to `sips`, which is not instant.
+        Some(path) => tauri::async_runtime::spawn_blocking(move || {
+            nova_core::appicon::icon_data_url(&path)
+        })
+        .await
+        .map_err(|e| e.to_string())?,
+        None => None,
+    };
+    state
+        .app_icons
+        .lock()
+        .unwrap()
+        .insert(name, icon.clone());
+    Ok(icon)
 }
 
 #[tauri::command]
