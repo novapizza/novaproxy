@@ -16,7 +16,8 @@ bytes = "1"
 ts-rs = "10"
 anyhow = "1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
 
 [profile.dev]
 # hudsucker/rustls/aws-lc are heavy; a little optimization keeps dev usable.

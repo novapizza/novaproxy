@@ -143,6 +143,17 @@ pub fn install(ca: &CaId, domain: TrustDomain) -> Result<()> {
         TrustDomain::User => trust_state(ca).user,
         TrustDomain::System => trust_state(ca).system,
     };
+    // Both halves, because they disagree in practice and the disagreement is
+    // the whole reason `confirm` exists: `security` and `certutil` return
+    // non-zero on a successful install often enough that trusting the exit
+    // code alone reported spurious failures. A support log that recorded only
+    // the verdict could not tell those two stories apart.
+    tracing::info!(
+        domain = ?domain,
+        command_ok = ran.is_ok(),
+        trusted_after = reached,
+        "certificate install finished"
+    );
     confirm(ran, reached, "install")
 }
 
@@ -153,6 +164,7 @@ pub fn install(ca: &CaId, domain: TrustDomain) -> Result<()> {
 pub fn uninstall(ca: &CaId) -> Result<()> {
     let state = present_state(ca);
     if !state.any() {
+        tracing::info!("certificate uninstall: nothing present in any domain");
         return Ok(()); // nothing installed anywhere
     }
     let mut ran = Ok(());
@@ -162,7 +174,17 @@ pub fn uninstall(ca: &CaId) -> Result<()> {
     if state.system {
         ran = ran.and(uninstall_plan(ca, TrustDomain::System)?.run());
     }
-    confirm(ran, !is_trusted(ca), "uninstall")
+    let still = is_trusted(ca);
+    // Each domain costs its own prompt, so "user cleared, system did not" is a
+    // real and common outcome — worth distinguishing from a total failure.
+    tracing::info!(
+        had_user = state.user,
+        had_system = state.system,
+        command_ok = ran.is_ok(),
+        trusted_after = still,
+        "certificate uninstall finished"
+    );
+    confirm(ran, !still, "uninstall")
 }
 
 /// Which domains hold the cert *at all* (not necessarily trusted).

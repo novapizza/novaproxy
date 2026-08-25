@@ -84,6 +84,18 @@ export const api = {
    */
   restoreSystemProxy: () => invoke<ProxyStatus>("restore_system_proxy"),
 
+  /**
+   * Record something the webview cannot record itself.
+   *
+   * A bundled app has no console anyone reads and no file the renderer can
+   * write to, so an uncaught render error used to blank the window and leave
+   * nothing behind. Deliberately fire-and-forget: a logging call that can
+   * reject is a second error to handle inside an error handler.
+   */
+  logUi: (level: "info" | "warn" | "error", kind: UiLogKind, message: string) => {
+    void invoke("log_from_ui", { level, kind, message }).catch(() => {});
+  },
+
   /** State of the macOS helper that applies proxy changes without a password. */
   helperStatus: () => invoke<HelperStatus>("helper_status"),
   /** Install it — one administrator prompt, then none. */
@@ -115,7 +127,15 @@ export const api = {
     invoke<void>("install_update", { channel }),
 };
 
+/**
+ * Where a UI log came from. A fixed set rather than free text, so the counts in
+ * the usage stream mean something; the Rust side folds anything else to
+ * "other".
+ */
+export type UiLogKind = "render" | "unhandled-rejection" | "window-error" | "command";
+
 export { Channel };
+
 export type {
   BodyPreview,
   Flow,

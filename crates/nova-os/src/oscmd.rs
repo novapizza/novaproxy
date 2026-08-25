@@ -102,13 +102,46 @@ impl Plan {
         if self.steps.is_empty() {
             return Ok(());
         }
-        match self.elevation {
+        // The elevated branches are the ones that put a password dialog in front
+        // of the user, and until now they were the only ones that logged
+        // nothing at all — a failed `osascript` looked identical to a user who
+        // pressed Cancel. Program names only: the arguments carry paths.
+        let elevated = !matches!(self.elevation, Elevation::None);
+        if elevated {
+            tracing::info!(
+                elevation = ?self.elevation,
+                steps = self.steps.len(),
+                programs = %self.program_names(),
+                "running elevated plan"
+            );
+        }
+        let result = match self.elevation {
             Elevation::None => self.run_direct(),
             // Elevated variants batch every step behind a single prompt.
             Elevation::MacAdmin => run_one(&mac_admin_step(&self.joined_shell())),
             Elevation::LinuxPkexec => run_one(&pkexec_step(&self.joined_shell())),
             Elevation::WindowsUac => run_one(&windows_uac_step(&self.steps)?),
+        };
+        if elevated {
+            match &result {
+                Ok(()) => tracing::info!(elevation = ?self.elevation, "elevated plan succeeded"),
+                // A cancelled prompt and a genuine failure arrive the same way
+                // here; the message is the only thing that tells them apart.
+                Err(e) => tracing::warn!(elevation = ?self.elevation, "elevated plan failed: {e}"),
+            }
         }
+        result
+    }
+
+    /// The programs this plan runs, without their arguments.
+    ///
+    /// Arguments are deliberately excluded: they carry keychain paths, network
+    /// service names and the user's home directory. The program list is enough
+    /// to tell `security` from `networksetup` in a support log.
+    fn program_names(&self) -> String {
+        let mut names: Vec<&str> = self.steps.iter().map(|s| s.program.as_str()).collect();
+        names.dedup();
+        names.join(", ")
     }
 
     fn run_direct(&self) -> Result<()> {

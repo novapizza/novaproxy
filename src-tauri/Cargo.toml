@@ -22,6 +22,10 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+# Already in the tree via transitive deps; named here because the usage stream
+# depends on it directly for the session and device ids.
+uuid = { version = "1", features = ["v4"] }
 dirs = "5"
 base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

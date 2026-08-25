@@ -13,7 +13,42 @@ use nova_proto::{
 use tauri::ipc::Channel;
 use tauri::State;
 
+use crate::logging::redact;
 use crate::state::AppState;
+
+/// Record the outcome of an operation that changes something outside the app.
+///
+/// Every privileged path funnels through the commands in this file, so this is
+/// the one place that can answer "what did the app do to this machine, and did
+/// it work?" — the question a support log exists for.
+///
+/// Read-only commands are deliberately **not** wrapped. `proxy_status` is
+/// polled every two seconds by the UI; a line per poll would bury every line
+/// that matters and blow through the log budget in a day.
+///
+/// The error text goes to diagnostics only, and redacted: `security` and
+/// `networksetup` quote the user's home path back on failure. The usage stream
+/// gets the outcome and nothing else — free text there is a leak waiting to
+/// happen, and counts are all it is for.
+fn record<T>(op: &'static str, started: std::time::Instant, result: Result<T, String>) -> Result<T, String> {
+    let ms = started.elapsed().as_millis() as u64;
+    match &result {
+        Ok(_) => {
+            tracing::info!(op, ms, "ok");
+            crate::usage!(op, result = "ok", ms = ms);
+        }
+        Err(e) => {
+            tracing::error!(op, ms, "failed: {}", redact(e));
+            crate::usage!(op, result = "fail", ms = ms);
+        }
+    }
+    result
+}
+
+/// Marks the start of a recorded operation, so the call sites read as a pair.
+fn started() -> std::time::Instant {
+    std::time::Instant::now()
+}
 
 /// Register the frontend channel that receives streamed flow updates.
 #[tauri::command]
@@ -37,14 +72,19 @@ pub async fn start_proxy(
     state: State<'_, Arc<AppState>>,
     port: Option<u16>,
 ) -> Result<ProxyStatus, String> {
-    ensure_engine(&state, port)?;
+    let t = started();
+    record("proxy.start", t, ensure_engine(&state, port).map(|_| ()))?;
     Ok(make_status(&state))
 }
 
 #[tauri::command]
 pub fn stop_proxy(state: State<'_, Arc<AppState>>) -> ProxyStatus {
+    // Only when something was actually running: the UI calls this on paths
+    // where the engine may already be down, and "stopped nothing" is noise.
     if let Some(handle) = state.engine.lock().unwrap().take() {
         handle.stop();
+        tracing::info!(op = "proxy.stop", "ok");
+        crate::usage!("proxy.stop", result = "ok");
     }
     make_status(&state)
 }
@@ -58,6 +98,12 @@ pub fn get_rules(state: State<'_, Arc<AppState>>) -> Vec<Rule> {
 
 #[tauri::command]
 pub fn set_rules(state: State<'_, Arc<AppState>>, rules: Vec<Rule>) -> Result<(), String> {
+    // How many and of what kind — never the patterns. A rule's match pattern is
+    // a URL from the traffic the user is debugging, which is theirs.
+    let enabled = rules.iter().filter(|r| r.enabled).count();
+    tracing::info!(total = rules.len(), enabled, "rule set changed");
+    crate::usage!("rules.set", total = rules.len(), enabled = enabled);
+
     // Update the live set the engine reads, then persist.
     *state.rules.write().unwrap() = rules.clone();
     state.persist_rules(&rules)
@@ -85,7 +131,12 @@ pub fn read_file(path: String) -> Result<String, String> {
 /// believes they discarded.
 #[tauri::command]
 pub fn clear_flows(state: State<'_, Arc<AppState>>) {
+    // The count answers "where did my capture go?", which is a real support
+    // question now that clearing also empties what the MCP server serves.
+    let had = state.flows.retained();
     state.flows.clear();
+    tracing::info!(cleared = had, "flows cleared");
+    crate::usage!("flows.clear", n = had);
 }
 
 /* --------------------------------- MCP --------------------------------- */
@@ -249,6 +300,11 @@ pub fn set_script(
     source: String,
     enabled: bool,
 ) -> Result<(), String> {
+    // Its length, not its text: the script is the user's own code and can
+    // easily contain a token they pasted in to reproduce something.
+    tracing::info!(enabled, bytes = source.len(), "script changed");
+    crate::usage!("script.set", enabled = enabled);
+
     state.scripts.set_script(source.clone());
     state.scripts.set_enabled(enabled);
     std::fs::write(state.script_path(), source).map_err(|e| e.to_string())?;
@@ -267,6 +323,14 @@ pub fn set_network_conditions(
     state: State<'_, Arc<AppState>>,
     net: NetworkConditions,
 ) -> Result<(), String> {
+    tracing::info!(
+        enabled = net.enabled,
+        latency_ms = net.latency_ms,
+        down_kbps = net.down_kbps,
+        "network conditions changed"
+    );
+    crate::usage!("network.set", enabled = net.enabled);
+
     *state.net.write().unwrap() = net;
     let json = serde_json::to_string_pretty(&net).map_err(|e| e.to_string())?;
     std::fs::write(state.net_path(), json).map_err(|e| e.to_string())?;
@@ -342,31 +406,51 @@ pub async fn set_system_proxy(
                     .await
                     .map_err(|e| e.to_string())?;
                 // Persist the snapshot BEFORE mutating, so a crash mid-session is
-                // recoverable on next launch.
+                // recoverable on next launch. Worth a line of its own: if this
+                // write is the step that failed, the machine was never touched,
+                // and that is a different support conversation.
                 let backup_json =
                     serde_json::to_string_pretty(&fresh).map_err(|e| e.to_string())?;
-                std::fs::write(state.sysproxy_backup_path(), backup_json)
-                    .map_err(|e| e.to_string())?;
+                let t = started();
+                record(
+                    "sysproxy.backup",
+                    t,
+                    std::fs::write(state.sysproxy_backup_path(), backup_json)
+                        .map_err(|e| e.to_string()),
+                )?;
                 fresh
             }
         };
 
         let host = addr.ip().to_string();
         let port = addr.port();
-        tauri::async_runtime::spawn_blocking(move || sysproxy::enable(&host, port, &backup))
+        // Whether the helper is answering decides what this costs the user: a
+        // silent apply, or an administrator password prompt. Support cannot
+        // read a "it asked for my password again" report without it.
+        let via_helper = helper::usable();
+        let t = started();
+        let outcome = tauri::async_runtime::spawn_blocking(move || sysproxy::enable(&host, port, &backup))
             .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())
+            .and_then(|r| r.map_err(|e| e.to_string()));
+        record("sysproxy.enable", t, outcome)?;
+        crate::usage!("sysproxy.enable.path", via_helper = via_helper);
         *state.system_proxy.lock().unwrap() = true;
         // Whatever was outstanding is now this session's business to undo.
         state.pending_restore.store(false, Ordering::Relaxed);
     } else {
         let backup = read_backup(&state);
         if let Some(backup) = backup {
-            tauri::async_runtime::spawn_blocking(move || sysproxy::disable(&backup))
+            let t = started();
+            let outcome = tauri::async_runtime::spawn_blocking(move || sysproxy::disable(&backup))
                 .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.map_err(|e| e.to_string()));
+            record("sysproxy.disable", t, outcome)?;
+        } else {
+            // No backup means nothing to put back — either a clean no-op or
+            // evidence the snapshot was lost. Say which.
+            tracing::warn!(op = "sysproxy.disable", "no backup on disk; nothing to restore");
         }
         let _ = std::fs::remove_file(state.sysproxy_backup_path());
         *state.system_proxy.lock().unwrap() = false;
@@ -386,12 +470,120 @@ pub async fn set_system_proxy(
 #[tauri::command]
 pub async fn restore_system_proxy(state: State<'_, Arc<AppState>>) -> Result<ProxyStatus, String> {
     let owned = (*state).clone();
-    tauri::async_runtime::spawn_blocking(move || crate::restore_from_backup(&owned))
+    let t = started();
+    let outcome = tauri::async_runtime::spawn_blocking(move || crate::restore_from_backup(&owned))
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.map_err(|e| e.to_string()));
+    record("sysproxy.restore", t, outcome)?;
     *state.system_proxy.lock().unwrap() = false;
     Ok(make_status(&state))
+}
+
+/* ------------------------------ ui logging ------------------------------ */
+
+/// Take a message the webview could not otherwise record.
+///
+/// The frontend has no file to write to and, in a bundled app, no console
+/// anyone reads — a render crash or a rejected promise used to blank the window
+/// and leave nothing behind. This is the one way those reach disk.
+///
+/// Everything here is untrusted text from a process that renders captured
+/// traffic, so it is redacted and truncated before it is written, and it never
+/// reaches the usage stream. `kind` is a fixed vocabulary from the caller, not
+/// free text, which is what keeps it countable.
+#[tauri::command]
+pub fn log_from_ui(level: String, kind: String, message: String) {
+    let text = sanitize_ui_message(&message);
+    let kind = ui_kind(&kind);
+    match level.as_str() {
+        "error" => tracing::error!(target: "novaproxy_ui", kind, "{text}"),
+        "warn" => tracing::warn!(target: "novaproxy_ui", kind, "{text}"),
+        _ => tracing::info!(target: "novaproxy_ui", kind, "{text}"),
+    }
+    if level == "error" {
+        crate::usage!("ui.error", kind = kind);
+    }
+}
+
+/// Long enough for a React component stack, short enough that an error loop —
+/// a component that throws on every render, say — cannot fill the disk before
+/// anyone notices.
+const MAX_UI_MESSAGE: usize = 4096;
+
+/// Make a webview string safe to write down: home directory removed, length
+/// bounded.
+fn sanitize_ui_message(message: &str) -> String {
+    let mut text = redact(message);
+    if text.len() > MAX_UI_MESSAGE {
+        // On a char boundary, or this panics on the multi-byte text that a
+        // captured response body is full of.
+        let mut cut = MAX_UI_MESSAGE;
+        while cut > 0 && !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+        text.push_str(" …[truncated]");
+    }
+    text
+}
+
+/// Fold an arbitrary string into the fixed vocabulary the usage counts use.
+///
+/// A closed set rather than free text: an open one makes the counts
+/// unaggregatable, and lets a caller widen the schema by typo.
+fn ui_kind(kind: &str) -> &'static str {
+    match kind {
+        "render" => "render",
+        "unhandled-rejection" => "unhandled-rejection",
+        "window-error" => "window-error",
+        "command" => "command",
+        _ => "other",
+    }
+}
+
+#[cfg(test)]
+mod ui_log_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_kinds_fold_to_other() {
+        assert_eq!(ui_kind("render"), "render");
+        assert_eq!(ui_kind("command"), "command");
+        assert_eq!(ui_kind("whatever-a-caller-invented"), "other");
+        assert_eq!(ui_kind(""), "other");
+    }
+
+    #[test]
+    fn long_messages_are_bounded() {
+        let huge = "x".repeat(MAX_UI_MESSAGE * 3);
+        let out = sanitize_ui_message(&huge);
+        assert!(out.len() < MAX_UI_MESSAGE + 32, "{}", out.len());
+        assert!(out.ends_with("[truncated]"));
+    }
+
+    #[test]
+    fn truncation_does_not_split_a_character() {
+        // The webview renders captured traffic, so its error text is full of
+        // multi-byte characters; cutting one in half panics `truncate`.
+        let multibyte = "é".repeat(MAX_UI_MESSAGE);
+        let out = sanitize_ui_message(&multibyte);
+        assert!(out.ends_with("[truncated]"));
+        assert!(out.len() <= MAX_UI_MESSAGE + 32);
+    }
+
+    #[test]
+    fn short_messages_pass_through_whole() {
+        assert_eq!(sanitize_ui_message("boom"), "boom");
+    }
+
+    #[test]
+    fn the_home_directory_is_stripped_from_ui_text() {
+        let Some(home) = dirs::home_dir() else { return };
+        let home = home.to_string_lossy().into_owned();
+        let out = sanitize_ui_message(&format!("failed to read {home}/Documents/x.har"));
+        assert!(!out.contains(&home), "{out}");
+    }
 }
 
 /* -------------------------- privileged helper -------------------------- */
@@ -410,21 +602,25 @@ pub async fn install_helper(state: State<'_, Arc<AppState>>) -> Result<HelperSta
             .to_string()
     })?;
     let staged = state.data_dir.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let t = started();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
         helper::install(&source, &staged, helper::current_uid())
     })
     .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())
+    .and_then(|r| r.map_err(|e| e.to_string()));
+    record("helper.install", t, outcome)?;
     Ok(crate::helper_status_now())
 }
 
 #[tauri::command]
 pub async fn uninstall_helper() -> Result<HelperStatus, String> {
-    tauri::async_runtime::spawn_blocking(helper::uninstall)
+    let t = started();
+    let outcome = tauri::async_runtime::spawn_blocking(helper::uninstall)
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.map_err(|e| e.to_string()));
+    record("helper.uninstall", t, outcome)?;
     Ok(crate::helper_status_now())
 }
 
@@ -529,20 +725,28 @@ pub async fn install_ca(
     } else {
         trust::TrustDomain::User
     };
-    tauri::async_runtime::spawn_blocking(move || trust::install(&ca, domain))
+    // The trust domain is the whole story of this operation: the user domain
+    // needs no password, the system domain costs an admin prompt.
+    let scope = if matches!(domain, trust::TrustDomain::System) { "system" } else { "user" };
+    let t = started();
+    let outcome = tauri::async_runtime::spawn_blocking(move || trust::install(&ca, domain))
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.map_err(|e| e.to_string()));
+    record("cert.install", t, outcome)?;
+    crate::usage!("cert.install.scope", scope = scope);
     ca_status_inner(&state)
 }
 
 #[tauri::command]
 pub async fn uninstall_ca(state: State<'_, Arc<AppState>>) -> Result<CaStatus, String> {
     let ca = ca_id(&state)?;
-    tauri::async_runtime::spawn_blocking(move || trust::uninstall(&ca))
+    let t = started();
+    let outcome = tauri::async_runtime::spawn_blocking(move || trust::uninstall(&ca))
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.map_err(|e| e.to_string()));
+    record("cert.uninstall", t, outcome)?;
     ca_status_inner(&state)
 }
 
@@ -560,7 +764,12 @@ pub async fn regenerate_ca(state: State<'_, Arc<AppState>>) -> Result<CaStatus, 
     }
     let _ = std::fs::remove_file(data_dir.join("ca.pem"));
     let _ = std::fs::remove_file(data_dir.join("ca.key"));
-    let fresh = CaMaterial::load_or_create(&data_dir).map_err(|e| e.to_string())?;
+    let t = started();
+    let fresh = record(
+        "cert.regenerate",
+        t,
+        CaMaterial::load_or_create(&data_dir).map_err(|e| e.to_string()),
+    )?;
     *state.ca.lock().unwrap() = Some(fresh);
     ca_status_inner(&state)
 }

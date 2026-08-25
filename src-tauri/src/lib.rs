@@ -3,6 +3,7 @@
 
 // Public so the integration tests can drive the MCP endpoint directly.
 pub mod commands;
+pub mod logging;
 pub mod mcp;
 pub mod state;
 pub mod update;
@@ -13,7 +14,7 @@ use std::sync::Arc;
 use nova_core::ca::CaMaterial;
 use state::AppState;
 
-fn data_dir() -> PathBuf {
+pub fn data_dir() -> PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("NovaProxy")
@@ -55,12 +56,26 @@ pub fn helper_status_now() -> nova_proto::HelperStatus {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "novaproxy=info,nova_core=info".into()),
-        )
-        .init();
+    // Held for the whole of `run` — the file writers are non-blocking, so
+    // dropping this stops the background threads and loses whatever has not
+    // been flushed, the panic hook's last words included.
+    let _log_guard = logging::init();
+    if _log_guard.is_none() {
+        logging::init_stdout_only();
+    }
+    logging::install_panic_hook();
+
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        os = std::env::consts::OS,
+        logs = %_log_guard.as_ref().map(|g| logging::redact_path(g.dir())).unwrap_or_else(|| "<stdout only>".into()),
+        "NovaProxy starting"
+    );
+    usage!(
+        "app.start",
+        ver = env!("CARGO_PKG_VERSION"),
+        os = std::env::consts::OS
+    );
 
     // Shared as an `Arc` because the MCP server holds the same state the commands
     // do — one flow store, one rule set, one engine handle.
@@ -88,7 +103,10 @@ pub fn run() {
             let st: Arc<AppState> = (*app.state::<Arc<AppState>>()).clone();
             match CaMaterial::load_or_create(&st.data_dir) {
                 Ok(ca) => {
-                    tracing::info!("root CA ready at {}", ca.cert_path.display());
+                    tracing::info!(
+                        path = %logging::redact_path(&ca.cert_path),
+                        "root CA ready"
+                    );
                     *st.ca.lock().unwrap() = Some(ca);
                 }
                 Err(e) => tracing::error!("failed to initialize root CA: {e}"),
@@ -198,6 +216,7 @@ pub fn run() {
             commands::resume_breakpoint,
             commands::set_system_proxy,
             commands::restore_system_proxy,
+            commands::log_from_ui,
             commands::helper_status,
             commands::install_helper,
             commands::uninstall_helper,
@@ -211,4 +230,10 @@ pub fn run() {
         ])
         .run(context)
         .expect("error while running NovaProxy");
+
+    // Reached on a clean quit. A launch with no matching `app.stop` in the
+    // usage stream is how a crash shows up in the counts — the panic hook
+    // covers Rust panics, and this covers the difference.
+    tracing::info!("NovaProxy exiting");
+    usage!("app.stop");
 }

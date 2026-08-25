@@ -1045,6 +1045,26 @@ input, textarea, select { font-family: inherit; }
 }
 .coach-btn:hover { background: rgba(62,181,109,.10); color: var(--accent-hover); }
 
+/* crash screen — the error boundary's fallback. Deliberately plain: it renders
+   when the design system's own tree has already failed once. */
+.crash {
+  position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: var(--wash); padding: 24px;
+}
+.crash-card {
+  max-width: 520px; background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--r-panel); box-shadow: var(--e-lg); padding: 28px;
+}
+.crash-card h1 { font: 600 18px var(--font-display); color: var(--text); margin-bottom: 10px; }
+.crash-card p { font: 400 13px/1.6 var(--font-ui); color: var(--muted); margin-bottom: 14px; text-wrap: pretty; }
+.crash-detail {
+  margin: 0 0 16px; padding: 12px 14px; background: var(--code-bg);
+  border: 1px solid var(--border); border-radius: var(--r-field);
+  font: 400 12px var(--font-mono); color: var(--text2);
+  white-space: pre-wrap; max-height: 180px; overflow-y: auto;
+}
+.crash-card .btn-primary { border: none; }
+
 /* toast */
 .toast {
   position: absolute; bottom: 48px; left: 50%; transform: translateX(-50%);

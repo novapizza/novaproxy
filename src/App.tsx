@@ -396,10 +396,17 @@ export function App() {
     api.subscribeWs(wsChannel);
 
     api.proxyStatus().then((p) => useStore.getState().setProxy(p));
-    api.getRules().then(setRulesState).catch(() => {});
-    api.getScript().then((s) => { if (s.trim()) setScriptSource(s); }).catch(() => {});
-    api.getNetworkConditions().then(setNet).catch(() => {});
-    api.mcpStatus().then(setMcp).catch(() => {});
+    // These five hydrate the UI from what the backend persisted. A failure used
+    // to be swallowed outright, which showed the user default rules and an
+    // empty script as though that were their configuration — the worst kind of
+    // silent failure. They still must not toast (nothing is actionable during
+    // launch) but they no longer vanish.
+    const hydrate = (what: string) => (e: unknown) =>
+      api.logUi("warn", "command", `could not load ${what}: ${String(e)}`);
+    api.getRules().then(setRulesState).catch(hydrate("rules"));
+    api.getScript().then((s) => { if (s.trim()) setScriptSource(s); }).catch(hydrate("script"));
+    api.getNetworkConditions().then(setNet).catch(hydrate("network conditions"));
+    api.mcpStatus().then(setMcp).catch(hydrate("MCP status"));
     // These two together decide the walkthrough, so they are awaited as a pair
     // — a rejection still counts as settled, since a CA that cannot be read is
     // exactly the install that needs the walkthrough most.
@@ -1977,7 +1984,9 @@ function TlsScopeCard({ showToast }: { showToast: (t: string) => void }) {
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
-    api.getTlsScope().then(setScope).catch(() => {});
+    api.getTlsScope()
+      .then(setScope)
+      .catch((e) => api.logUi("warn", "command", `could not load TLS scope: ${String(e)}`));
   }, []);
 
   if (!scope) return null;
