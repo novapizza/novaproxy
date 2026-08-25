@@ -52,6 +52,8 @@ never the literal.
 | `--card` | `#FFFFFF` | Cards, modals, detail panel |
 | `--input` | `#F7FAF8` | Inset fields, code surfaces, table key cells |
 | `--hover` | `rgba(27,26,61,.05)` | Hover wash |
+| `--row-alt` | `rgba(242,246,243,.55)` | Zebra row in the flows table |
+| `--thead` | `rgba(242,246,243,.96)` | Sticky table header, with `blur(10px)` |
 | `--border` / `--border2` / `--bsoft` | `rgba(27,26,61,.07)` / `.12` / `.045` | Hairline, interactive, inner row |
 | `--text` / `--text2` / `--muted` / `--faint` | `#1B1A3D` / `#3B3A5C` / `#6B6A86` / `#A9A8BE` | Four-level ink hierarchy |
 | `--shadow` / `--overlay` | `rgba(27,26,61,.10)` / `.28` | Modal shadow, scrim |
@@ -78,6 +80,7 @@ radius     --r-tag 8  --r-field 12  --r-card 16  --r-panel 20  --r-pill 999
 elevation  --e-xs 0 2px 6px  ·  --e-sm 0 6px 18px  ·  --e-md 0 8px 24px  ·  --e-lg 0 24px 60px
            --e-pop 0 14px 34px (dropdown panels), all rgba(27,26,61,·),
            plus --e-accent for green buttons
+table      --row-h 34  --thead-h 32  --tree-w 252  --table-min 1140
 spacing    4 icon→label · 8 chip gaps · 12 card gaps · 24 panel padding · 48 section breaks
 motion     --t-micro 120ms · --t-base 200ms · --t-page 360ms, all on --ease
            cubic-bezier(.2,.8,.2,1)
@@ -109,18 +112,18 @@ window chrome, and the design does not double it.
 
 ```
 ┌──────┬───────────────────────────────────────────────────────────────┐
-│ rail │  header (62px): title/sub │ Recording │ Clear │ … │ ⌘K │ proxy │
-│ 78px ├───────────────────────────────────────────────────────────────┤
-│      │                     active section body                        │
-│  ≈   │  ┌ stats ─────────────────────────────────── throughput ─┐    │
-│  ⑂   │  ├ flow list (412px) ─┬─ inspector (flex) ───────────────┤    │
-│  ⏸   │  │ search + chips     │ head + tabs + body               │    │
-│  {}   │  │ grouped rows       │                                  │    │
-│  ⛨   │  └────────────────────┴──────────────────────────────────┘    │
-│  ⚙   │                                                                │
-├──────┴───────────────────────────────────────────────────────────────┤
-│ ● recording  N flows · M hosts      upstream: direct  CA…  host:port  │  30px
-└───────────────────────────────────────────────────────────────────────┘
+│ rail │  header (62px): title/sub │ Recording │ Clear │ … │ ⌘P │ proxy │
+│ 78px ├────────────┬──────────────────────────────────────────────────┤
+│      │ tree 252px │ Proto / Type / Status chip groups   Reset filters │
+│  ≈   │  Favorites ├──────────────────────────────────────────────────┤
+│  ⑂   │  All       │ table — sticky head 32px, 34px rows, zebra       │
+│  ⏸   │  Apps      ├──────────────────────────────────────────────────┤
+│  {}   │  Domains   │ POST · 204 · url                 N rows · 1 sel  │
+│  ⛨   │            ├───────────────────────┬──────────────────────────┤
+│  ⚙   │  ⌘⇧F       │ Request  Header Query │ Response  Header Body …  │
+├──────┴────────────┴───────────────────────┴──────────────────────────┤
+│ ● recording  N flows · M hosts  Auto Select   ↑17 ↓4 KB/s  CA  host  │  30px
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Rail (78px)
@@ -133,49 +136,107 @@ hairline border, icon and label in `--accent`; inactive is `--muted` on transpar
 ### Header (62px)
 Bottom hairline, no fill. Left: the section title (Inter 600/14.5px) over
 `default workspace · host:port`. Then a hairline divider and pill buttons —
-**Recording/Paused** (salmon tint + pulsing dot when live) and **Clear**, plus the app filter
-`<select>` on the Flows section. Right: **Commands** with a `⌘K` keycap, then the
-**System proxy** switch.
+**Recording/Paused** (salmon tint + pulsing dot when live) and **Clear**. Right:
+**Commands** with a `⌘P` keycap, then the **System proxy** switch. The app filter is not
+here — it is a row in the Flows scope tree (§4.1).
 
 ### Status bar (30px)
 `rgba(255,255,255,.6)`, top hairline, 11px mono `--muted`. Left: a state pip (pulsing salmon
-when recording) and `recording | paused | stopped`, then `N flows · M hosts`. Right:
-`upstream: direct`, CA trust (green/amber), bind address.
+when recording) and `recording | paused | stopped`, then `N flows · M hosts`, then the
+**Auto Select** toggle (follow-tail: keep the newest row selected). Right: throughput
+(`↑ 17 KB/s ↓ 4 KB/s`, from `src/stats.ts`), `upstream: direct`, CA trust (green/amber),
+bind address.
+
+> Throughput lives here rather than in a card because the flows section spends its height on
+> rows. It is the one number worth watching continuously, and 30px of status bar is where
+> every proxy in this class puts it.
 
 ---
 
 ## 4. Sections
 
-### 4.1 Flows — stat strip over two panes
-**Stat strip** (`.stat-row`): four cards — Flows (visible of total), Median ms, Failed
-(4xx/5xx), MCP calls — each an eyebrow with a 15px icon over a 25px mono figure and a faint
-unit. Then a 240px **Throughput** card with a sparkline: an accent stroke over a fading
-accent fill, with a leading dot. All five values come from `src/stats.ts`; the series buckets
-`response_size` by `started_at` over the trailing 60s.
+### 4.1 Flows — tree, filter bar, table, dual-pane inspector
 
-**Flow list** (`.flow-list`, 412px default, resizable) — a `--list` panel, `--r-panel`
-corners, `--e-xs`. Header holds the mono search field, the chip row
-(**All / Errors / Slow / MCP**, `src/filter.ts`), and a meta line with the count and the
-internal-traffic and grouping toggles. Group headers are sticky, with a host dot, host name,
-a **TLS** chip and a count. Rows are: method badge, mono path over a faint sub-line
-(host · MCP · resent), then right-aligned status and duration. Selected rows take an accent
-left border and an `rgba(62,181,109,.11)` tint.
+> **Target design, not the current build.** What ships today is the older
+> stat-strip-over-two-panes layout; this section describes what replaces it, landing in
+> phases 3–4 of `issues/0002-flows-table-view.md`. The old anatomy is **not** kept as an
+> alternative view — the table replaces it, stat strip and host grouping included.
 
-> Row and header heights feed `src/virtual.ts` (`ROW_H_GUESS` / `HEADER_H_GUESS`). They are
-> first-frame estimates that `FlowList` re-measures from the DOM, but changing row padding
-> without updating them causes a visible jump on first paint.
+Four zones in the section body, and the status bar carries the fifth reading (§3).
 
-**Inspector** (`.detail`) — a `rgba(255,255,255,.9)` panel. Empty state is a mint-tinted
-rounded tile with the Flows icon. Head: method badge, mono URL, status pill, green **Resend**
-pill. Tabs (Overview / Request / Response / Timing / cURL, plus WebSocket when relevant) use
-a 2px accent underline on the active one.
-- **Overview** — a two-column grid of `--input` cards, uppercase key over a mono value, then
-  a row of semantic pill chips.
-- **Request / Response** — an eyebrow, then a bordered `.hlist` table: a 230px `--input` key
-  column beside the value. Then the body `<pre>` on `--code-bg`.
-- **Timing** — a waterfall on a 130px / bar / 72px grid; 8px pill track, per-phase colour
-  from `src/timing.ts` (which emits `var(--c-*)`, so retuning the tokens is enough).
-- **cURL** — eyebrow + Copy, then the command on a code surface.
+**Scope tree** (`--tree-w`, `rgba(255,255,255,.66)`, right hairline). Uppercase eyebrows over
+1px-gap rows: 12.5px/500 `--text2`, 14px icon, 9px radius, `--hover` on hover.
+- **Favorites** — Pinned, Saved (a saved filter shows its count).
+- **All traffic** — selected by default: white, accent border tint, accent text.
+- **Apps** — one row per `Flow.process`, count right-aligned in 11px mono `--faint`, expanding
+  to that app's hosts. A generic Lucide glyph until real bundle icons land.
+- **Domains** — one row per host in 11.5px mono, a 12px chevron when it has children,
+  expanding into path segments.
+
+Footer: a 32px `--input` field with a filter glyph, placeholder `Filter tree`, `⌘⇧F` keycap.
+
+Selecting a row sets a **scope**, not a query: it ANDs with the chips and the search box.
+
+**Filter bar.** Three chip groups, each behind a 10.5px uppercase eyebrow: `Proto`
+(HTTP / HTTPS / WebSocket), `Type` (JSON / GraphQL / MCP / Form / XML / Document / Media /
+Other), `Status` (1xx…5xx, ERR). **Multi-select inside a group (OR), AND between groups**; an
+empty group means all of it, which is why there is no `All` chip. `.fchip` styling per §5,
+with a text-only accent **Reset filters** at the right.
+
+> Three rows cost ~56px that Proxyman spends on one scrollable row. Deliberate: one row
+> cannot show which axis a chip belongs to, and `JSON + 4xx` — "which API is failing" — is
+> the query this tool exists for.
+
+**Table.** Sticky header (`--thead-h`, `--thead` + `blur(10px)`, bottom hairline, 10.5px/600
+uppercase `+.06em` `--muted`) over `--row-h` rows, zebra `--row-alt` on odd rows, `--bsoft`
+row hairlines.
+
+| Column | Width | Content |
+|---|---|---|
+| `#` | 52px | status-class pip, then `seq` in 11px mono |
+| URL | `minmax(320px,1fr)` | full URL, mono, ellipsised, 12px right padding |
+| Client | 132px | 13px app glyph in `--c-indigo`, then `process` |
+| Method | 62px | method badge (§5) |
+| Status | 58px | status pill; `ERR` when `error` is set |
+| Time | 96px | `started_at` as `HH:mm:ss.mmm` |
+| Duration | 78px | right-aligned mono |
+| Request / Response | 78px each | right-aligned size — **`–`, never `0 B`, when there is none** |
+| SSL | 44px | `lock` decrypted HTTPS · `lock-open` `--faint` plaintext · `lock` `--c-amber` tunneled |
+
+Opt-in columns behind the picker: Protocol (`http_version`), Edited, Comment.
+
+> `--table-min` (1140px) is what all ten columns need. The window's `minWidth` is 940 and the
+> rail plus the tree take 330 of it, leaving the table ~610px — so the **default set is
+> seven** (`#`, URL, Client, Method, Status, Duration, SSL) and the rest are opt-in.
+> **Columns drop; they never squeeze below their content.**
+
+Row states: **selected** takes a 2px accent left border over `rgba(62,181,109,.11)`; hover is
+`--hover`; **in flight** shows `···` in `--faint` for status, an empty duration and a pulsing
+pip; **error** puts pip and status in `--c-red-deep`; **tunneled** shows host only, and the
+body panes say why; **resent** carries a `--c-cyan` marker; **MCP** a violet `MCP` tag after
+the path. Three empty states, per §8: nothing captured, capture paused, nothing matching.
+
+> Fixed `--row-h` rows are what let the windowed list trade `sliceGroups` for a flat
+> `sliceFlat` (`src/virtual.ts`): one height, one measurement, no per-group containing blocks.
+> Sticky *group* headers were the only reason that geometry was per-group.
+
+**Summary bar** between table and panes: method badge, status pill, the URL in 12px mono with
+the host emphasised, then right-aligned `N rows · n selected`.
+
+**Inspector — two panes.** A 42%-tall strip under a top hairline, split by a vertical
+hairline. Each pane is a column: a `rgba(243,243,248,.7)` head (12.5px/600 title, a 12px tab
+row, a `minus-circle` collapse at the right) over a scrolling body.
+- **Request** — Header · Query · Body · Cookies · Raw · Summary
+- **Response** — Header · Body · Raw · Treeview · Timing · Summary
+- **WebSocket flow** — one pane, `Messages`, replacing both.
+
+Header / Query / Cookies bodies are a 176px key column beside the value in 11.5px mono, with
+an uppercase `Key / Value` head and `--bsoft` row hairlines. Body and Raw sit on code surfaces
+(§5). Timing keeps the waterfall the old inspector used. **cURL is not a tab** — it is `⌘⇧C`
+and a palette command, because it is an action, not a view.
+
+Every chord in this section is defined in `issues/0003-keyboard-shortcuts.md` §4.2–4.4. The
+tree footer keycap and the Auto Select label are the only two places the UI spells one out.
 
 ### 4.2 Rules — centred column
 Petrona title, a prose subtitle with mono spans in accent, and a green **New rule** pill.
@@ -219,6 +280,14 @@ is protocol traffic:
 `1xx` blue · `2xx` green · `3xx` violet · `4xx` salmon · `5xx`/aborted deep salmon ·
 pending `--faint`.
 
+### Data table
+One `display:grid` with a fixed `grid-template-columns` shared by the header row and every
+body row — never a `<table>`, and never per-row widths, because the two would drift the
+moment a column becomes optional. Numerics (duration, sizes) are right-aligned; identifiers
+(URL, host, header keys) are mono and ellipsised from the right; **an absent value is `–`, a
+zero value is `0 B`** — collapsing the two hides whether a body existed. The header is
+`position:sticky` with its own translucent fill, so rows scroll under it rather than past it.
+
 ### Toggle switch
 40×23px pill track, `rgba(27,26,61,.14)` off / `--accent` on with an accent glow. Knob is a
 17px white circle at `top/left: 3px` that `translateX(17px)` on `--t-base`.
@@ -227,6 +296,11 @@ pending `--faint`.
 Filter chips (`.fchip`) are pill-shaped, 11.5px/500, white-ish over a hairline; active is
 solid accent with white text. Semantic chips (`.chip`) are pill-shaped, coloured text over a
 ~10% tint with a ~30% border. Method and kind tags are the squarer 5–8px radius mono form.
+
+Filter chips come in **groups behind an eyebrow** (§4.1): many can be active inside one
+group, and a group with none active means "all of it". So an active chip says *narrowed to
+this*, never *this is the one setting* — there is no `All` chip to switch back to, only
+**Reset filters**.
 
 ### Buttons
 - **Primary** — accent pill, white text, `--e-accent`, hover `--accent-hover`, press
@@ -301,6 +375,12 @@ uses **no second hue**: `--c-indigo` / `--c-violet` / `--c-cyan` are semantic to
   Search icon + input + `esc` keycap; rows are a 15px icon, a 12.5px/500 label, and a mono
   keycap, with the active row on `rgba(62,181,109,.10)` and its icon in accent.
 - **Settings modal (z40):** 560px, four tabs — General / Network / MCP / Getting started.
+- **Shortcuts dialog (z40):** the settings shell at 640px, opened from **Help → Keyboard
+  Shortcuts**, `⌘/`, or the palette. A search field (matching label *and* chord) over rows
+  grouped by scope: label left, key badges right in the `.kbd` form, formatted per platform
+  (`⌘ ⇧ F` on macOS, `Ctrl Shift F` elsewhere). Every row renders from the registry in
+  `src/shortcuts.ts` — nothing in this panel is hand-written, which is the whole reason the
+  registry exists. The `⌘K` row carries its own warning line: Clear cannot be undone.
 - **Onboarding wizard (z40):** the settings shell at 680px — wider than Settings because the
   pip rail carries four full step names — one step at a time. A pip rail
   replaces the tab strip — numbered 18px marks that turn solid accent with a check once the
@@ -343,3 +423,7 @@ on every scroll.
 - Uppercase eyebrows (10.5–11px, `+.09em`) label sections and fields.
 - Three empty states per list, not one: nothing captured, nothing matching, nothing
   configured. Telling someone to loosen a filter they never set is worse than saying nothing.
+- **Columns drop, they never squeeze.** The window can be 940px wide; a table that shrinks
+  its columns to fit becomes ten unreadable slivers instead of seven readable ones.
+- **A keycap in the UI is a copy of the registry, not a second source.** `src/shortcuts.ts`
+  owns every chord; a hardcoded `⌘K` in JSX is the bug that survives the next rebinding.
