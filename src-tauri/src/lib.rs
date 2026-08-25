@@ -118,6 +118,7 @@ pub fn run() {
                 tracing::warn!("could not install the menu: {e}");
             }
             app.on_menu_event(|app, event| menu::on_event(app, event.id().as_ref()));
+
             match CaMaterial::load_or_create(&st.data_dir) {
                 Ok(ca) => {
                     tracing::info!(
@@ -234,6 +235,7 @@ pub fn run() {
             commands::set_system_proxy,
             commands::restore_system_proxy,
             commands::log_from_ui,
+            commands::track_ui,
             commands::helper_status,
             commands::install_helper,
             commands::uninstall_helper,

@@ -96,6 +96,21 @@ export const api = {
     void invoke("log_from_ui", { level, kind, message }).catch(() => {});
   },
 
+  /**
+   * Count something the user did, so the usage stream says what gets used and
+   * not only what breaks.
+   *
+   * `ev` and `name` are both folded through fixed vocabularies on the Rust
+   * side, and anything it does not recognise becomes `"other"` — so inventing a
+   * name here produces a useless line rather than a leak. Never pass anything
+   * the user typed: a search query is the host they are debugging.
+   *
+   * Fire-and-forget for the same reason as `logUi`.
+   */
+  trackUi: (ev: UiEvent, name?: UiEventName) => {
+    void invoke("track_ui", { ev, name: name ?? null }).catch(() => {});
+  },
+
   /** State of the macOS helper that applies proxy changes without a password. */
   helperStatus: () => invoke<HelperStatus>("helper_status"),
   /** Install it — one administrator prompt, then none. */
@@ -133,6 +148,34 @@ export const api = {
  * "other".
  */
 export type UiLogKind = "render" | "unhandled-rejection" | "window-error" | "command";
+
+/**
+ * Interface events the usage stream counts. Mirrors `ui_event` in
+ * `commands.rs`: adding one here without adding it there gets it folded into
+ * `ui.other`.
+ */
+export type UiEvent =
+  | "ui.section"
+  | "ui.detail_tab"
+  | "ui.settings.open"
+  | "ui.palette.open"
+  | "ui.flow.action"
+  | "ui.flow.chip"
+  | "ui.onboarding";
+
+/** Values those events may carry. Mirrors `ui_event_name` in `commands.rs`. */
+export type UiEventName =
+  | Section
+  | DetailTab
+  | FlowAction
+  | FlowChipName
+  | OnboardingStep;
+
+type Section = "flows" | "rules" | "break" | "scripts" | "certs";
+type DetailTab = "overview" | "request" | "response" | "timing" | "curl" | "ws";
+type FlowAction = "resend" | "copy_curl" | "group_toggle";
+type FlowChipName = "all" | "errors" | "slow" | "mcp";
+type OnboardingStep = "open" | "done" | "skip";
 
 export { Channel };
 

@@ -473,7 +473,7 @@ export function App() {
     if (!statusProbed || onboardingDecided.current) return;
     onboardingDecided.current = true;
     const decision = launchDecision(prefs, useStore.getState().ca);
-    if (decision === "open") setOnboardingOpen(true);
+    if (decision === "open") openOnboarding();
     else if (decision === "mark-done") setPrefs({ ...prefs, onboardingDone: true });
     // Launch-only, and `prefs` is read once at mount by design (see above).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -518,6 +518,7 @@ export function App() {
 
   async function resendSelected() {
     if (!selected) return showToast("No flow selected");
+    api.trackUi("ui.flow.action", "resend");
     try {
       await api.resendFlow(selected);
       showToast("Request resent through the proxy");
@@ -530,6 +531,7 @@ export function App() {
 
   async function copyCurl() {
     if (!selected) return showToast("No flow selected");
+    api.trackUi("ui.flow.action", "copy_curl");
     // The list holds no body bytes, so the request body is fetched before the
     // command is written out — a cURL without its `--data` is not the request.
     navigator.clipboard.writeText(buildCurl(await withRequestBody(selected)));
@@ -547,12 +549,12 @@ export function App() {
       { id: "save", icon: "download", label: "Save session (.nova)", run: () => void doExportSession() },
       { id: "open", icon: "upload", label: "Open session (.nova)", run: () => void doImportSession() },
       { id: "har", icon: "file-down", label: "Export as HAR", run: () => void doExportHar() },
-      { id: "mcponly", icon: "plug", label: chip === "mcp" ? "Show all traffic (clear MCP filter)" : "Show only MCP traffic", run: () => { setChip((c) => (c === "mcp" ? "all" : "mcp")); setSection("flows"); } },
-      { id: "bp", icon: "circle-pause", label: "Arm breakpoint on next request", run: () => { armBreakpoint(true); setSection("break"); showToast("Breakpoint armed"); } },
-      { id: "rules", icon: "git-branch", label: "Open Rules", run: () => setSection("rules") },
-      { id: "scripts", icon: "braces", label: "Open Scripts", run: () => setSection("scripts") },
-      { id: "certs", icon: "shield-check", label: "Open Certificate", run: () => setSection("certs") },
-      { id: "walkthrough", icon: "play", label: "Show the getting-started walkthrough", run: () => { setSettingsOpen(false); setCoach(null); setOnboardingOpen(true); } },
+      { id: "mcponly", icon: "plug", label: chip === "mcp" ? "Show all traffic (clear MCP filter)" : "Show only MCP traffic", run: () => { goChip(chip === "mcp" ? "all" : "mcp"); goSection("flows"); } },
+      { id: "bp", icon: "circle-pause", label: "Arm breakpoint on next request", run: () => { armBreakpoint(true); goSection("break"); showToast("Breakpoint armed"); } },
+      { id: "rules", icon: "git-branch", label: "Open Rules", run: () => goSection("rules") },
+      { id: "scripts", icon: "braces", label: "Open Scripts", run: () => goSection("scripts") },
+      { id: "certs", icon: "shield-check", label: "Open Certificate", run: () => goSection("certs") },
+      { id: "walkthrough", icon: "play", label: "Show the getting-started walkthrough", run: () => { setSettingsOpen(false); setCoach(null); openOnboarding(); } },
     ],
     [recording, proxy.running, proxy.system_proxy, chip, selected],
   );
@@ -561,7 +563,16 @@ export function App() {
     return commands.filter((c) => c.label.toLowerCase().includes(q));
   }, [commands, paletteQuery]);
 
-  const openPalette = () => { setPaletteOpen(true); setPaletteQuery(""); setPalIndex(0); };
+  /* usage counting — one wrapper per thing worth counting, so the tracking
+     lives in a single place instead of at every click that reaches it. Only
+     fixed identifiers are ever passed; see `api.trackUi`. */
+  const goSection = (id: Section) => { setSection(id); api.trackUi("ui.section", id); };
+  const goDetailTab = (t: DetailTab) => { setDetailTab(t); api.trackUi("ui.detail_tab", t); };
+  const goChip = (c: FlowChip) => { setChip(c); api.trackUi("ui.flow.chip", c); };
+  const openSettings = () => { setSettingsOpen(true); api.trackUi("ui.settings.open"); };
+  const openOnboarding = () => { setOnboardingOpen(true); api.trackUi("ui.onboarding", "open"); };
+
+  const openPalette = () => { setPaletteOpen(true); setPaletteQuery(""); setPalIndex(0); api.trackUi("ui.palette.open"); };
   const closePalette = () => setPaletteOpen(false);
   const runCommand = (c: (typeof commands)[number]) => { setPaletteOpen(false); setTimeout(() => c.run(), 0); };
 
@@ -606,14 +617,14 @@ export function App() {
               key={r.id}
               className={`rail-item ${section === r.id ? "active" : ""}`}
               title={r.label}
-              onClick={() => setSection(r.id)}
+              onClick={() => goSection(r.id)}
             >
               <span className="icon"><Icon name={r.icon} size={19} /></span>
               <span className="label">{r.label}</span>
             </div>
           ))}
           <div className="spacer" />
-          <div className="rail-gear" title="Settings" onClick={() => setSettingsOpen(true)}>
+          <div className="rail-gear" title="Settings" onClick={openSettings}>
             <Icon name="settings" size={18} />
           </div>
         </div>
@@ -687,17 +698,17 @@ export function App() {
               setQuery={setQuery}
               appFilter={appFilter}
               chip={chip}
-              setChip={setChip}
+              setChip={goChip}
               showInternal={showInternal}
               toggleInternal={() => setShowInternal((v) => !v)}
               groupByHost={groupByHost}
-              toggleGroup={() => setGroupByHost((v) => !v)}
+              toggleGroup={() => { setGroupByHost((v) => !v); api.trackUi("ui.flow.action", "group_toggle"); }}
               recording={recording}
               listRef={flowListRef}
               selected={selected}
               select={select}
               detailTab={detailTab}
-              setDetailTab={setDetailTab}
+              setDetailTab={goDetailTab}
               listWidth={listWidth}
               setListWidth={setListWidth}
               commitListWidth={(w) => setPrefs({ ...prefs, flowListWidth: w })}
@@ -785,7 +796,7 @@ export function App() {
           prefs={prefs} setPrefs={setPrefs}
           showToast={showToast}
           onClose={() => setSettingsOpen(false)}
-          onWalkthrough={() => { setSettingsOpen(false); setCoach(null); setOnboardingOpen(true); }}
+          onWalkthrough={() => { setSettingsOpen(false); setCoach(null); openOnboarding(); }}
         />
       )}
 
@@ -811,6 +822,9 @@ export function App() {
           showToast={showToast}
           onDismiss={(withCoach) => {
             setOnboardingOpen(false);
+            // Whether they got to the end of it is the only interesting thing
+            // about a walkthrough, so the two exits are counted apart.
+            api.trackUi("ui.onboarding", prefs.onboardingDone ? "done" : "skip");
             if (!prefs.onboardingDone) setPrefs({ ...prefs, onboardingDone: true });
             // Only coach someone who still has nothing captured — pointing at an
             // empty list is help; pointing at a full one is noise.

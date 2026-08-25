@@ -586,6 +586,119 @@ mod ui_log_tests {
     }
 }
 
+/* ------------------------------ ui analytics ------------------------------ */
+
+/// Count a thing the user did in the interface.
+///
+/// Separate from [`log_from_ui`] because it answers a different question: that
+/// one records what broke, this one records what got used. It writes to the
+/// usage stream only — a person reading the diagnostics log to work out why a
+/// capture failed does not need a trail of panel switches in the way.
+///
+/// Both arguments are folded through fixed vocabularies, and anything unknown
+/// becomes `"other"`. That is the whole safety property: the caller is a webview
+/// rendering captured traffic, so **no string from it may reach the file
+/// verbatim**. What the user types — the flow search box, the app filter, the
+/// palette query — is not tracked at all, because what they type *is* the host
+/// they are debugging.
+#[tauri::command]
+pub fn track_ui(ev: String, name: Option<String>) {
+    let ev = ui_event(&ev);
+    // `usage!` takes a literal field list, so the two shapes are spelled out
+    // rather than built up.
+    match name.as_deref().map(ui_event_name) {
+        Some(name) => crate::usage!(ev, name = name),
+        None => crate::usage!(ev),
+    }
+}
+
+/// The events the interface may report.
+///
+/// A fixed list rather than a prefix check: `ui.` is easy to satisfy by
+/// accident, and an event name invented at a call site is an event nobody can
+/// count. Unknown folds to `ui.other` so a stale frontend still produces a
+/// countable line instead of a silent hole.
+fn ui_event(ev: &str) -> &'static str {
+    match ev {
+        "ui.section" => "ui.section",
+        "ui.detail_tab" => "ui.detail_tab",
+        "ui.settings.open" => "ui.settings.open",
+        "ui.palette.open" => "ui.palette.open",
+        "ui.flow.action" => "ui.flow.action",
+        "ui.flow.chip" => "ui.flow.chip",
+        "ui.onboarding" => "ui.onboarding",
+        _ => "ui.other",
+    }
+}
+
+/// The values those events may carry.
+///
+/// One vocabulary across every event rather than one per event: the sets do not
+/// overlap, and a single list is the thing you can read top to bottom to answer
+/// "what can end up in the file?". That question is asked far more often than
+/// "is `overview` legal for `ui.section`?".
+fn ui_event_name(name: &str) -> &'static str {
+    match name {
+        // Sections, from the left rail.
+        "flows" => "flows",
+        "rules" => "rules",
+        "break" => "break",
+        "scripts" => "scripts",
+        "certs" => "certs",
+        // Tabs in the flow detail pane.
+        "overview" => "overview",
+        "request" => "request",
+        "response" => "response",
+        "timing" => "timing",
+        "curl" => "curl",
+        "ws" => "ws",
+        // Flow actions.
+        "resend" => "resend",
+        "copy_curl" => "copy_curl",
+        "group_toggle" => "group_toggle",
+        // Flow list chips.
+        "all" => "all",
+        "errors" => "errors",
+        "mcp" => "mcp",
+        "slow" => "slow",
+        // Onboarding.
+        "open" => "open",
+        "done" => "done",
+        "skip" => "skip",
+        _ => "other",
+    }
+}
+
+#[cfg(test)]
+mod ui_track_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_events_and_names_fold_rather_than_pass_through() {
+        assert_eq!(ui_event("ui.section"), "ui.section");
+        assert_eq!(ui_event("ui.made.this.up"), "ui.other");
+        assert_eq!(ui_event(""), "ui.other");
+        assert_eq!(ui_event_name("flows"), "flows");
+        assert_eq!(ui_event_name("resend"), "resend");
+        assert_eq!(ui_event_name("other"), "other");
+    }
+
+    #[test]
+    fn nothing_a_user_typed_can_survive_the_vocabulary() {
+        // The actual threat: a call site that interpolates the search box, or a
+        // compromised webview trying to exfiltrate through the usage stream.
+        for hostile in [
+            "api.internal.example",
+            "https://bank.example/account?token=abc",
+            "Authorization: Bearer sk-live-1",
+            "Slack.app",
+        ] {
+            assert_eq!(ui_event(hostile), "ui.other");
+            assert_eq!(ui_event_name(hostile), "other");
+        }
+    }
+}
+
 /* -------------------------- privileged helper -------------------------- */
 
 #[tauri::command]
