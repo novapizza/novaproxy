@@ -96,6 +96,16 @@ function join(lines: string[], body: string | null): string {
   return body != null && body !== "" ? `${head}\n\n${body}` : head;
 }
 
+/** Which of NovaProxy's own mechanisms changed this exchange, spelled out. */
+function editedBy(f: Flow): string {
+  const parts = [
+    f.edits.rule && "a rule",
+    f.edits.script && "the script",
+    f.edits.breakpoint && "a breakpoint",
+  ].filter((x): x is string => typeof x === "string");
+  return parts.length === 0 ? "nothing — as sent" : parts.join(", ");
+}
+
 /** Facts about one side of the exchange, for its Summary panel. */
 export function summaryOf(f: Flow, side: "request" | "response"): Pair[] {
   if (side === "request") {
@@ -121,6 +131,7 @@ export function summaryOf(f: Flow, side: "request" | "response"): Pair[] {
     { k: "Truncated", v: f.response_body?.truncated ? "yes — capped at the capture cap" : "no" },
     { k: "Mapped from", v: f.mapped_from ?? "—" },
     { k: "Resent", v: f.resent ? "yes" : "no" },
+    { k: "Edited by", v: editedBy(f) },
     { k: "MCP", v: f.mcp ? `${f.mcp.method ?? "—"}${f.mcp.tool ? ` → ${f.mcp.tool}` : ""}` : "—" },
   ];
 }

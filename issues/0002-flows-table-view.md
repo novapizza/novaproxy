@@ -273,7 +273,7 @@ Column `#` có **sort arrow** → Proxyman cho sort mọi column (đã nằm ở
 | **4** | Dual-pane inspector: decompose `Detail`; tab `Query/Cookies/Raw/Summary/Timing/Treeview`; WS → 1 pane Messages; cURL thành action | UI đủ dùng |
 | **5** | Dọn dead code §7 + telemetry vocab 2 phía + prefs migration | diff sạch |
 | **6** | Table power: sort column, column picker/resize, keyboard nav, multi-select + `n/m rows selected`. Chord định nghĩa ở [0003](0003-keyboard-shortcuts.md) | — |
-| **7** | Rust: flag `edited` trên `Flow`; icon app thật qua NSWorkspace | 2 binding mới |
+| **7** | Rust: `Edits` trên `Flow` (rule/script/breakpoint, chỉ set khi *thật sự* đổi); icon app thật — không qua NSWorkspace mà qua `.icns` + `sips`, để không thêm dependency | `Edits.ts`, command `app_icon` |
 | **8** | Favorites: Pinned + Comment + Saved filter (saved → chip) | — |
 | **9** | Filter builder (field/operator/value, stackable, save, ⌘F/⌘N/⌘B) | — |
 | **10** | Polish: README, design.md, test coverage | — |

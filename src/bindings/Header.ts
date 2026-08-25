@@ -2,5 +2,8 @@
 
 /**
  * A single HTTP header, preserving order and duplicates (unlike a map).
+ *
+ * `PartialEq` so a caller can ask whether a header set actually changed —
+ * which is what separates "a script ran" from "a script edited this".
  */
 export type Header = { name: string, value: string, };

@@ -236,6 +236,7 @@ pub fn run() {
             commands::restore_system_proxy,
             commands::log_from_ui,
             commands::track_ui,
+            commands::app_icon,
             commands::helper_status,
             commands::install_helper,
             commands::uninstall_helper,

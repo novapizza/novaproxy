@@ -41,6 +41,7 @@ function mkFlow(over: Partial<Flow> = {}): Flow {
     tunneled: false,
     mcp: null,
     internal: false,
+    edits: { rule: false, script: false, breakpoint: false },
     ...over,
   } as Flow;
 }

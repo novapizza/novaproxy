@@ -19,7 +19,7 @@ pub mod trust;
 // OS plumbing lives in its own crate so the privileged helper — which runs as
 // root — links none of the engine. Re-exported so callers still say
 // `nova_core::sysproxy::…`.
-pub use nova_os::{helper, oscmd, sysproxy};
+pub use nova_os::{appicon, helper, oscmd, sysproxy};
 
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicU16;

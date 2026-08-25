@@ -8,7 +8,7 @@ import "@fontsource-variable/petrona";
 import "./styles.css";
 import type { Flow } from "./api";
 import { FlowsSection } from "./flows/FlowsSection";
-import { DEFAULT_COLUMNS } from "./flows/columns";
+import { DEFAULT_COLUMNS, normalizeColumns, type ColumnId } from "./flows/columns";
 import { EMPTY_FILTER, type FlowFilter } from "./filter";
 import { KeyValueTable } from "./inspector/KeyValueTable";
 import { TreeviewPanel } from "./inspector/TreeviewPanel";
@@ -44,6 +44,7 @@ function mk(over: Partial<Flow>): Flow {
     timings: { dns_ms: 9, connect_ms: 16, tls_ms: 26, connection_reused: false, request_ms: null, ttfb_ms: 44, download_ms: 14 },
     error: null, resent: false, mapped_from: null, is_websocket: false,
     tunneled: false, mcp: null, internal: false,
+    edits: { rule: false, script: false, breakpoint: false },
     ...over,
   } as Flow;
 }
@@ -53,11 +54,11 @@ const FLOWS: Flow[] = [
   mk({ method: "POST", path: "/v3/shoots/4821/tasks:assign", url: "https://api.creativeforce.io/v3/shoots/4821/tasks:assign", duration_ms: 264, response_size: 812n }),
   mk({ path: "/v3/assets/9f3c1/derivatives", url: "https://api.creativeforce.io/v3/assets/9f3c1/derivatives", status: 401, duration_ms: 92, response_size: 184n }),
   mk({ method: "POST", path: "/mcp/v1/tools/call", url: "https://api.creativeforce.io/mcp/v1/tools/call", duration_ms: 412, response_size: 6400n, mcp: { method: "tools/call", tool: "read_file", id: "7", transport: "Http" } as Flow["mcp"] }),
-  mk({ method: "PUT", path: "/v3/reviews/1188/decision", url: "https://api.creativeforce.io/v3/reviews/1188/decision", status: 422, duration_ms: 205, response_size: 402n }),
+  mk({ edits: { rule: true, script: false, breakpoint: false }, mapped_from: "api.creativeforce.io", method: "PUT", path: "/v3/reviews/1188/decision", url: "https://api.creativeforce.io/v3/reviews/1188/decision", status: 422, duration_ms: 205, response_size: 402n }),
   mk({ host: "github.com", process: "git", path: "/novapizza/novaproxy.git/info/refs", url: "https://github.com/novapizza/novaproxy.git/info/refs", status: 500, duration_ms: 512, response_size: 228n, content_type: "text/plain" }),
   mk({ host: "github.com", process: "git", method: "POST", path: "/novapizza/novaproxy.git/git-upload-pack", url: "https://github.com/novapizza/novaproxy.git/git-upload-pack", duration_ms: 325, response_size: 24800n, content_type: "application/x-git-upload-pack-result" }),
   mk({ host: "cdn.example.com", process: null, path: "/img/hero.png", url: "https://cdn.example.com/img/hero.png", content_type: "image/png", response_size: 184320n, duration_ms: 47 }),
-  mk({ host: "browser-intake.datadoghq.com", method: "POST", path: "/api/v2/rum?ddsource=browser", url: "https://browser-intake.datadoghq.com/api/v2/rum?ddsource=browser", status: 202, duration_ms: 528, response_size: 0n, content_type: null }),
+  mk({ edits: { rule: true, script: true, breakpoint: true }, host: "browser-intake.datadoghq.com", method: "POST", path: "/api/v2/rum?ddsource=browser", url: "https://browser-intake.datadoghq.com/api/v2/rum?ddsource=browser", status: 202, duration_ms: 528, response_size: 0n, content_type: null }),
   mk({ host: "ws.productpad.io", scheme: "https", path: "/socket", url: "https://ws.productpad.io/socket", is_websocket: true, status: 101, duration_ms: 12, response_size: 0n }),
   mk({ host: "pinned.apple.com", path: "/", url: "https://pinned.apple.com/", tunneled: true, status: 200, content_type: null, response_size: 0n, response_body: null }),
   mk({ host: "api.creativeforce.io", path: "/v3/briefs?status=open", url: "https://api.creativeforce.io/v3/briefs?status=open", status: null, duration_ms: null, response_size: 0n, state: "Started", response_body: null }),
@@ -67,7 +68,7 @@ const REVERSED = new URLSearchParams(location.search).has("rev");
 const ROWS = REVERSED ? [...FLOWS].reverse() : FLOWS;
 
 function Harness() {
-  const [columns, setColumns] = useState(DEFAULT_COLUMNS);
+  const [columns, setColumns] = useState<ColumnId[]>(normalizeColumns([...DEFAULT_COLUMNS, "edited"]));
   const [widths, setWidths] = useState({});
   const [filter, setFilter] = useState<FlowFilter>(EMPTY_FILTER);
   const [selectedId, setSelectedId] = useState<string | null>(ROWS[REVERSED ? 0 : 3].id);

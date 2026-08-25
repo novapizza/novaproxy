@@ -11,6 +11,7 @@ function mkFlow(over: Partial<Flow> = {}): Flow {
     response_body: null, request_size: 0, response_size: 0, content_type: null,
     started_at: 0, duration_ms: null, error: null, resent: false,
     mapped_from: null, is_websocket: false, tunneled: false, mcp: null, internal: false,
+    edits: { rule: false, script: false, breakpoint: false },
     ...over,
   } as Flow;
 }

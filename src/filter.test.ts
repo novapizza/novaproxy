@@ -167,7 +167,8 @@ describe("MCP filtering", () => {
 /* --------------------------- the composed filter --------------------------- */
 
 const f2 = (over: Partial<Flow> = {}) =>
-  mkFlow({ is_websocket: false, tunneled: false, mcp: null, internal: false, ...over } as Partial<Flow>);
+  mkFlow({ is_websocket: false, tunneled: false, mcp: null, internal: false,
+    edits: { rule: false, script: false, breakpoint: false }, ...over } as Partial<Flow>);
 
 const filter = (over: Partial<FlowFilter> = {}): FlowFilter => ({ ...EMPTY_FILTER, ...over });
 

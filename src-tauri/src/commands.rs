@@ -894,6 +894,41 @@ pub async fn install_ca(
     ca_status_inner(&state)
 }
 
+/// The icon of the app a flow came from, as a `data:` URL.
+///
+/// Keyed by the process name the flow already carries, so the UI asks for what
+/// it is displaying. Cached forever, and negatively too: a name with no bundle
+/// (a CLI tool, a daemon) must not re-run `sips` on every repaint of every row
+/// that mentions it.
+///
+/// Returns `Ok(None)` rather than an error when there is no icon — a missing
+/// picture is a normal answer, and the table falls back to a glyph.
+#[tauri::command]
+pub async fn app_icon(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+) -> Result<Option<String>, String> {
+    if let Some(hit) = state.app_icons.lock().unwrap().get(&name) {
+        return Ok(hit.clone());
+    }
+    let bundle = nova_core::procinfo::global().bundle_for(&name);
+    let icon = match bundle {
+        // Off the async runtime: this shells out to `sips`, which is not instant.
+        Some(path) => tauri::async_runtime::spawn_blocking(move || {
+            nova_core::appicon::icon_data_url(&path)
+        })
+        .await
+        .map_err(|e| e.to_string())?,
+        None => None,
+    };
+    state
+        .app_icons
+        .lock()
+        .unwrap()
+        .insert(name, icon.clone());
+    Ok(icon)
+}
+
 #[tauri::command]
 pub async fn uninstall_ca(state: State<'_, Arc<AppState>>) -> Result<CaStatus, String> {
     let ca = ca_id(&state)?;

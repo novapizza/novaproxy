@@ -120,6 +120,13 @@ export const api = {
 
   resendFlow: (flow: Flow) => invoke<void>("resend_flow", { flow }),
 
+  /**
+   * The originating app's icon as a `data:` URL, by the process name a flow
+   * carries. Resolves with `null` when that app has no bundle to read one from —
+   * a normal answer, not a failure.
+   */
+  appIcon: (name: string) => invoke<string | null>("app_icon", { name }),
+
   caStatus: () => invoke<CaStatus>("ca_status"),
   /**
    * Install & trust the CA. Defaults to the current user's trust domain, which

@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { Flow } from "../api";
+import { appIcon, onIconsChanged } from "../appicons";
 import { Icon } from "../icons";
 import { methodClass, statusClass, statusText } from "../badges";
 import { formatCellBytes, formatClock } from "../format";
@@ -26,7 +27,8 @@ export type ColumnId =
   | "request"
   | "response"
   | "ssl"
-  | "protocol";
+  | "protocol"
+  | "edited";
 
 export interface Column {
   id: ColumnId;
@@ -90,14 +92,7 @@ export const COLUMNS: Record<ColumnId, Column> = {
     id: "client",
     label: "Client",
     track: "132px",
-    // No attribution is a real state, not a blank: the proxy saw the socket but
-    // could not name the process behind it.
-    cell: (f) => (
-      <>
-        <Icon name={f.internal ? "shield-check" : "app-window"} size={13} />
-        <span className="t">{f.process ?? "unknown"}</span>
-      </>
-    ),
+    cell: (f) => <ClientCell flow={f} />,
   },
   method: {
     id: "method",
@@ -144,7 +139,50 @@ export const COLUMNS: Record<ColumnId, Column> = {
     track: "84px",
     cell: (f) => f.http_version,
   },
+  edited: {
+    id: "edited",
+    label: "Edited",
+    track: "70px",
+    // Three letters rather than one pencil: "why is this response wrong?" has
+    // three different answers, and which one it was is the whole point.
+    cell: (f) => (
+      <>
+        {f.edits.rule && <span className="etag rule" title="A rule rewrote this">R</span>}
+        {f.edits.script && <span className="etag script" title="The script hook changed this">S</span>}
+        {f.edits.breakpoint && (
+          <span className="etag bp" title="Edited at a breakpoint">B</span>
+        )}
+        {!f.edits.rule && !f.edits.script && !f.edits.breakpoint && "–"}
+      </>
+    ),
+  },
 };
+
+/**
+ * The originating app, with its real icon once macOS has been asked for it.
+ *
+ * A component rather than a plain cell because the icon arrives after the first
+ * paint: the fetch is cached per app (`src/appicons.ts`), so this subscribes to
+ * "an icon landed" and repaints the handful of rows that were waiting.
+ *
+ * No attribution is a real state, not a blank — the proxy saw the socket but
+ * could not name the process behind it.
+ */
+function ClientCell({ flow }: { flow: Flow }) {
+  const [, bump] = useState(0);
+  useEffect(() => onIconsChanged(() => bump((n) => n + 1)), []);
+  const icon = flow.internal ? null : appIcon(flow.process);
+  return (
+    <>
+      {typeof icon === "string" ? (
+        <img className="appicon" src={icon} alt="" />
+      ) : (
+        <Icon name={flow.internal ? "shield-check" : "app-window"} size={13} />
+      )}
+      <span className="t">{flow.process ?? "unknown"}</span>
+    </>
+  );
+}
 
 /** Display order. A visible set is a subset of this, never a reordering (phase 6). */
 export const COLUMN_ORDER: ColumnId[] = [
@@ -158,6 +196,7 @@ export const COLUMN_ORDER: ColumnId[] = [
   "request",
   "response",
   "protocol",
+  "edited",
   "ssl",
 ];
 

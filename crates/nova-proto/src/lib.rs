@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// A single HTTP header, preserving order and duplicates (unlike a map).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+///
+/// `PartialEq` so a caller can ask whether a header set actually changed —
+/// which is what separates "a script ran" from "a script edited this".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../src/bindings/")]
 pub struct Header {
     pub name: String,
@@ -213,6 +216,34 @@ pub struct Flow {
     /// the flow list and from MCP tool results, so an agent inspecting traffic
     /// does not mostly see itself.
     pub internal: bool,
+    /// What NovaProxy changed about this exchange on its way through.
+    pub edits: Edits,
+}
+
+/// What changed an exchange after it left the client.
+///
+/// Three flags rather than one boolean, because "why is the response wrong?"
+/// has three different answers and the table's Edited column is where that
+/// question starts. Each is set only when something actually changed: a rule
+/// that matched but had nothing to rewrite, or a script hook that returned the
+/// headers it was given, leaves no mark — a marker that means "a rule exists"
+/// rather than "this request was altered" would be noise on every row.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub struct Edits {
+    /// A rule rewrote this: Block, Map Local, Map Remote, or a header Rewrite.
+    pub rule: bool,
+    /// The script hook changed headers, or aborted the request.
+    pub script: bool,
+    /// A person edited it while it was paused at a breakpoint.
+    pub breakpoint: bool,
+}
+
+impl Edits {
+    /// True when anything at all touched the exchange.
+    pub fn any(&self) -> bool {
+        self.rule || self.script || self.breakpoint
+    }
 }
 
 /// Direction of a captured WebSocket frame, from the client's point of view.

@@ -7,6 +7,7 @@
 //! `nova-core` re-exports [`oscmd`] and [`sysproxy`], so callers keep using
 //! `nova_core::sysproxy::…` as before.
 
+pub mod appicon;
 pub mod helper;
 pub mod oscmd;
 pub mod sysproxy;

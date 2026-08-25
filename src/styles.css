@@ -1087,7 +1087,9 @@ input, textarea, select { font-family: inherit; }
   font-variant-numeric: tabular-nums;
   padding-right: 10px;
 }
-.ft-row > span.r, .ft-head > span.r { text-align: right; padding-right: 0; padding-left: 10px; }
+/* Right-aligned cells still need a right gutter: without one, `SSL` and the
+   label of whatever column follows it run together into `SSLEDITED`. */
+.ft-row > span.r, .ft-head > span.r { text-align: right; padding-right: 8px; padding-left: 10px; }
 
 .ft-row .c-seq { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
 .ft-row .rdot { width: 6px; height: 6px; border-radius: var(--r-pill); flex: none; background: var(--accent); }
@@ -1109,9 +1111,19 @@ input, textarea, select { font-family: inherit; }
 
 .ft-row .c-client { display: flex; align-items: center; gap: 7px; font-family: var(--font-ui); }
 .ft-row .c-client svg { flex: none; color: var(--c-indigo); }
+.ft-row .appicon { width: 14px; height: 14px; flex: none; border-radius: 3px; }
 .ft-row .c-client .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .ft-row .c-method, .ft-row .c-status { overflow: visible; }
+.ft-row .c-edited { display: flex; align-items: center; gap: 3px; }
+.ft-row .etag {
+  font: 600 9px var(--font-ui); letter-spacing: .04em;
+  width: 14px; text-align: center; border-radius: 3px;
+  border: 1px solid currentColor;
+}
+.ft-row .etag.rule { color: var(--c-amber); }
+.ft-row .etag.script { color: var(--c-indigo); }
+.ft-row .etag.bp { color: var(--c-red-deep); }
 .ft-row .ssl { display: flex; justify-content: flex-end; }
 .ft-row .ssl.on { color: var(--accent); }
 .ft-row .ssl.off { color: var(--faint); }
