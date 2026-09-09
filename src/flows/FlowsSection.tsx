@@ -249,7 +249,7 @@ export const FlowsSection = forwardRef<FlowsHandle, {
         reset={DEFAULT_PREFS.treeWidth}
         onDrag={props.setTreeWidth}
         onCommit={props.commitTreeWidth}
-        measure={(e, rect) => e.clientX - rect.left}
+        measure={(c) => c.start + c.dx}
       />
       </>
       )}
@@ -316,9 +316,10 @@ export const FlowsSection = forwardRef<FlowsHandle, {
           reset={DEFAULT_PREFS.inspectorPct}
           onDrag={props.setInspectorPct}
           onCommit={props.commitInspectorPct}
-          // Dragging up grows the inspector, so the value is measured from the
-          // bottom of the table rather than from its top.
-          measure={(e, rect) => ((rect.bottom - e.clientY) / rect.height + 0) * 100 + 0}
+          // A percentage of the flows column, and dragging up grows the
+          // inspector — hence the height basis and the negated delta.
+          step={2}
+          measure={(c) => c.start - (c.dy / c.rect.height) * 100}
         />
 
         <div className="summary-bar">
