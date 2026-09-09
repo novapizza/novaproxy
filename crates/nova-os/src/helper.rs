@@ -104,6 +104,18 @@ pub enum Request {
     Disable { backup: Backup },
 }
 
+impl Request {
+    /// A fixed name for the log, so the variant is readable without printing
+    /// the request — whose `backup` carries every network service name.
+    pub fn op_name(&self) -> &'static str {
+        match self {
+            Request::Ping => "ping",
+            Request::Enable { .. } => "enable",
+            Request::Disable { .. } => "disable",
+        }
+    }
+}
+
 /// One reply, likewise a single JSON line.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Response {
@@ -598,14 +610,50 @@ pub mod server {
     /// Validate, then apply. Errors come back as a reply, never as a panic: the
     /// daemon must survive whatever it is sent.
     fn run(request: Request) -> Response {
-        match apply(request) {
+        // Timed here rather than inside `apply`, because the app measures this
+        // as one blocking IPC round trip and cannot see the split. The app's
+        // `sysproxy.enable` minus this `ms` is what the socket and the JSON
+        // cost; the two lines only mean something read together, one from
+        // `~/Library/Logs/NovaProxy` and one from `/Library/Logs/NovaProxy`
+        // (the support bundle collects both).
+        let op = request.op_name();
+        let t = std::time::Instant::now();
+        let before = crate::oscmd::exec_stats();
+        let result = apply(request);
+        let (spawns, spawn_ms) = {
+            let now = crate::oscmd::exec_stats();
+            (now.0.saturating_sub(before.0), now.1.saturating_sub(before.1))
+        };
+        tracing::info!(
+            op,
+            ms = t.elapsed().as_millis() as u64,
+            spawns,
+            spawn_ms,
+            ok = result.is_ok(),
+            "served request"
+        );
+        match result {
             Ok(()) => Response::ok(),
             Err(e) => Response::err(e),
         }
     }
 
     fn apply(request: Request) -> Result<()> {
-        let known = || macos::parse_services(crate::oscmd::capture("networksetup", &["-listallnetworkservices"]).as_str());
+        // The validation sweep is its own `networksetup` call, and it is paid
+        // before any change is made — worth a line of its own so a slow
+        // "enable" is not blamed on the writes when the read is the cost.
+        let known = || {
+            let t = std::time::Instant::now();
+            let services = macos::parse_services(
+                crate::oscmd::capture("networksetup", &["-listallnetworkservices"]).as_str(),
+            );
+            tracing::info!(
+                count = services.len(),
+                ms = t.elapsed().as_millis() as u64,
+                "listed network services for validation"
+            );
+            services
+        };
         match request {
             Request::Ping => Ok(()),
             Request::Enable { host, port, backup } => {

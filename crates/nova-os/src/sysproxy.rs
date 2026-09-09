@@ -453,13 +453,25 @@ pub mod linux {
 
 /// Capture the current proxy state so it can be restored later.
 pub fn snapshot() -> Backup {
+    let t = std::time::Instant::now();
+    let before = crate::oscmd::exec_stats();
     let backup = snapshot_inner();
+    let (spawns, spawn_ms) = delta(before);
     // The count, never the names: which VPN or Wi-Fi network someone is on is
     // theirs. A count is still the thing that matters — a snapshot with zero
     // services means the later restore will silently put nothing back, which
     // is exactly the failure that looks like "NovaProxy broke my internet".
+    //
+    // The spawn count belongs next to it because this is the expensive half of
+    // a toggle and it was the untimed half: macOS reads a service's proxy one
+    // `networksetup` at a time, twice per service, serially. `services` and
+    // `spawns` together say whether a slow toggle is a machine with many
+    // services or a machine where each call is slow.
     tracing::info!(
         services = backup.services.len(),
+        ms = t.elapsed().as_millis() as u64,
+        spawns,
+        spawn_ms,
         "captured system proxy snapshot"
     );
     if backup.services.is_empty() && backup.windows.is_none() && backup.gnome.is_none() {
@@ -485,6 +497,12 @@ fn snapshot_inner() -> Backup {
     {
         Backup::default()
     }
+}
+
+/// `(spawns, ms)` since a reading taken by [`crate::oscmd::exec_stats`].
+fn delta(before: (u64, u64)) -> (u64, u64) {
+    let now = crate::oscmd::exec_stats();
+    (now.0.saturating_sub(before.0), now.1.saturating_sub(before.1))
 }
 
 /// Point the OS proxy at `host:port`.

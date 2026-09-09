@@ -16,8 +16,53 @@
 //! UAC-triggering `Start-Process -Verb RunAs`.
 
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use anyhow::{bail, Result};
+
+/// How many child processes this process has spawned, and how long it spent
+/// waiting on them.
+///
+/// A toggle of the system proxy is not one command but a sweep: macOS has no
+/// API for "set the proxy", only `networksetup` invoked once per network
+/// service per setting, so the cost is `6N + 2` spawns for `N` services and
+/// every one of them is serial. That is machine-dependent in a way no single
+/// duration explains — a laptop with two VPNs pays three times what a desktop
+/// with one Ethernet does — so the count travels next to the milliseconds.
+/// Read a delta around an operation with [`exec_stats`]; process-wide totals on
+/// their own mean nothing.
+static EXEC_COUNT: AtomicU64 = AtomicU64::new(0);
+static EXEC_MS: AtomicU64 = AtomicU64::new(0);
+
+/// `(spawns, ms)` so far. Subtract two readings to attribute the cost of one
+/// operation; see [`EXEC_COUNT`].
+pub fn exec_stats() -> (u64, u64) {
+    (EXEC_COUNT.load(Ordering::Relaxed), EXEC_MS.load(Ordering::Relaxed))
+}
+
+/// Run a child to completion, timing it and counting it.
+///
+/// The log line names the program and its *first* argument only. That first
+/// argument is the subcommand — `-getwebproxy`, `-setwebproxystate` — which is
+/// what identifies the slow step; everything after it is a network service
+/// name, a keychain path or the user's home directory, and none of that belongs
+/// in a support log (same rule as [`Plan::program_names`]).
+fn spawned(program: &str, args: &[String]) -> std::io::Result<std::process::Output> {
+    let t = Instant::now();
+    let out = command(program).args(args).output();
+    let ms = t.elapsed().as_millis() as u64;
+    EXEC_COUNT.fetch_add(1, Ordering::Relaxed);
+    EXEC_MS.fetch_add(ms, Ordering::Relaxed);
+    tracing::debug!(
+        program,
+        arg = args.first().map(String::as_str).unwrap_or(""),
+        ms,
+        ok = out.is_ok(),
+        "spawned"
+    );
+    out
+}
 
 /// One command to run: program plus argv (no shell involved unless elevation
 /// requires it).
@@ -115,6 +160,7 @@ impl Plan {
                 "running elevated plan"
             );
         }
+        let t = Instant::now();
         let result = match self.elevation {
             Elevation::None => self.run_direct(),
             // Elevated variants batch every step behind a single prompt.
@@ -122,6 +168,16 @@ impl Plan {
             Elevation::LinuxPkexec => run_one(&pkexec_step(&self.joined_shell())),
             Elevation::WindowsUac => run_one(&windows_uac_step(&self.steps)?),
         };
+        // Timed for every plan, elevated or not. An unelevated plan is the one
+        // that pays per step — it spawns each of them — and it was the branch
+        // with no line at all, so a slow sweep had nowhere to show up.
+        tracing::info!(
+            elevation = ?self.elevation,
+            steps = self.steps.len(),
+            ms = t.elapsed().as_millis() as u64,
+            ok = result.is_ok(),
+            "ran plan"
+        );
         if elevated {
             match &result {
                 Ok(()) => tracing::info!(elevation = ?self.elevation, "elevated plan succeeded"),
@@ -198,9 +254,7 @@ fn command(program: &str) -> Command {
 
 /// Run one command, mapping a non-zero exit into an error carrying its stderr.
 fn run_one(step: &Step) -> Result<()> {
-    let out = command(&step.program)
-        .args(&step.args)
-        .output()
+    let out = spawned(&step.program, &step.args)
         .map_err(|e| anyhow::anyhow!("cannot run {}: {e}", step.program))?;
     if out.status.success() {
         return Ok(());
@@ -214,9 +268,8 @@ fn run_one(step: &Step) -> Result<()> {
 /// Capture a command's stdout (empty on failure). Queries use this: "not found"
 /// is an answer, not an error.
 pub fn capture(program: &str, args: &[&str]) -> String {
-    command(program)
-        .args(args)
-        .output()
+    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    spawned(program, &args)
         .map(|o| {
             let mut text = String::from_utf8_lossy(&o.stdout).into_owned();
             // certutil and gsettings report some answers on stderr; both matter
