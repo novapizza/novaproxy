@@ -38,6 +38,24 @@ export function mcpLabel(f: Flow): string {
 }
 
 /**
+ * Whether a toast is reporting something that worked or something that failed.
+ *
+ * Explicit rather than sniffed out of the text: nothing in a string reliably
+ * says "this is an error", and guessing wrong is how every failure came to be
+ * announced under a green check mark.
+ */
+export type ToastKind = "ok" | "error";
+
+/** How a toast is shown: its severity, and how long it stays. */
+export interface ToastOptions {
+  ms?: number;
+  kind?: ToastKind;
+}
+
+/** The toast function every section is handed. */
+export type ShowToast = (text: string, opts?: ToastOptions) => void;
+
+/**
  * How long a toast stays visible. Longer messages (typically errors) need
  * more reading time: scale with length, clamped to a sane range, unless an
  * explicit duration is given.

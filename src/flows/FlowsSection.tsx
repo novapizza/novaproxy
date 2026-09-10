@@ -8,6 +8,7 @@ import {
   isFiltering,
   type FlowFilter,
   type SavedFilter,
+  type ShowToast,
 } from "../filter";
 import { buildScopeTree, type Scope } from "../scope";
 import { useStore } from "../store";
@@ -77,7 +78,7 @@ export const FlowsSection = forwardRef<FlowsHandle, {
   autoSelect: boolean;
   onResend: () => void;
   onCopyCurl: () => void;
-  showToast: (t: string) => void;
+  showToast: ShowToast;
   /**
    * Usage counting, passed in rather than imported: the section is also mounted
    * by the dev harness (`preview.html`), which has no Tauri runtime to invoke.

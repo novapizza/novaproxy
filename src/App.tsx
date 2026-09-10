@@ -26,7 +26,7 @@ import {
 } from "./update";
 import { useStore } from "./store";
 import { exportSession, exportHar, importSession } from "./session";
-import { EMPTY_FILTER, toastDuration, type FlowFilter } from "./filter";
+import { EMPTY_FILTER, toastDuration, type FlowFilter, type ShowToast, type ToastKind } from "./filter";
 import { Brandmark } from "./Brandmark";
 import { Dropdown, type DropdownItem } from "./Dropdown";
 import { Icon, type IconName } from "./icons";
@@ -148,6 +148,7 @@ export function App() {
   const [paletteQuery, setPaletteQuery] = useState("");
   const [palIndex, setPalIndex] = useState(0);
   const [toast, setToastState] = useState("");
+  const [toastKind, setToastKind] = useState<ToastKind>("ok");
   const toastTimer = useRef<number | undefined>(undefined);
 
   const [rules, setRulesState] = useState<Rule[]>([]);
@@ -190,7 +191,7 @@ export function App() {
 
   const saveNet = (next: NetworkConditions) => {
     setNet(next);
-    api.setNetworkConditions(next).catch((e) => showToast(String(e)));
+    api.setNetworkConditions(next).catch((e) => showToast(String(e), { kind: "error" }));
   };
 
   /**
@@ -208,14 +209,14 @@ export function App() {
     } catch (e) {
       // The export still has every flow, just not the bodies the list dropped —
       // said out loud, because a silently body-less export looks complete.
-      showToast(`Couldn't read bodies from the engine — exporting without them (${e})`);
+      showToast(`Couldn't read bodies from the engine — exporting without them (${e})`, { kind: "error" });
       return listed;
     }
   }
   async function doExportSession() {
     try {
       if (await exportSession(await flowsForExport())) showToast("Session saved");
-    } catch (e) { showToast(String(e)); }
+    } catch (e) { showToast(String(e), { kind: "error" }); }
   }
   async function doExportHar() {
     try {
@@ -227,25 +228,25 @@ export function App() {
       if (await exportHar(flows)) {
         showToast(wanted ? `HAR exported (${flows.length} marked flows)` : "HAR exported");
       }
-    } catch (e) { showToast(String(e)); }
+    } catch (e) { showToast(String(e), { kind: "error" }); }
   }
   async function doImportSession() {
     try {
       const flows = await importSession();
       if (flows) { useStore.getState().loadFlows(flows); showToast(`Imported ${flows.length} flows`); }
-    } catch (e) { showToast(String(e)); }
+    } catch (e) { showToast(String(e), { kind: "error" }); }
   }
 
   // Persist rule edits to the backend (which updates the live engine set).
   const saveRules = (next: Rule[]) => {
     setRulesState(next);
-    api.setRules(next).catch((e) => showToast(String(e)));
+    api.setRules(next).catch((e) => showToast(String(e), { kind: "error" }));
   };
 
   // Arm/disarm the breakpoint (backend is one-shot: it disarms after a hit).
   const armBreakpoint = (armed: boolean, pattern?: string) => {
     setBpArmed(armed);
-    api.setBreakpoint(armed, pattern).catch((e) => showToast(String(e)));
+    api.setBreakpoint(armed, pattern).catch((e) => showToast(String(e), { kind: "error" }));
   };
 
   // Clear both sides: the engine keeps its own retained flows, which the MCP
@@ -256,14 +257,15 @@ export function App() {
     try {
       await api.clearFlows();
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), { kind: "error" });
     }
   }
 
-  const showToast = (t: string, ms?: number) => {
+  const showToast: ShowToast = (t, opts) => {
     setToastState(t);
+    setToastKind(opts?.kind ?? "ok");
     window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToastState(""), toastDuration(t, ms));
+    toastTimer.current = window.setTimeout(() => setToastState(""), toastDuration(t, opts?.ms));
   };
 
   // Wire the streaming channel + initial status once.
@@ -421,7 +423,7 @@ export function App() {
         useStore.getState().setProxy(await api.setSystemProxy(true));
         showToast("System proxy enabled (launch default)");
       } catch (e) {
-        if (!cancelled) showToast(String(e));
+        if (!cancelled) showToast(String(e), { kind: "error" });
       }
     })();
     return () => { cancelled = true; };
@@ -462,7 +464,7 @@ export function App() {
       useStore.getState().setProxy(next);
       showToast(next.system_proxy ? "System proxy enabled" : "System proxy disabled");
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), { kind: "error" });
     }
   }
 
@@ -474,7 +476,7 @@ export function App() {
       useStore.getState().setProxy(await api.restoreSystemProxy());
       showToast("Previous proxy settings restored");
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), { kind: "error" });
     }
   }
 
@@ -485,7 +487,7 @@ export function App() {
       await api.resendFlow(selected);
       showToast("Request resent through the proxy");
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), { kind: "error" });
     }
   }
 
@@ -766,7 +768,7 @@ export function App() {
                 setScriptEnabled(en);
                 api.setScript(src, en)
                   .then(() => showToast(en ? "Script applied & enabled" : "Script saved (disabled)"))
-                  .catch((e) => showToast(String(e)));
+                  .catch((e) => showToast(String(e), { kind: "error" }));
               }}
             />
           )}
@@ -855,7 +857,7 @@ export function App() {
         <InterceptModal
           interception={intercept}
           onResume={(cont, headers) => {
-            api.resumeBreakpoint(intercept.id, cont, headers).catch((e) => showToast(String(e)));
+            api.resumeBreakpoint(intercept.id, cont, headers).catch((e) => showToast(String(e), { kind: "error" }));
             setIntercept(null);
             showToast(cont ? "Request continued" : "Request aborted");
           }}
@@ -905,7 +907,12 @@ export function App() {
 
       {/* toast */}
       {toast && (
-        <div className="toast"><span className="ok"><Icon name="check" size={16} /></span>{toast}</div>
+        <div className={`toast ${toastKind}`}>
+          <span className="mark">
+            <Icon name={toastKind === "error" ? "triangle-alert" : "check"} size={16} />
+          </span>
+          {toast}
+        </div>
       )}
     </div>
   );
@@ -1145,7 +1152,7 @@ function ScriptsSection({
 
 /* ------------------------------ certificate section ------------------------------ */
 
-function CertsSection({ ca, showToast }: { ca: CaStatus | null; showToast: (t: string) => void }) {
+function CertsSection({ ca, showToast }: { ca: CaStatus | null; showToast: ShowToast }) {
   const [busy, setBusy] = useState<string | null>(null);
   const setCa = useStore.getState().setCa;
 
@@ -1165,7 +1172,7 @@ function CertsSection({ ca, showToast }: { ca: CaStatus | null; showToast: (t: s
         : "Root CA regenerated",
       );
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), { kind: "error" });
     } finally {
       setBusy(null);
     }
@@ -1223,7 +1230,7 @@ function CertsSection({ ca, showToast }: { ca: CaStatus | null; showToast: (t: s
   );
 }
 
-function TlsScopeCard({ showToast }: { showToast: (t: string) => void }) {
+function TlsScopeCard({ showToast }: { showToast: ShowToast }) {
   const [scope, setScope] = useState<TlsScope | null>(null);
   const [dirty, setDirty] = useState(false);
 
@@ -1249,7 +1256,7 @@ function TlsScopeCard({ showToast }: { showToast: (t: string) => void }) {
       exclude: clean(scope.exclude),
     };
     setScope(cleaned);
-    api.setTlsScope(cleaned).then(() => { setDirty(false); showToast("SSL proxying scope saved"); }).catch((e) => showToast(String(e)));
+    api.setTlsScope(cleaned).then(() => { setDirty(false); showToast("SSL proxying scope saved"); }).catch((e) => showToast(String(e), { kind: "error" }));
   };
 
   return (
@@ -1329,7 +1336,7 @@ function SettingsModal({
   revealUpdates: boolean;
   prefs: Prefs;
   setPrefs: (p: Prefs) => void;
-  showToast: (t: string) => void;
+  showToast: ShowToast;
   onClose: () => void;
   /** Re-open the first-run walkthrough; closes Settings on the way. */
   onWalkthrough: () => void;
@@ -1458,7 +1465,7 @@ function GeneralTab({
   setUpdate: (u: UpdateState) => void;
   onCheckUpdates: () => Promise<void>;
   revealUpdates: boolean;
-  showToast: (t: string) => void;
+  showToast: ShowToast;
 }) {
   return (
     <>
@@ -1522,7 +1529,7 @@ function HelperCard({
 }: {
   helper: HelperStatus;
   setHelper: (h: HelperStatus) => void;
-  showToast: (t: string) => void;
+  showToast: ShowToast;
 }) {
   const [busy, setBusy] = useState(false);
   const stale = helper.running && helper.version !== helper.expected_version;
@@ -1534,7 +1541,7 @@ function HelperCard({
       setHelper(next);
       showToast(next.running ? "Helper installed — no more password prompts" : "Helper removed");
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), { kind: "error" });
     } finally {
       setBusy(false);
     }
@@ -1606,7 +1613,7 @@ function UpdateCard({
   reveal: boolean;
   prefs: Prefs;
   setPrefs: (p: Prefs) => void;
-  showToast: (t: string) => void;
+  showToast: ShowToast;
 }) {
   const pct = progressPercent(update.progress);
   const acting = !canActOnUpdate(update);
@@ -1727,7 +1734,7 @@ function McpCard({
 }: {
   mcp: McpStatus | null;
   setMcp: (m: McpStatus) => void;
-  showToast: (t: string) => void;
+  showToast: ShowToast;
 }) {
   const [busy, setBusy] = useState(false);
   const running = !!mcp?.running;
@@ -1741,7 +1748,7 @@ function McpCard({
       setMcp(next);
       showToast(next.running ? `MCP server listening on ${next.url}` : "MCP server stopped");
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), { kind: "error" });
     } finally {
       setBusy(false);
     }

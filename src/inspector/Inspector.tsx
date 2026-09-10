@@ -1,3 +1,4 @@
+import type { ShowToast } from "../filter";
 import type { Flow } from "../api";
 import { Icon } from "../icons";
 import { useStore } from "../store";
@@ -69,7 +70,7 @@ export function Inspector({
   commitRequestPct,
 }: {
   flow: Flow;
-  showToast: (t: string) => void;
+  showToast: ShowToast;
   /** Told which pane tab was opened, for usage counting. */
   onTab?: (pane: PaneSide, tab: string) => void;
   panes: PaneState;
