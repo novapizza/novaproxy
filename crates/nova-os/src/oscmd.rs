@@ -32,6 +32,12 @@ use anyhow::{bail, Result};
 /// with one Ethernet does — so the count travels next to the milliseconds.
 /// Read a delta around an operation with [`exec_stats`]; process-wide totals on
 /// their own mean nothing.
+///
+/// `EXEC_MS` is a **sum over children, not wall clock**. The read sweep in
+/// `sysproxy::macos::snapshot` runs its `networksetup` calls on several threads,
+/// so its `spawn_ms` legitimately exceeds the `ms` the operation took. The two
+/// read together are the useful pair: `spawn_ms` well above `ms` is the sweep
+/// working in parallel, `spawn_ms` tracking `ms` is a serial one.
 static EXEC_COUNT: AtomicU64 = AtomicU64::new(0);
 static EXEC_MS: AtomicU64 = AtomicU64::new(0);
 

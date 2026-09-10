@@ -116,27 +116,72 @@ pub mod macos {
         (enabled, host, port)
     }
 
+    /// How many services are read at once.
+    ///
+    /// The reads are the half of a toggle that is safe to run concurrently:
+    /// `-getwebproxy` opens the preferences store, reads and closes, and two
+    /// readers do not interfere. The *writes* stay serial on purpose — they
+    /// commit to that same store, and two commits racing can lose one
+    /// service's change, which for a proxy means a machine left half-proxied
+    /// with no working internet.
+    ///
+    /// Eight rather than one-thread-per-service: a machine with a dozen VPN
+    /// and virtual adapters would otherwise spawn a dozen threads to wait on
+    /// a dozen processes, and past eight the wall clock is bounded by
+    /// `networksetup` itself, not by how many we start.
+    const READ_CONCURRENCY: usize = 8;
+
     pub fn snapshot() -> Backup {
         let services = parse_services(&capture("networksetup", &["-listallnetworkservices"]));
-        let mut out = Vec::new();
-        for service in services {
-            let (we, wh, wp) = parse_proxy(&capture("networksetup", &["-getwebproxy", &service]));
-            let (se, sh, sp) =
-                parse_proxy(&capture("networksetup", &["-getsecurewebproxy", &service]));
-            out.push(ServiceBackup {
-                service,
-                web_enabled: we,
-                web_host: wh,
-                web_port: wp,
-                secure_enabled: se,
-                secure_host: sh,
-                secure_port: sp,
-            });
-        }
+        // Contiguous chunks, joined in chunk order, so the result is in the
+        // same order as the services list — a backup is compared against that
+        // list by the helper before it is applied.
+        let per_thread = services.len().div_ceil(READ_CONCURRENCY).max(1);
+        let mut out = Vec::with_capacity(services.len());
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = services
+                .chunks(per_thread)
+                .map(|group| scope.spawn(move || group.iter().map(read_service).collect::<Vec<_>>()))
+                .collect();
+            for handle in handles {
+                match handle.join() {
+                    Ok(group) => out.extend(group),
+                    // A dropped group is a service a later restore will not put
+                    // back. Silence here would look like a machine that simply
+                    // had fewer services, so it is said out loud.
+                    Err(_) => tracing::error!(
+                        "a proxy-read thread panicked; this snapshot is incomplete"
+                    ),
+                }
+            }
+        });
         Backup { services: out, ..Default::default() }
     }
 
+    /// Both proxy settings for one service, two `networksetup` reads.
+    fn read_service(service: &String) -> ServiceBackup {
+        let (we, wh, wp) = parse_proxy(&capture("networksetup", &["-getwebproxy", service]));
+        let (se, sh, sp) = parse_proxy(&capture("networksetup", &["-getsecurewebproxy", service]));
+        ServiceBackup {
+            service: service.clone(),
+            web_enabled: we,
+            web_host: wh,
+            web_port: wp,
+            secure_enabled: se,
+            secure_host: sh,
+            secure_port: sp,
+        }
+    }
+
     /// Point every snapshotted service at `host:port`.
+    ///
+    /// Two steps per service, not four. `networksetup -help` on
+    /// `-setwebproxy`: "Set Web proxy for <networkservice> with <domain> and
+    /// <port number>. **Turns proxy on.**" — so the `-setwebproxystate … on`
+    /// that used to follow each one was a no-op, and paying for it doubled the
+    /// only part of a toggle the user waits on. Every step here is a separate
+    /// `networksetup` process (macOS offers no batch form), so halving the
+    /// steps halves the wall clock.
     pub fn enable_plan(host: &str, port: u16, backup: &Backup) -> Plan {
         let port = port.to_string();
         let mut steps = Vec::new();
@@ -145,12 +190,6 @@ pub mod macos {
                 steps.push(Step::with_args(
                     "networksetup",
                     vec![flag.to_string(), s.service.clone(), host.to_string(), port.clone()],
-                ));
-            }
-            for flag in ["-setwebproxystate", "-setsecurewebproxystate"] {
-                steps.push(Step::with_args(
-                    "networksetup",
-                    vec![flag.to_string(), s.service.clone(), "on".to_string()],
                 ));
             }
         }
@@ -192,21 +231,17 @@ pub mod macos {
         state_flag: &str,
     ) -> Vec<Step> {
         if was_enabled && !host.is_empty() {
-            vec![
-                Step::with_args(
-                    "networksetup",
-                    vec![
-                        set_flag.to_string(),
-                        service.to_string(),
-                        host.to_string(),
-                        port.to_string(),
-                    ],
-                ),
-                Step::with_args(
-                    "networksetup",
-                    vec![state_flag.to_string(), service.to_string(), "on".to_string()],
-                ),
-            ]
+            // One step: the setter turns the proxy on by itself (see
+            // `enable_plan`), so the `on` that used to follow it did nothing.
+            vec![Step::with_args(
+                "networksetup",
+                vec![
+                    set_flag.to_string(),
+                    service.to_string(),
+                    host.to_string(),
+                    port.to_string(),
+                ],
+            )]
         } else {
             vec![Step::with_args(
                 "networksetup",
@@ -462,11 +497,12 @@ pub fn snapshot() -> Backup {
     // services means the later restore will silently put nothing back, which
     // is exactly the failure that looks like "NovaProxy broke my internet".
     //
-    // The spawn count belongs next to it because this is the expensive half of
-    // a toggle and it was the untimed half: macOS reads a service's proxy one
-    // `networksetup` at a time, twice per service, serially. `services` and
-    // `spawns` together say whether a slow toggle is a machine with many
-    // services or a machine where each call is slow.
+    // The spawn count belongs next to it because macOS reads a service's proxy
+    // one `networksetup` at a time, twice per service: `services` and `spawns`
+    // together say whether a slow toggle is a machine with many services or a
+    // machine where each call is slow. `spawn_ms` sums over threads and the
+    // reads run in parallel, so it is expected to exceed `ms` — see
+    // `oscmd::EXEC_COUNT`.
     tracing::info!(
         services = backup.services.len(),
         ms = t.elapsed().as_millis() as u64,
@@ -611,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn macos_enable_sets_then_turns_on_every_service() {
+    fn macos_enable_points_both_proxies_of_every_service_in_one_step_each() {
         let backup = Backup {
             services: vec![service("Wi-Fi", false, "", ""), service("USB LAN", false, "", "")],
             ..Default::default()
@@ -619,9 +655,16 @@ mod tests {
         let plan = macos::enable_plan("127.0.0.1", 9090, &backup);
         assert_eq!(plan.elevation, Elevation::MacAdmin, "networksetup needs admin");
         let lines = shell_of(&plan);
-        assert_eq!(lines.len(), 8, "two services × (http, https) × (set, state)");
+        assert_eq!(lines.len(), 4, "two services × (http, https), setter only");
         assert!(lines[0].contains("-setwebproxy Wi-Fi 127.0.0.1 9090"));
-        assert!(lines.iter().any(|l| l.contains("-setsecurewebproxystate 'USB LAN' on")));
+        assert!(lines.iter().any(|l| l.contains("-setsecurewebproxy 'USB LAN' 127.0.0.1 9090")));
+        // The setter turns the proxy on by itself, so a separate `state on` is
+        // a second `networksetup` process bought for nothing. Asserted as an
+        // absence because that is the regression worth catching.
+        assert!(
+            !lines.iter().any(|l| l.contains("proxystate")),
+            "the setter already turns it on: {lines:?}"
+        );
     }
 
     #[test]
@@ -635,7 +678,11 @@ mod tests {
             lines.iter().any(|l| l.contains("-setwebproxy Wi-Fi proxy.corp 3128")),
             "a corporate proxy must come back, not be turned off: {lines:?}"
         );
-        assert!(lines.iter().any(|l| l.contains("-setwebproxystate Wi-Fi on")));
+        // Restoring the host is what turns it back on; no `state on` needed.
+        assert!(
+            !lines.iter().any(|l| l.contains("-setwebproxystate Wi-Fi on")),
+            "the setter already turns it on: {lines:?}"
+        );
     }
 
     #[test]
