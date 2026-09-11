@@ -1,5 +1,16 @@
 import { useRef } from "react";
 
+/** What a drag reports to the caller, for turning a pointer into a value. */
+export interface DragContext {
+  /** Pointer movement since the grab, in px. */
+  dx: number;
+  dy: number;
+  /** The value the divider had when it was grabbed. */
+  start: number;
+  /** Rect of the divider's container — the basis a percentage is a percentage of. */
+  rect: DOMRect;
+}
+
 /**
  * A draggable divider between two panes.
  *
@@ -10,12 +21,20 @@ import { useRef } from "react";
  *   cursor outruns the handle or leaves the window, and releases itself if the
  *   pointer is lost — a drag that stays stuck to the mouse after a lost pointer
  *   event is the bug this avoids.
+ * - **Anchored on the grab, not on the cursor's absolute position.** `measure`
+ *   is handed how far the pointer has moved and what the value was when it was
+ *   grabbed, so a press with no movement resolves to exactly the current value.
+ *   Measuring absolutely instead made a plain click snap the divider to
+ *   wherever the arithmetic happened to land — the inspector collapsed to its
+ *   minimum on every click, because the handle sits at the bottom edge of the
+ *   pane the position was being measured against.
  * - **Live value while dragging, committed once at the end.** A drag emits
  *   hundreds of moves; writing a preference on each one would write hundreds of
- *   times, so `onDrag` paints and `onCommit` persists.
- * - **Keyboard and double-click.** Arrow keys nudge (12px, or 48 with Shift) so
- *   the divider is not mouse-only, and double-click resets it — a pane dragged
- *   to nothing has to be recoverable without hunting in Settings.
+ *   times, so `onDrag` paints and `onCommit` persists — and a press that never
+ *   moved commits nothing at all.
+ * - **Keyboard and double-click.** Arrow keys nudge (`step`, or 4× with Shift)
+ *   so the divider is not mouse-only, and double-click resets it — a pane
+ *   dragged to nothing has to be recoverable without hunting in Settings.
  */
 export function Splitter({
   orientation,
@@ -23,11 +42,11 @@ export function Splitter({
   min,
   max,
   reset,
+  step = 12,
   onDrag,
   onCommit,
   label,
-  /** Maps a pointer position to a value. Given the client x/y and the rect of
-   *  the element being sized, so a caller can size in px or in percent. */
+  /** Maps a drag to a value, in whatever unit the caller is sizing in. */
   measure,
 }: {
   /** `vertical` = a vertical bar you drag left/right. */
@@ -36,10 +55,12 @@ export function Splitter({
   min: number;
   max: number;
   reset: number;
+  /** One arrow key's worth of movement, in the value's own unit (px, or %). */
+  step?: number;
   onDrag: (v: number) => void;
   onCommit: (v: number) => void;
   label: string;
-  measure: (e: { clientX: number; clientY: number }, rect: DOMRect) => number;
+  measure: (ctx: DragContext) => number;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
   const clamp = (v: number) => Math.min(max, Math.max(min, v));
@@ -47,20 +68,28 @@ export function Splitter({
   const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     const handle = ref.current;
-    // The pane being sized is the sibling before the handle, which is what the
-    // caller's `measure` is written against.
-    const pane = handle?.previousElementSibling as HTMLElement | null;
-    if (!handle || !pane) return;
-    const rect = pane.getBoundingClientRect();
+    // The percentages are of the container the handle lives in, which is also
+    // the box the sibling panes divide up — so that is the rect to measure in.
+    const container = handle?.parentElement;
+    if (!handle || !container) return;
+    const rect = container.getBoundingClientRect();
+    const start = value;
+    const [sx, sy] = [e.clientX, e.clientY];
+    let moved = false;
     handle.setPointerCapture(e.pointerId);
 
-    const move = (ev: PointerEvent) => onDrag(clamp(measure(ev, rect)));
+    const at = (ev: PointerEvent) =>
+      clamp(measure({ dx: ev.clientX - sx, dy: ev.clientY - sy, start, rect }));
+    const move = (ev: PointerEvent) => {
+      moved = true;
+      onDrag(at(ev));
+    };
     const up = (ev: PointerEvent) => {
       handle.removeEventListener("pointermove", move);
       handle.removeEventListener("pointerup", up);
       handle.removeEventListener("pointercancel", up);
       handle.releasePointerCapture(ev.pointerId);
-      onCommit(clamp(measure(ev, rect)));
+      if (moved) onCommit(at(ev));
     };
     handle.addEventListener("pointermove", move);
     handle.addEventListener("pointerup", up);
@@ -68,10 +97,10 @@ export function Splitter({
   };
 
   const nudge = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const step = e.shiftKey ? 48 : 12;
+    const amount = e.shiftKey ? step * 4 : step;
     const back = orientation === "vertical" ? "ArrowLeft" : "ArrowUp";
     const fwd = orientation === "vertical" ? "ArrowRight" : "ArrowDown";
-    const delta = e.key === back ? -step : e.key === fwd ? step : 0;
+    const delta = e.key === back ? -amount : e.key === fwd ? amount : 0;
     if (!delta) return;
     e.preventDefault();
     const next = clamp(value + delta);

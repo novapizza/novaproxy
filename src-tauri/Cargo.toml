@@ -16,6 +16,11 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+# Copy goes through the host, not the webview: on macOS the webview is served
+# over the `tauri://` scheme, which WebKit does not treat as a secure context,
+# so `navigator.clipboard` is undefined there — and the paths that copy after an
+# await (a cURL waits on its body bytes) would have lost user activation anyway.
+tauri-plugin-clipboard-manager = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

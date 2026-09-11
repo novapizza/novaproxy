@@ -162,12 +162,10 @@ export function Inspector({
           reset={DEFAULT_PREFS.requestPct}
           onDrag={setRequestPct}
           onCommit={commitRequestPct}
-          // The rect is the request pane's; the strip is its parent, and the
-          // percentage is of that.
-          measure={(e, rect) => {
-            const strip = rect.width / (requestPct / 100);
-            return ((e.clientX - rect.left) / strip) * 100;
-          }}
+          // A percentage of the strip the two panes divide up, which is the
+          // rect a drag is measured in.
+          step={2}
+          measure={(c) => c.start + (c.dx / c.rect.width) * 100}
         />
       )}
 

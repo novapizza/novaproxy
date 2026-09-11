@@ -99,7 +99,9 @@ pub fn run() {
     let context = tauri::generate_context!();
     let updater_configured = context.config().plugins.0.contains_key("updater");
 
-    let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init());
     if updater_configured {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }

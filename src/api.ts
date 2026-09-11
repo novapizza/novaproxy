@@ -1,4 +1,5 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Flow } from "./bindings/Flow";
 import type { ProxyStatus } from "./bindings/ProxyStatus";
@@ -110,6 +111,27 @@ export const api = {
    */
   trackUi: (ev: UiEvent, name?: UiEventName) => {
     void invoke("track_ui", { ev, name: name ?? null }).catch(() => {});
+  },
+
+  /**
+   * Put text on the system clipboard.
+   *
+   * Through the host rather than `navigator.clipboard`, which does not work
+   * where this app actually runs: on macOS the webview is served over the
+   * `tauri://` scheme, WebKit does not count that as a secure context, and the
+   * whole Clipboard API is therefore absent. Even where it exists it wants
+   * transient user activation, which the copy paths that await first — a cURL
+   * fetches its body bytes before it can be written out — no longer have.
+   *
+   * The fallback is for `preview.tsx`, which runs in a plain browser with no
+   * Tauri runtime behind it.
+   */
+  copyText: async (text: string): Promise<void> => {
+    try {
+      await writeText(text);
+    } catch {
+      await navigator.clipboard?.writeText(text);
+    }
   },
 
   /** State of the macOS helper that applies proxy changes without a password. */

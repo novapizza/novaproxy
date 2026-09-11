@@ -509,7 +509,7 @@ export function App() {
     // The list holds no body bytes, so the request body is fetched before the
     // command is written out — a cURL without its `--data` is not the request.
     const cmds = await Promise.all(targets.map(async (f) => buildCurl(await withRequestBody(f))));
-    navigator.clipboard.writeText(cmds.join("\n\n"));
+    await api.copyText(cmds.join("\n\n"));
     showToast(targets.length === 1 ? "cURL copied to clipboard" : `${targets.length} cURLs copied`);
   }
 
@@ -1209,7 +1209,7 @@ function CertsSection({ ca, showToast }: { ca: CaStatus | null; showToast: (t: s
                     )}
                   </>
                 )}
-                <div className="btn-neutral" onClick={() => { navigator.clipboard.writeText(ca.cert_path); showToast("Certificate path copied"); }}><Icon name="download" />Export .pem</div>
+                <div className="btn-neutral" onClick={() => { void api.copyText(ca.cert_path); showToast("Certificate path copied"); }}><Icon name="download" />Export .pem</div>
                 <div className="btn-neutral" onClick={() => !busy && run("regen")}><Icon name="refresh-cw" />{busy === "regen" ? "Regenerating…" : "Regenerate CA"}</div>
               </div>
               <div className="cert-hint">{trustHint(ca)}</div>
@@ -1774,7 +1774,7 @@ function CodeSnippet({ text }: { text: string }) {
       <pre>{text}</pre>
       <button
         className="cb-copy"
-        onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1200); }}
+        onClick={() => { void api.copyText(text); setCopied(true); setTimeout(() => setCopied(false), 1200); }}
       >
         {copied ? "Copied" : "Copy"}
       </button>

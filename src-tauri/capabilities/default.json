@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Core capabilities for the main NovaProxy window.",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": ["core:default", "dialog:default", "clipboard-manager:allow-write-text"]
 }
