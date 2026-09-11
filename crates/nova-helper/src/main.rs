@@ -16,6 +16,10 @@ fn main() -> Result<()> {
         // stdout is a file now (the plist's StandardOutPath), and ANSI colour
         // escapes in a log a human is meant to read are just noise.
         .with_ansi(false)
+        // `info` carries the per-request totals; `nova_os=debug` adds a line
+        // per `networksetup` process, which is how a slow sweep gets attributed
+        // to a subcommand. Set it in the plist's EnvironmentVariables to raise
+        // this daemon's level.
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "nova_helper=info,nova_os=info".into()),

@@ -11,6 +11,7 @@
  * the decisions are testable without a window. This file is the view.
  */
 
+import type { ShowToast } from "./filter";
 import { useEffect, useLayoutEffect, useState } from "react";
 import { api, type CaStatus, type HelperStatus, type ProxyStatus } from "./api";
 import { Icon } from "./icons";
@@ -46,7 +47,7 @@ export function OnboardingWizard({
   flowCount: number;
   setRecording: (v: boolean) => void;
   /** Runs the step, and is what makes the wizard show live status afterwards. */
-  showToast: (t: string) => void;
+  showToast: ShowToast;
   /** Called with the step to coach next, or null when there is nothing to point at. */
   onDismiss: (coach: boolean) => void;
 }) {
@@ -102,7 +103,7 @@ export function OnboardingWizard({
       if (step.id === "capture") onDismiss(true);
       else setAt(index + 1);
     } catch (e) {
-      showToast(String(e));
+      showToast(String(e), { kind: "error" });
     } finally {
       setBusy(false);
     }

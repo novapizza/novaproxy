@@ -64,6 +64,13 @@ const MAX_LOG_BYTES: u64 = 200 * 1024 * 1024;
 /// or `nova_core`, so the old default silently dropped every `sysproxy`,
 /// `oscmd` and `helper` event — exactly the privileged operations a support
 /// log exists to explain.
+///
+/// It sits at `info`, which carries the per-operation totals — `sysproxy.toggle`
+/// with its stage breakdown, and one "ran plan" line per sweep. The line *per
+/// child process* is `debug`, because a system-proxy toggle spawns `6N + 2` of
+/// them for `N` network services and thirty lines a click would bury everything
+/// else. Run with `RUST_LOG=nova_os=debug` to see which `networksetup`
+/// subcommand is the slow one.
 const DEFAULT_FILTER: &str =
     "novaproxy=info,novaproxy_lib=info,novaproxy_ui=info,nova_core=info,nova_os=info";
 

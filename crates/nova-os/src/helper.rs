@@ -75,6 +75,10 @@ pub const HELPER_LOG: &str = "/Library/Logs/NovaProxy/helper.log";
 /// Filename the app stages the plist under before the privileged copy.
 pub const STAGED_PLIST: &str = "dev.novaproxy.helper.plist";
 
+/// The binary is staged next to the plist under the same name it is installed
+/// as. See [`install`] for why it is staged at all.
+pub const STAGED_BIN: &str = "nova-helper";
+
 /// Where client and server actually meet.
 ///
 /// `NOVAPROXY_HELPER_SOCKET` relocates it, but **only in debug builds**: the
@@ -102,6 +106,18 @@ pub enum Request {
     Enable { host: String, port: u16, backup: Backup },
     /// Put every service in `backup` back exactly as it was.
     Disable { backup: Backup },
+}
+
+impl Request {
+    /// A fixed name for the log, so the variant is readable without printing
+    /// the request — whose `backup` carries every network service name.
+    pub fn op_name(&self) -> &'static str {
+        match self {
+            Request::Ping => "ping",
+            Request::Enable { .. } => "enable",
+            Request::Disable { .. } => "disable",
+        }
+    }
 }
 
 /// One reply, likewise a single JSON line.
@@ -319,6 +335,16 @@ pub fn source_binary() -> Option<PathBuf> {
 /// on a first install, and `bootstrap` reports success before the daemon has
 /// finished binding its socket. A successful [`ping`] is the only proof that
 /// matters, so we poll for one and surface the plan's error only if none comes.
+///
+/// **The binary is copied into `staged_dir` first, and the privileged step
+/// installs from there** — never straight from wherever the build put it. The
+/// privileged step runs under `osascript … with administrator privileges`, and
+/// root does not inherit this app's TCC grants: a source under `~/Documents`,
+/// `~/Desktop` or `~/Downloads` is unreadable to it. `/usr/bin/install` removes
+/// the destination before it discovers that, so installing from a build tree in
+/// a protected folder deleted a *working* helper and put nothing back. Staging
+/// happens as the user, who can read the build tree; `staged_dir` is the app's
+/// own support directory, which is not protected.
 pub fn install(source_bin: &Path, staged_dir: &Path, owner_uid: u32) -> Result<()> {
     if !source_bin.is_file() {
         bail!("helper binary not found at {}", source_bin.display());
@@ -327,9 +353,14 @@ pub fn install(source_bin: &Path, staged_dir: &Path, owner_uid: u32) -> Result<(
     let staged_plist = staged_dir.join(STAGED_PLIST);
     std::fs::write(&staged_plist, plist_xml(owner_uid))
         .with_context(|| format!("cannot stage {}", staged_plist.display()))?;
+    let staged_bin = staged_dir.join(STAGED_BIN);
+    std::fs::copy(source_bin, &staged_bin).with_context(|| {
+        format!("cannot stage {} to {}", source_bin.display(), staged_bin.display())
+    })?;
 
-    let ran = install_plan(source_bin, &staged_plist).run();
+    let ran = install_plan(&staged_bin, &staged_plist).run();
     let _ = std::fs::remove_file(&staged_plist);
+    let _ = std::fs::remove_file(&staged_bin);
 
     // launchd starts the daemon asynchronously; give it a moment to bind.
     for _ in 0..50 {
@@ -337,6 +368,18 @@ pub fn install(source_bin: &Path, staged_dir: &Path, owner_uid: u32) -> Result<(
             return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    // Read the outcome off the filesystem rather than off `ran`. A best-effort
+    // plan is one `;`-joined shell line, so its status is the *last* command's
+    // — `launchctl bootstrap`, which happily succeeds while the copy before it
+    // failed. That is how a helper that was never installed reported itself as
+    // "installed but not answering".
+    if !Path::new(HELPER_BIN).is_file() {
+        let detail = match &ran {
+            Err(e) => format!(": {e}"),
+            Ok(()) => String::new(),
+        };
+        bail!("the helper binary was not installed at {HELPER_BIN}{detail}");
     }
     match ran {
         Err(e) => Err(e.context("the helper did not start")),
@@ -598,14 +641,50 @@ pub mod server {
     /// Validate, then apply. Errors come back as a reply, never as a panic: the
     /// daemon must survive whatever it is sent.
     fn run(request: Request) -> Response {
-        match apply(request) {
+        // Timed here rather than inside `apply`, because the app measures this
+        // as one blocking IPC round trip and cannot see the split. The app's
+        // `sysproxy.enable` minus this `ms` is what the socket and the JSON
+        // cost; the two lines only mean something read together, one from
+        // `~/Library/Logs/NovaProxy` and one from `/Library/Logs/NovaProxy`
+        // (the support bundle collects both).
+        let op = request.op_name();
+        let t = std::time::Instant::now();
+        let before = crate::oscmd::exec_stats();
+        let result = apply(request);
+        let (spawns, spawn_ms) = {
+            let now = crate::oscmd::exec_stats();
+            (now.0.saturating_sub(before.0), now.1.saturating_sub(before.1))
+        };
+        tracing::info!(
+            op,
+            ms = t.elapsed().as_millis() as u64,
+            spawns,
+            spawn_ms,
+            ok = result.is_ok(),
+            "served request"
+        );
+        match result {
             Ok(()) => Response::ok(),
             Err(e) => Response::err(e),
         }
     }
 
     fn apply(request: Request) -> Result<()> {
-        let known = || macos::parse_services(crate::oscmd::capture("networksetup", &["-listallnetworkservices"]).as_str());
+        // The validation sweep is its own `networksetup` call, and it is paid
+        // before any change is made — worth a line of its own so a slow
+        // "enable" is not blamed on the writes when the read is the cost.
+        let known = || {
+            let t = std::time::Instant::now();
+            let services = macos::parse_services(
+                crate::oscmd::capture("networksetup", &["-listallnetworkservices"]).as_str(),
+            );
+            tracing::info!(
+                count = services.len(),
+                ms = t.elapsed().as_millis() as u64,
+                "listed network services for validation"
+            );
+            services
+        };
         match request {
             Request::Ping => Ok(()),
             Request::Enable { host, port, backup } => {
@@ -730,6 +809,35 @@ mod tests {
         // A first install has nothing to boot out; that step failing must not
         // stop the bootstrap.
         assert!(plan.best_effort);
+    }
+
+    #[test]
+    fn install_copies_the_binary_into_the_staging_dir_before_elevating() {
+        // The privileged copy must read from the app's own directory, never
+        // from the build tree: root has no TCC grant for `~/Documents`, and
+        // `/usr/bin/install` deletes the destination before it finds that out.
+        let staged = std::env::temp_dir().join(format!("novaproxy-stage-{}", std::process::id()));
+        let source = staged.join("source-nova-helper");
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(&source, b"#!/bin/sh\nexit 0\n").unwrap();
+
+        // `install` runs a privileged plan we cannot run from a test, so the
+        // staging half is asserted through the plan it would have built.
+        let staged_bin = staged.join(STAGED_BIN);
+        std::fs::copy(&source, &staged_bin).unwrap();
+        let line = install_plan(&staged_bin, &staged.join(STAGED_PLIST))
+            .steps
+            .iter()
+            .map(|s| s.to_shell())
+            .collect::<Vec<_>>()
+            .join(" ; ");
+        assert!(
+            line.contains(&staged_bin.display().to_string()),
+            "the elevated step reads the staged copy: {line}"
+        );
+        assert!(!line.contains("source-nova-helper"), "never the build tree: {line}");
+
+        std::fs::remove_dir_all(&staged).ok();
     }
 
     #[test]

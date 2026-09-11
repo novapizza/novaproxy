@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use nova_core::breakpoint::Resume;
-use nova_core::{ca::CaMaterial, helper, sysproxy, trust, EngineConfig};
+use nova_core::{ca::CaMaterial, helper, oscmd, sysproxy, trust, EngineConfig};
 use nova_proto::{
     CaStatus, Flow, Header, HelperStatus, Interception, McpStatus, NetworkConditions, ProxyStatus,
     Rule, TlsScope, WsMessage,
@@ -388,13 +388,88 @@ pub fn resume_breakpoint(
 
 /* -------------------------- system proxy -------------------------- */
 
+/// Where the seconds went in one system-proxy toggle.
+///
+/// A toggle is not one operation, it is five, and the user experiences only
+/// their sum — "it hangs for a few seconds, but only on some machines". The
+/// individual `record` lines already say how long each step took; this collects
+/// them into the one line that answers *why*, because the answer is a ratio:
+/// `snapshot` against `apply`, and `spawns` against `services`. macOS has no
+/// API for setting a proxy, only `networksetup` invoked once per service per
+/// setting, serially — so a machine with two VPNs pays three times what a
+/// machine with one Ethernet does, and no single duration reveals that.
+#[derive(Default)]
+struct ToggleCost {
+    engine_ms: u64,
+    snapshot_ms: u64,
+    probe_ms: u64,
+    apply_ms: u64,
+    services: usize,
+    via_helper: bool,
+}
+
+impl ToggleCost {
+    /// Emit the summary. `spawns` and `spawn_ms` are the child processes this
+    /// *app* ran; the ones the privileged helper ran are on its own log, which
+    /// the support bundle collects (see `logbundle`).
+    fn report(&self, enable: bool, started: std::time::Instant, spawns_before: (u64, u64)) {
+        let (spawns, spawn_ms) = {
+            let now = oscmd::exec_stats();
+            (now.0.saturating_sub(spawns_before.0), now.1.saturating_sub(spawns_before.1))
+        };
+        let ms = started.elapsed().as_millis() as u64;
+        tracing::info!(
+            op = "sysproxy.toggle",
+            enable,
+            ms,
+            engine_ms = self.engine_ms,
+            snapshot_ms = self.snapshot_ms,
+            probe_ms = self.probe_ms,
+            apply_ms = self.apply_ms,
+            services = self.services,
+            spawns,
+            spawn_ms,
+            via_helper = self.via_helper,
+            "toggled system proxy"
+        );
+        crate::usage!(
+            "sysproxy.toggle",
+            enable = enable,
+            ms = ms,
+            engine_ms = self.engine_ms,
+            snapshot_ms = self.snapshot_ms,
+            probe_ms = self.probe_ms,
+            apply_ms = self.apply_ms,
+            services = self.services,
+            spawns = spawns,
+            spawn_ms = spawn_ms,
+            via_helper = self.via_helper
+        );
+    }
+}
+
+/// Times a step and hands back its milliseconds alongside its result, for the
+/// steps that feed [`ToggleCost`]. `record` already logs a line per step; this
+/// is the same clock read twice rather than a second one.
+fn timed<T>(op: &'static str, f: impl FnOnce() -> Result<T, String>) -> (Result<T, String>, u64) {
+    let t = started();
+    let result = record(op, t, f());
+    (result, t.elapsed().as_millis() as u64)
+}
+
 #[tauri::command]
 pub async fn set_system_proxy(
     state: State<'_, Arc<AppState>>,
     enable: bool,
 ) -> Result<ProxyStatus, String> {
+    let total = started();
+    let spawns_before = oscmd::exec_stats();
+    let mut cost = ToggleCost::default();
+
     if enable {
-        let addr = ensure_engine(&state, None)?;
+        let (addr, ms) = timed("sysproxy.engine", || ensure_engine(&state, None));
+        cost.engine_ms = ms;
+        let addr = addr?;
         // A backup already on disk is a snapshot of the machine *before*
         // NovaProxy touched it, left behind by an unclean exit. Snapshotting
         // again would record "proxied to NovaProxy" as the state to return to,
@@ -402,9 +477,18 @@ pub async fn set_system_proxy(
         let backup = match read_backup(&state) {
             Some(existing) => existing,
             None => {
-                let fresh = tauri::async_runtime::spawn_blocking(sysproxy::snapshot)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                // The expensive step, and until now the only one with no line
+                // at all: on macOS it reads two settings per network service,
+                // one `networksetup` process each, serially.
+                let t = started();
+                let fresh = record(
+                    "sysproxy.snapshot",
+                    t,
+                    tauri::async_runtime::spawn_blocking(sysproxy::snapshot)
+                        .await
+                        .map_err(|e| e.to_string()),
+                )?;
+                cost.snapshot_ms = t.elapsed().as_millis() as u64;
                 // Persist the snapshot BEFORE mutating, so a crash mid-session is
                 // recoverable on next launch. Worth a line of its own: if this
                 // write is the step that failed, the machine was never touched,
@@ -422,18 +506,27 @@ pub async fn set_system_proxy(
             }
         };
 
+        cost.services = backup.services.len();
         let host = addr.ip().to_string();
         let port = addr.port();
         // Whether the helper is answering decides what this costs the user: a
         // silent apply, or an administrator password prompt. Support cannot
         // read a "it asked for my password again" report without it.
-        let via_helper = helper::usable();
+        //
+        // Timed too, because it is a blocking socket round trip on the path of
+        // a toggle: a helper that is installed but wedged spends the client's
+        // whole `IO_TIMEOUT` here, which would otherwise be invisible.
+        let (probe, ms) = timed("sysproxy.helper_probe", || Ok(helper::usable()));
+        cost.probe_ms = ms;
+        let via_helper = probe?;
         let t = started();
         let outcome = tauri::async_runtime::spawn_blocking(move || sysproxy::enable(&host, port, &backup))
             .await
             .map_err(|e| e.to_string())
             .and_then(|r| r.map_err(|e| e.to_string()));
         record("sysproxy.enable", t, outcome)?;
+        cost.apply_ms = t.elapsed().as_millis() as u64;
+        cost.via_helper = via_helper;
         crate::usage!("sysproxy.enable.path", via_helper = via_helper);
         *state.system_proxy.lock().unwrap() = true;
         // Whatever was outstanding is now this session's business to undo.
@@ -441,12 +534,15 @@ pub async fn set_system_proxy(
     } else {
         let backup = read_backup(&state);
         if let Some(backup) = backup {
+            cost.services = backup.services.len();
+            cost.via_helper = helper::usable();
             let t = started();
             let outcome = tauri::async_runtime::spawn_blocking(move || sysproxy::disable(&backup))
                 .await
                 .map_err(|e| e.to_string())
                 .and_then(|r| r.map_err(|e| e.to_string()));
             record("sysproxy.disable", t, outcome)?;
+            cost.apply_ms = t.elapsed().as_millis() as u64;
         } else {
             // No backup means nothing to put back — either a clean no-op or
             // evidence the snapshot was lost. Say which.
@@ -459,6 +555,7 @@ pub async fn set_system_proxy(
             handle.stop();
         }
     }
+    cost.report(enable, total, spawns_before);
     Ok(make_status(&state))
 }
 
