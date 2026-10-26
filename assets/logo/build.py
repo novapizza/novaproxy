@@ -212,22 +212,74 @@ def wordmark(theme="light"):
     return f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 300" width="1240" height="300">
 {defs(theme)}
 <g transform="translate({150 - 512 * k:.1f} {150 - 512 * k:.1f}) scale({k})">{art}</g>
-<text x="356" y="138" font-family="Petrona, Georgia, serif" font-size="112" letter-spacing="-2" fill="{text}" dominant-baseline="middle">Nova<tspan fill="{GREEN_DEEP}">Proxy</tspan></text>
+<text x="356" y="138" font-family="Space Grotesk, sans-serif" font-weight="600" font-size="108" letter-spacing="-3" fill="{text}" dominant-baseline="middle">Nova<tspan fill="{GREEN_DEEP}">Proxy</tspan></text>
 <text x="360" y="212" font-family="JetBrains Mono, ui-monospace, monospace" font-size="26" letter-spacing="5.5" fill="{sub}">HTTPS DEBUGGING PROXY</text>
 </svg>
 '''
+
+
+# ---------------------------------------------------------------- Nova Suite tile
+# The OS icon follows the Nova Suite app-icon family (canvas board 04, same as
+# NovaSuite.AppIcon on novasuite.coding4pizza.com): a near-black tile shared by
+# every app, the app hue as a corner glow and hairline, the glyph in hue 300 and
+# the N in the app gradient. Drawn on the suite's grid, where the tile is the
+# rounded rect 100..924 (r 190), then scaled to the requested box.
+SUITE_TILE = "#13111A"
+HUE = {"c300": MINT, "c500": GREEN, "g0": "#DCFCE7", "g1": "#6EDB9A", "g2": GREEN_DEEP}
+
+
+def suite_tile(inset=0.0, small=False, tile_shadow=False):
+    box = 1024 * (1 - 2 * inset)
+    k = box / 824.0
+    h = HUE
+    defs_ = f'''<defs>
+ <linearGradient id="ng" gradientUnits="userSpaceOnUse" x1="380" y1="290" x2="650" y2="740">
+  <stop offset="0" stop-color="{h['g0']}"/><stop offset=".5" stop-color="{h['g1']}"/><stop offset="1" stop-color="{h['g2']}"/></linearGradient>
+ <clipPath id="clip"><rect x="100" y="100" width="824" height="824" rx="190"/></clipPath>
+ <filter id="glow" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="70"/></filter>
+ <filter id="sglow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="20"/></filter>
+ <filter id="tsh" x="-25%" y="-25%" width="150%" height="160%"><feGaussianBlur stdDeviation="16"/></filter>
+</defs>'''
+    b = []
+    if tile_shadow:
+        b.append('<g filter="url(#tsh)" opacity=".22" transform="translate(0 14)">'
+                 f'<rect x="100" y="100" width="824" height="824" rx="190" fill="{INK}"/></g>')
+    b.append(f'<rect x="100" y="100" width="824" height="824" rx="190" fill="{SUITE_TILE}"/>')
+    b.append(f'<g clip-path="url(#clip)"><circle cx="330" cy="280" r="300" fill="{h["c500"]}" '
+             f'opacity=".45" filter="url(#glow)"/></g>')
+    b.append(f'<rect x="100" y="100" width="824" height="824" rx="190" fill="none" '
+             f'stroke="{h["c300"]}" stroke-opacity=".55" stroke-width="10"/>')
+    if small:
+        # <= 32px: rings bleed shut, so solid ticks, a heavier N and a bigger star.
+        b.append(glyph("small", "url(#ng)", h["c300"], "#FFFFFF", "1"))
+    else:
+        b.append('<g transform="translate(512 515) scale(.88) translate(-512 -515)" fill="none" '
+                 f'stroke="{h["c300"]}" stroke-linecap="round" opacity=".85">'
+                 '<path d="M188 515L340 515" stroke-width="34"/>'
+                 '<path d="M684 515L836 515" stroke-width="34"/>'
+                 '<circle cx="150" cy="515" r="38" stroke-width="26"/>'
+                 '<circle cx="874" cy="515" r="38" stroke-width="26"/></g>')
+        b.append(_stroked("M418 700L418 330L606 700L606 330", 80, "url(#ng)"))
+        b.append(f'<circle cx="668" cy="262" r="56" fill="{h["c300"]}" opacity=".5" filter="url(#sglow)"/>')
+        b.append(_star_path(668, 262, 58, "#FFFFFF"))
+    art = "".join(b)
+    if abs(k - 1) > 1e-6:
+        art = f'<g transform="translate(512,512) scale({k:.5f}) translate(-512,-512)">{art}</g>'
+    return HDR + defs_ + art + "</svg>\n"
 
 
 # ---------------------------------------------------------------- emit
 MACOS_INSET = 0.0977          # Apple's 824/1024 art box
 
 files = {
-    # OS icons — dark tile. The icon sits on the user's wallpaper, not on the
-    # app's UI, so it stays dark even though the app defaults to light.
-    "novaproxy-icon.svg":             tile("dark", 0.0),
-    "novaproxy-icon-macos.svg":       tile("dark", MACOS_INSET, tile_shadow=True),
-    "novaproxy-icon-small.svg":       tile("dark", 0.0, small=True),
-    "novaproxy-icon-small-macos.svg": tile("dark", MACOS_INSET, tile_shadow=True, small=True),
+    # OS icons — the Nova Suite tile. It sits on the user's wallpaper, not on
+    # the app's UI, so it stays dark in both themes. Windows / Linux fill the
+    # whole box (a margin there reads as a small icon in the taskbar); macOS
+    # keeps Apple's 824 grid.
+    "novaproxy-icon.svg":             suite_tile(0.03),
+    "novaproxy-icon-macos.svg":       suite_tile(MACOS_INSET, tile_shadow=True),
+    "novaproxy-icon-small.svg":       suite_tile(0.03, small=True),
+    "novaproxy-icon-small-macos.svg": suite_tile(MACOS_INSET, tile_shadow=True, small=True),
 
     # Light tile — in-app (splash, About), web, docs, store listings.
     "novaproxy-icon-light.svg":             tile("light", 0.0),

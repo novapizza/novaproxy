@@ -1,16 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="131 190 762 580" width="762" height="580"><defs>
- <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#F4FBF7"/></linearGradient>
- <radialGradient id="bloom" cx=".24" cy=".14" r=".85">
-  <stop offset="0" stop-color="#9BE3B4" stop-opacity=".34"/>
-  <stop offset="1" stop-color="#9BE3B4" stop-opacity="0"/></radialGradient>
- <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-  <stop offset="0" stop-color="#FFFFFF" stop-opacity="0"/>
-  <stop offset=".5" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>
- <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#CDEBDB"/><stop offset=".5" stop-color="#8FDCAC"/><stop offset="1" stop-color="#CDEBDB"/></linearGradient>
- <linearGradient id="ng" gradientUnits="userSpaceOnUse"
-   x1="372.0" y1="248.0"
-   x2="652.0" y2="788.0">
-  <stop offset="0" stop-color="#3EB56D"/><stop offset="1" stop-color="#2E9A59"/></linearGradient>
- <filter id="tsh" x="-25%" y="-25%" width="150%" height="160%">
-  <feGaussianBlur stdDeviation="16"/></filter>
-</defs><path d="M404.0 724.0L404.0 300.0L620.0 724.0L620.0 300.0" fill="none" stroke="url(#ng)" stroke-width="92.0" stroke-linecap="round" stroke-linejoin="round"/><path d="M154.0 515.0L330.0 515.0" fill="none" stroke="#79D3A0" stroke-width="46.0" stroke-linecap="round" stroke-linejoin="round" opacity=".95"/><path d="M694.0 515.0L870.0 515.0" fill="none" stroke="#79D3A0" stroke-width="46.0" stroke-linecap="round" stroke-linejoin="round" opacity=".95"/><path transform="translate(654.0,256.0) scale(66.0)" fill="#2E9A59" d="M0,-1 C.1,-.29 .29,-.1 1,0 .29,.1 .1,.29 0,1 -.1,.29 -.29,.1 -1,0 -.29,-.1 -.1,-.29 0,-1 Z"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024"><defs>
+ <linearGradient id="ng" gradientUnits="userSpaceOnUse" x1="380" y1="290" x2="650" y2="740">
+  <stop offset="0" stop-color="#DCFCE7"/><stop offset=".5" stop-color="#6EDB9A"/><stop offset="1" stop-color="#2E9A59"/></linearGradient>
+ <clipPath id="clip"><rect x="100" y="100" width="824" height="824" rx="190"/></clipPath>
+ <filter id="glow" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="70"/></filter>
+ <filter id="sglow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="20"/></filter>
+ <filter id="tsh" x="-25%" y="-25%" width="150%" height="160%"><feGaussianBlur stdDeviation="16"/></filter>
+</defs><g transform="translate(512,512) scale(1.16816) translate(-512,-512)"><rect x="100" y="100" width="824" height="824" rx="190" fill="#13111A"/><g clip-path="url(#clip)"><circle cx="330" cy="280" r="300" fill="#3EB56D" opacity=".45" filter="url(#glow)"/></g><rect x="100" y="100" width="824" height="824" rx="190" fill="none" stroke="#9BE3B4" stroke-opacity=".55" stroke-width="10"/><path d="M404.0 724.0L404.0 300.0L620.0 724.0L620.0 300.0" fill="none" stroke="url(#ng)" stroke-width="92.0" stroke-linecap="round" stroke-linejoin="round"/><path d="M154.0 515.0L330.0 515.0" fill="none" stroke="#9BE3B4" stroke-width="46.0" stroke-linecap="round" stroke-linejoin="round" opacity="1"/><path d="M694.0 515.0L870.0 515.0" fill="none" stroke="#9BE3B4" stroke-width="46.0" stroke-linecap="round" stroke-linejoin="round" opacity="1"/><path transform="translate(654.0,256.0) scale(66.0)" fill="#FFFFFF" d="M0,-1 C.1,-.29 .29,-.1 1,0 .29,.1 .1,.29 0,1 -.1,.29 -.29,.1 -1,0 -.29,-.1 -.1,-.29 0,-1 Z"/></g></svg>

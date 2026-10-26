@@ -10,6 +10,18 @@ Mọi nét dùng cùng một họ độ dày với đầu bo tròn, khớp bộ 
 Màu chỉ lấy từ theme trắng–xanh của app, không có hue thứ hai:
 Green 500 `#3EB56D`, Green 600 `#2E9A59`, Mint 200 `#9BE3B4`.
 
+## Tile Nova Suite (từ 0.7.0)
+
+Icon hệ điều hành theo họ icon Nova Suite (canvas board 04, giống `NovaSuite.AppIcon` trên
+novasuite.coding4pizza.com): tile `#13111A` dùng chung cho mọi app, glow xanh Green 500 ở
+góc trên trái, viền mảnh Mint 200, wire Mint 200 và chữ N gradient `#DCFCE7 → #6EDB9A →
+#2E9A59`, ngôi sao trắng. Vẽ trong `build.py` → `suite_tile()`. macOS giữ lưới 824/1024
+của Apple; Windows/Linux tile chiếm khoảng 94% khung, vì có lề thì icon trên taskbar trông nhỏ.
+Trong app, `src/Brandmark.tsx` vẽ cùng tile đó (rail, empty state, dialog setup).
+
+Không có cairo trên máy thì `render.py` vẫn chạy được với một shim `cairosvg` dùng
+sharp/librsvg; quan trọng là ra đúng PNG 1024, không phải công cụ nào vẽ.
+
 ## Sáng hay tối dùng ở đâu
 
 App mặc định light, nhưng **icon hệ điều hành vẫn là bản tối**. Icon trong Dock

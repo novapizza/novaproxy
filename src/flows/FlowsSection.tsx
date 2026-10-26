@@ -209,13 +209,13 @@ export const FlowsSection = forwardRef<FlowsHandle, {
 
   // Three empty states, not one: telling someone to loosen a filter they never
   // set is worse than saying nothing (design.md §8).
-  const empty: { icon: IconName; msg: string; hint: string } | null =
+  const empty: { icon: IconName; msg: string; hint: string; brand?: boolean } | null =
     filtered.length > 0
       ? null
       : flows.length === 0
       ? props.recording
-        ? { icon: "activity", msg: "Waiting for traffic…", hint: "Flows land here as your apps make requests." }
-        : { icon: "circle-pause", msg: "Recording paused", hint: "Press Recording in the toolbar to start capturing." }
+        ? { icon: "activity", msg: "Waiting for traffic…", hint: "Flows land here as your apps make requests.", brand: true }
+        : { icon: "circle-pause", msg: "Recording paused", hint: "Press Recording in the toolbar to start capturing.", brand: true }
       : isFiltering(filter)
       ? {
           icon: "search-x",

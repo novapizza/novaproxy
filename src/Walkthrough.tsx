@@ -11,6 +11,7 @@
  * the decisions are testable without a window. This file is the view.
  */
 
+import { Brandmark } from "./Brandmark";
 import type { ShowToast } from "./filter";
 import { useEffect, useLayoutEffect, useState } from "react";
 import { api, type CaStatus, type HelperStatus, type ProxyStatus } from "./api";
@@ -114,8 +115,9 @@ export function OnboardingWizard({
   return (
     <div className="scrim modal-scrim" onClick={() => onDismiss(false)}>
       <div className="modal ob" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head">
-          <h2>Getting started</h2>
+        <div className="modal-head ob-head">
+          <Brandmark size={30} title={null} />
+          <h2>Set up NovaProxy</h2>
           <span className="modal-x" title="Close" onClick={() => onDismiss(false)}>
             <Icon name="x" size={16} />
           </span>

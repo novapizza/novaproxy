@@ -1,5 +1,6 @@
 import { memo, useLayoutEffect, useRef, useState } from "react";
 import type { Flow } from "../api";
+import { Brandmark } from "../Brandmark";
 import { Icon, type IconName } from "../icons";
 import { sliceFlat } from "../virtual";
 import {
@@ -16,7 +17,7 @@ import { cycleSort, sortable, sortGlyph, type Sort } from "./sort";
 const OVERSCAN = 10;
 
 /** First-frame estimate only; the real height is measured from the DOM. */
-const ROW_H_GUESS = 34;
+const ROW_H_GUESS = 32;
 
 /**
  * The flows table, windowed.
@@ -50,7 +51,8 @@ export function FlowTable({
   columns: ColumnId[];
   selectedId: string | null;
   select: (id: string) => void;
-  empty: { icon: IconName; msg: string; hint: string } | null;
+  /** `brand` marks the nothing-captured-yet states, which show the app icon. */
+  empty: { icon: IconName; msg: string; hint: string; brand?: boolean } | null;
   scrollRef?: React.RefObject<HTMLDivElement | null>;
   /** Enter: hand focus to the inspector. */
   onInspect?: () => void;
@@ -197,8 +199,10 @@ export function FlowTable({
       </div>
 
       {empty ? (
-        <div className="list-empty">
-          <div className="icon"><Icon name={empty.icon} size={26} /></div>
+        <div className={`list-empty ${empty.brand ? "brand" : ""}`}>
+          <div className="icon">
+            {empty.brand ? <Brandmark size={64} title={null} /> : <Icon name={empty.icon} size={26} />}
+          </div>
           <div className="big">{empty.msg}</div>
           <div>{empty.hint}</div>
         </div>

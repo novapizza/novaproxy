@@ -1,77 +1,79 @@
-/* The NovaProxy mark, per design.md §Brandmark. Inline rather than an <img> so
-   the gradient runs on the same tokens as the rest of the UI — a brandmark that
-   drifted from the palette would be the one place the tokens do not reach.
-   The rail renders it at 32px, where the logo's own rule swaps in the simplified
-   drawing: the hollow end rings bleed shut and the star vanishes below ~40px, so
-   the wire becomes a solid tick and the N grows. Below 24px the wire goes too.
-   Full lockup and every raster size live in assets/logo. */
+/* The NovaProxy app icon, as the Nova Suite icon family draws it (canvas board
+   04, the same art as NovaSuite.AppIcon and the OS icon from assets/logo):
+   a near-black tile shared by every suite app, the NovaProxy green as a corner
+   glow and hairline, the wire in green 300 and the N in the app gradient.
+   Inline rather than an <img> so it stays crisp at every size and needs no
+   asset request. The tile is dark in both themes, like the Dock icon. */
 import { useId } from "react";
 
-/* Simplified geometry, 1024 grid — mirrors C_* in assets/logo/build.py. */
-const N_PATH = "M404 724L404 300L620 724L620 300";
-const WIRE = ["M154 515L330 515", "M694 515L870 515"];
+const TILE = "#13111A";
+const C300 = "#9BE3B4";
+const C500 = "#3EB56D";
 const STAR =
   "M0,-1 C.1,-.29 .29,-.1 1,0 .29,.1 .1,.29 0,1 -.1,.29 -.29,.1 -1,0 -.29,-.1 -.1,-.29 0,-1 Z";
-const BOX_WITH_WIRE = "131 99 762 762";
-const BOX_NODE_ONLY = "249 190 580 580";
 
 export function Brandmark({
-  size = 32,
+  size = 36,
   className,
+  title = "NovaProxy",
 }: {
   size?: number;
   className?: string;
+  /** Pass null when the icon sits next to the app's name and is decorative. */
+  title?: string | null;
 }) {
-  // Two of these on one page would otherwise fight over the gradient id.
-  const gradient = `${useId()}-mk`;
-  const wire = size >= 24;
+  // Two of these on one page would otherwise fight over the ids.
+  const id = `np-${useId().replace(/:/g, "")}`;
   return (
     <svg
-      viewBox={wire ? BOX_WITH_WIRE : BOX_NODE_ONLY}
+      viewBox="80 80 864 864"
       width={size}
       height={size}
       className={className}
-      role="img"
-      aria-label="NovaProxy"
+      role={title ? "img" : undefined}
+      aria-label={title ?? undefined}
+      aria-hidden={title ? undefined : true}
     >
       <defs>
-        <linearGradient
-          id={gradient}
-          gradientUnits="userSpaceOnUse"
-          x1="358"
-          y1="254"
-          x2="666"
-          y2="770"
-        >
-          <stop offset="0" stopColor="var(--accent)" />
-          <stop offset="1" stopColor="var(--accent-hover)" />
+        <linearGradient id={`${id}n`} gradientUnits="userSpaceOnUse" x1="380" y1="290" x2="650" y2="740">
+          <stop offset="0" stopColor="#DCFCE7" />
+          <stop offset=".5" stopColor="#6EDB9A" />
+          <stop offset="1" stopColor="#2E9A59" />
         </linearGradient>
+        <clipPath id={`${id}c`}>
+          <rect x="100" y="100" width="824" height="824" rx="190" />
+        </clipPath>
+        <filter id={`${id}g`} x="-60%" y="-60%" width="220%" height="220%">
+          <feGaussianBlur stdDeviation="70" />
+        </filter>
+        <filter id={`${id}b`} x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="20" />
+        </filter>
       </defs>
-      {wire &&
-        WIRE.map((d) => (
-          <path
-            key={d}
-            d={d}
-            fill="none"
-            stroke="var(--accent)"
-            strokeWidth={46}
-            strokeLinecap="round"
-            opacity={0.62}
-          />
-        ))}
-      <path
-        d={N_PATH}
-        fill="none"
-        stroke={`url(#${gradient})`}
-        strokeWidth={92}
-        strokeLinecap="round"
-        strokeLinejoin="round"
+      <rect x="100" y="100" width="824" height="824" rx="190" fill={TILE} />
+      <g clipPath={`url(#${id}c)`}>
+        <circle cx="330" cy="280" r="300" fill={C500} opacity=".45" filter={`url(#${id}g)`} />
+      </g>
+      <rect
+        x="100" y="100" width="824" height="824" rx="190"
+        fill="none" stroke={C300} strokeOpacity=".55" strokeWidth="10"
       />
+      <g
+        transform="translate(512 515) scale(.88) translate(-512 -515)"
+        fill="none" stroke={C300} strokeLinecap="round" opacity=".85"
+      >
+        <path d="M188 515L340 515" strokeWidth="34" />
+        <path d="M684 515L836 515" strokeWidth="34" />
+        <circle cx="150" cy="515" r="38" strokeWidth="26" />
+        <circle cx="874" cy="515" r="38" strokeWidth="26" />
+      </g>
       <path
-        d={STAR}
-        transform="translate(654,256) scale(66)"
-        fill="var(--accent-hover)"
+        d="M418 700L418 330L606 700L606 330"
+        fill="none" stroke={`url(#${id}n)`} strokeWidth="80"
+        strokeLinecap="round" strokeLinejoin="round"
       />
+      <circle cx="668" cy="262" r="56" fill={C300} opacity=".5" filter={`url(#${id}b)`} />
+      <path transform="translate(668 262) scale(58)" fill="#FFFFFF" d={STAR} />
     </svg>
   );
 }

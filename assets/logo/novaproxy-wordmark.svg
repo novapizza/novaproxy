@@ -16,6 +16,6 @@
   <feGaussianBlur stdDeviation="16"/></filter>
 </defs>
 <g transform="translate(-3.6 -3.6) scale(0.3)"><path d="M418.0 700.0L418.0 330.0L606.0 700.0L606.0 330.0" fill="none" stroke="url(#ng)" stroke-width="80.0" stroke-linecap="round" stroke-linejoin="round"/><path d="M188.0 515.0L352.0 515.0" fill="none" stroke="#79D3A0" stroke-width="34.0" stroke-linecap="round" stroke-linejoin="round" opacity=".95"/><path d="M672.0 515.0L836.0 515.0" fill="none" stroke="#79D3A0" stroke-width="34.0" stroke-linecap="round" stroke-linejoin="round" opacity=".95"/><circle cx="150.0" cy="515.0" r="38.0" fill="none" stroke="#79D3A0" stroke-width="26.0" opacity=".95"/><circle cx="874.0" cy="515.0" r="38.0" fill="none" stroke="#79D3A0" stroke-width="26.0" opacity=".95"/><path transform="translate(638.0,274.0) scale(58.0)" fill="#2E9A59" d="M0,-1 C.1,-.29 .29,-.1 1,0 .29,.1 .1,.29 0,1 -.1,.29 -.29,.1 -1,0 -.29,-.1 -.1,-.29 0,-1 Z"/></g>
-<text x="356" y="138" font-family="Petrona, Georgia, serif" font-size="112" letter-spacing="-2" fill="#0D1A14" dominant-baseline="middle">Nova<tspan fill="#2E9A59">Proxy</tspan></text>
+<text x="356" y="138" font-family="Space Grotesk, sans-serif" font-weight="600" font-size="108" letter-spacing="-3" fill="#0D1A14" dominant-baseline="middle">Nova<tspan fill="#2E9A59">Proxy</tspan></text>
 <text x="360" y="212" font-family="JetBrains Mono, ui-monospace, monospace" font-size="26" letter-spacing="5.5" fill="#6B7F74">HTTPS DEBUGGING PROXY</text>
 </svg>
