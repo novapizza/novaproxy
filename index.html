@@ -3,7 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      // Theme before first paint, from the same pref React reads (src/prefs.ts).
+      try {
+        if (JSON.parse(localStorage.getItem("novaproxy.prefs") || "{}").theme === "dark")
+          document.documentElement.dataset.theme = "dark";
+      } catch {}
+    </script>
     <link rel="icon" href="/logo.svg" />
     <title>NovaProxy</title>
   </head>

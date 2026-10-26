@@ -108,6 +108,12 @@ export function App() {
     savePrefs(next);
   };
 
+  // index.html sets the launch theme before paint; this keeps it in step after.
+  useEffect(() => {
+    if (prefs.theme === "dark") document.documentElement.dataset.theme = "dark";
+    else delete document.documentElement.dataset.theme;
+  }, [prefs.theme]);
+
   const [section, setSection] = useState<Section>("flows");
   /**
    * Everything narrowing the flows table, in one value — the tree's scope, the
@@ -667,6 +673,13 @@ export function App() {
             </div>
           ))}
           <div className="spacer" />
+          <div
+            className="rail-gear"
+            title={prefs.theme === "dark" ? "Switch to light theme" : "Switch to NovaProxy Dark"}
+            onClick={() => setPrefs({ ...prefs, theme: prefs.theme === "dark" ? "light" : "dark" })}
+          >
+            <Icon name={prefs.theme === "dark" ? "sun" : "moon"} size={18} />
+          </div>
           <div className="rail-gear" title="Settings" onClick={openSettings}>
             <Icon name="settings" size={18} />
           </div>

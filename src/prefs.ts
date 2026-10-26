@@ -27,6 +27,9 @@ import {
  */
 export type LaunchProxyMode = "none" | "system";
 
+/** Light is the Nova Suite default; NovaProxy Dark is opt-in (design.md §Look). */
+export type Theme = "light" | "dark";
+
 export interface Prefs {
   systemProxyAtLaunch: LaunchProxyMode;
   /**
@@ -79,6 +82,12 @@ export interface Prefs {
    * marked done without ever seeing the wizard.
    */
   onboardingDone: boolean;
+  /**
+   * Also read before React mounts, by the inline script in `index.html`, so a
+   * dark window does not flash white at launch. Keep the key and the values in
+   * step with that script.
+   */
+  theme: Theme;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -93,6 +102,7 @@ export const DEFAULT_PREFS: Prefs = {
   savedFilters: [],
   autoCheckUpdates: true,
   onboardingDone: false,
+  theme: "light",
 };
 
 const KEY = "novaproxy.prefs";
@@ -158,6 +168,7 @@ export function normalizePrefs(raw: unknown): Prefs {
     // done, so anything missing or corrupt shows the walkthrough rather than
     // silently swallowing it.
     onboardingDone: v.onboardingDone === true,
+    theme: v.theme === "dark" ? "dark" : "light",
   };
 }
 

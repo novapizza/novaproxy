@@ -75,6 +75,14 @@ describe("prefs", () => {
     expect(normalizePrefs({ onboardingDone: true }).onboardingDone).toBe(true);
   });
 
+  it("defaults to the light theme and keeps only a known theme", () => {
+    // Blobs written before 0.7.0 have no theme; they stay light, as they were.
+    expect(DEFAULT_PREFS.theme).toBe("light");
+    expect(loadPrefs(fakeStore('{"autoSelect":true}')).theme).toBe("light");
+    expect(normalizePrefs({ theme: "solarized" }).theme).toBe("light");
+    expect(normalizePrefs({ theme: "dark" }).theme).toBe("dark");
+  });
+
   it("does not throw when storage refuses to write", () => {
     const hostile = {
       setItem: () => {
