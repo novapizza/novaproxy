@@ -1,6 +1,6 @@
 /* NovaProxy — desktop HTTPS-debugging proxy UI.
-   Design system per design.md: a single light theme — mint wash, white panels,
-   one green accent. Every colour, radius, shadow and font routes through a
+   Design system per design.md: Nova Suite tokens, light by default with an
+   optional NovaProxy Dark, one green accent. Every colour, radius, shadow and font routes through a
    token in the `.nova` block below; nothing hardcodes a hex outside it. */
 
 /* ------------------------------ reset ------------------------------ */
@@ -11,14 +11,15 @@ body {
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
   user-select: none;
-  background: #f2f6f3;
+  background: #ffffff;
 }
+:root[data-theme="dark"] body { background: #0b0a10; }
 button { font-family: inherit; color: inherit; background: none; border: none; cursor: pointer; }
 input, textarea, select { font-family: inherit; }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(27, 26, 61, 0.16);
+  background: rgba(127, 122, 150, 0.32);
   border-radius: 999px;
   border: 3px solid transparent;
   background-clip: content-box;
@@ -32,42 +33,53 @@ input, textarea, select { font-family: inherit; }
 @keyframes novapop   { from { opacity: 0; transform: translate(-50%, 8px) scale(.97); } to { opacity: 1; transform: translate(-50%, 0) scale(1); } }
 
 /* ------------------------------ design tokens ------------------------------ */
+/* Nova Suite tokens (canvas "NovaProxy Redesign"). Light is the default;
+   NovaProxy Dark swaps the same names under :root[data-theme="dark"].
+   The *-rgb channels exist so tints stay rgba() — color-mix() needs a newer
+   WebKit than macOS 11 ships. */
 .nova {
-  /* type — Petrona displays, Inter speaks, JetBrains Mono is machine text */
-  --font-display: "Petrona Variable", Petrona, Georgia, serif;
+  /* type — Space Grotesk displays, Inter speaks, JetBrains Mono is machine text */
+  --font-display: "Space Grotesk Variable", "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-ui: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
   --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Monaco, monospace;
 
-  /* accent — the one colour that means "this acts" */
-  --accent: #3eb56d;
-  --accent-hover: #2e9a59;
+  /* accent — NovaProxy green, the one colour that means "this acts" */
+  --accent: #237a46;
+  --accent-hover: #1c6339;
+  --accent-ink: #ffffff;
+  --accent-rgb: 35, 122, 70;
   --mint: #9be3b4;
 
-  /* surfaces */
-  --bg: #f2f6f3;
-  --wash:
-    radial-gradient(80% 60% at 8% 0%, rgba(62,181,109,.16) 0%, transparent 60%),
-    radial-gradient(70% 60% at 100% 8%, rgba(140,214,168,.22) 0%, transparent 62%),
-    linear-gradient(180deg, #f8fbf8 0%, #eff5f1 100%);
-  --panel: rgba(255,255,255,.62);
-  --list: rgba(255,255,255,.82);
-  --card: #ffffff;
-  --input: #f7faf8;
-  --hover: rgba(27,26,61,.05);
-  /* flows table: zebra row, sticky header fill */
-  --row-alt: rgba(242,246,243,.55);
-  --thead: rgba(242,246,243,.96);
+  /* channels for tints */
+  --ink-rgb: 28, 24, 48;
+  --shadow-rgb: 28, 24, 48;
+  --surface-rgb: 255, 255, 255;
+  --red-rgb: 185, 28, 28;
+  --amber-rgb: 180, 83, 9;
+  --indigo-rgb: 67, 56, 202;
 
-  /* hairlines — depth comes from white on wash, never from heavy strokes */
-  --border: rgba(27,26,61,.07);
-  --border2: rgba(27,26,61,.12);
-  --bsoft: rgba(27,26,61,.045);
+  /* surfaces */
+  --bg: #ffffff;
+  --wash: var(--bg);
+  --panel: #f6f5fa;
+  --list: #ffffff;
+  --card: #ffffff;
+  --input: #efedf6;
+  --hover: rgba(28,24,48,.045);
+  /* flows table: zebra row, sticky header fill */
+  --row-alt: rgba(28,24,48,.022);
+  --thead: #f6f5fa;
+
+  /* hairlines */
+  --border: rgba(28,24,48,.09);
+  --border2: rgba(28,24,48,.16);
+  --bsoft: rgba(28,24,48,.05);
 
   /* ink, four levels */
-  --text: #1b1a3d;
+  --text: #1c1830;
   --text2: #3b3a5c;
-  --muted: #6b6a86;
-  --faint: #a9a8be;
+  --muted: #5b5672;
+  --faint: #8a85a0;
 
   /* flows table metrics — --row-h is measured back out of the DOM by
      FlowTable, so changing it here is enough (design.md §4.1) */
@@ -75,38 +87,37 @@ input, textarea, select { font-family: inherit; }
   --thead-h: 32px;
   --tree-w: 252px;
 
-  --shadow: rgba(27,26,61,.10);
-  --overlay: rgba(27,26,61,.28);
+  --shadow: rgba(28,24,48,.10);
+  --overlay: rgba(28,24,48,.28);
 
-  /* semantics. green / salmon / violet come from the design; blue, cyan,
-     amber and pink are derived in the same low-chroma register for the
-     surfaces the design does not cover (see design.md §Colour). */
-  --c-green: #3eb56d;
-  --c-green-deep: #2e9a59;
-  --c-violet: #7c5ce0;
-  --c-indigo: #8c78f3;
-  --c-red: #d88689;
-  --c-red-deep: #a85b5e;
-  --c-blue: #5e86c9;
-  --c-cyan: #3fa9a0;
-  --c-amber: #c08a4a;
-  --c-pink: #c77bb4;
-  --code-bg: #f7faf8;
+  /* semantics — the Nova app hues, 700 in light, 300 in dark */
+  --c-green: #237a46;
+  --c-green-deep: #1c6339;
+  --c-violet: #6d28d9;
+  --c-indigo: #4338ca;
+  --c-red: #b91c1c;
+  --c-red-deep: #991b1b;
+  --c-blue: #1d4ed8;
+  --c-cyan: #0e7490;
+  --c-amber: #b45309;
+  --c-orange: #c2410c;
+  --c-pink: #be185d;
+  --code-bg: #efedf6;
 
   /* radius — tags, fields, cards, panels, pills */
-  --r-tag: 8px;
-  --r-field: 12px;
-  --r-card: 16px;
+  --r-tag: 6px;
+  --r-field: 11px;
+  --r-card: 18px;
   --r-panel: 20px;
   --r-pill: 999px;
 
   /* elevation */
-  --e-xs: 0 2px 6px rgba(27,26,61,.05);
-  --e-sm: 0 6px 18px rgba(27,26,61,.10);
-  --e-md: 0 8px 24px rgba(27,26,61,.14);
-  --e-lg: 0 24px 60px rgba(27,26,61,.18);
-  --e-pop: 0 14px 34px rgba(27,26,61,.14);
-  --e-accent: 0 6px 16px rgba(62,181,109,.30);
+  --e-xs: 0 2px 6px rgba(var(--shadow-rgb),.05);
+  --e-sm: 0 6px 18px rgba(var(--shadow-rgb),.10);
+  --e-md: 0 8px 24px rgba(var(--shadow-rgb),.14);
+  --e-lg: 0 24px 60px rgba(var(--shadow-rgb),.18);
+  --e-pop: 0 14px 34px rgba(var(--shadow-rgb),.14);
+  --e-accent: 0 6px 16px rgba(var(--accent-rgb),.30);
 
   /* motion */
   --ease: cubic-bezier(.2,.8,.2,1);
@@ -114,13 +125,69 @@ input, textarea, select { font-family: inherit; }
   --t-base: 200ms;
   --t-page: 360ms;
 
-  /* method tints — green reads, salmon mutates, violet is protocol traffic */
-  --get-bg: rgba(62,181,109,.10);   --get-br: rgba(62,181,109,.26);
-  --post-bg: rgba(62,181,109,.18);  --post-br: rgba(46,154,89,.30);
-  --put-bg: rgba(216,134,137,.16);  --put-br: rgba(216,134,137,.34);
-  --patch-bg: rgba(124,92,224,.12); --patch-br: rgba(124,92,224,.30);
-  --del-bg: rgba(216,134,137,.20);  --del-br: rgba(168,91,94,.34);
-  --ws-bg: rgba(140,120,243,.14);   --ws-br: rgba(140,120,243,.32);
+  /* method tints — green reads, orange and red mutate, violet patches,
+     indigo is protocol traffic */
+  --get-bg: rgba(var(--accent-rgb),.10);  --get-br: rgba(var(--accent-rgb),.26);
+  --post-bg: rgba(var(--accent-rgb),.18); --post-br: rgba(var(--accent-rgb),.32);
+  --put-bg: rgba(194,65,12,.12);          --put-br: rgba(194,65,12,.30);
+  --patch-bg: rgba(109,40,217,.11);       --patch-br: rgba(109,40,217,.28);
+  --del-bg: rgba(var(--red-rgb),.11);     --del-br: rgba(var(--red-rgb),.30);
+  --ws-bg: rgba(var(--indigo-rgb),.11);   --ws-br: rgba(var(--indigo-rgb),.28);
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] .nova {
+  --accent: #9be3b4;
+  --accent-hover: #b9ecca;
+  --accent-ink: #0b0a10;
+  --accent-rgb: 155, 227, 180;
+
+  --ink-rgb: 237, 234, 247;
+  --shadow-rgb: 0, 0, 0;
+  --surface-rgb: 22, 19, 31;
+  --red-rgb: 252, 165, 165;
+  --amber-rgb: 252, 211, 77;
+  --indigo-rgb: 165, 180, 252;
+
+  --bg: #0b0a10;
+  --panel: #100e17;
+  --list: #0b0a10;
+  --card: #16131f;
+  --input: #1c1830;
+  --hover: rgba(255,255,255,.05);
+  --row-alt: rgba(255,255,255,.018);
+  --thead: #100e17;
+
+  --border: rgba(255,255,255,.08);
+  --border2: rgba(255,255,255,.14);
+  --bsoft: rgba(255,255,255,.05);
+
+  --text: #edeaf7;
+  --text2: #cfc9e4;
+  --muted: #a9a3bf;
+  --faint: #6b6585;
+
+  --shadow: rgba(0,0,0,.45);
+  --overlay: rgba(7,6,11,.62);
+
+  --c-green: #9be3b4;
+  --c-green-deep: #6edb9a;
+  --c-violet: #c4b5fd;
+  --c-indigo: #a5b4fc;
+  --c-red: #fca5a5;
+  --c-red-deep: #f87171;
+  --c-blue: #93c5fd;
+  --c-cyan: #67e8f9;
+  --c-amber: #fcd34d;
+  --c-orange: #fdba74;
+  --c-pink: #f9a8d4;
+  --code-bg: #1c1830;
+
+  --e-lg: 0 24px 60px rgba(0,0,0,.55);
+
+  --put-bg: rgba(253,186,116,.12);  --put-br: rgba(253,186,116,.30);
+  --patch-bg: rgba(196,181,253,.12); --patch-br: rgba(196,181,253,.30);
+  color-scheme: dark;
 }
 
 /* ------------------------------ shell ------------------------------ */
@@ -206,13 +273,13 @@ input, textarea, select { font-family: inherit; }
   transition: background var(--t-micro) var(--ease), border-color var(--t-micro) var(--ease), color var(--t-micro) var(--ease);
 }
 .tool-btn:hover { border-color: var(--border2); background: var(--input); }
-.tool-btn.on { color: var(--accent-hover); border-color: rgba(62,181,109,.45); background: rgba(62,181,109,.10); }
+.tool-btn.on { color: var(--accent-hover); border-color: rgba(var(--accent-rgb),.45); background: rgba(var(--accent-rgb),.10); }
 .rec-btn.on {
   color: var(--c-red-deep);
-  border-color: rgba(216,134,137,.5);
-  background: rgba(216,134,137,.10);
+  border-color: rgba(var(--red-rgb),.5);
+  background: rgba(var(--red-rgb),.10);
 }
-.rec-btn.on:hover { background: rgba(216,134,137,.18); }
+.rec-btn.on:hover { background: rgba(var(--red-rgb),.18); }
 .rec-dot { width: 8px; height: 8px; border-radius: var(--r-pill); background: var(--faint); flex: none; }
 .rec-btn.on .rec-dot { background: var(--c-red); animation: novapulse 1.6s var(--ease) infinite; }
 
@@ -224,7 +291,7 @@ input, textarea, select { font-family: inherit; }
   border-radius: 11px; padding: 0 13px; height: 36px; flex: 1; min-width: 0; gap: 9px;
   transition: border-color var(--t-micro) var(--ease), box-shadow var(--t-micro) var(--ease);
 }
-.search:focus-within { border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12); }
+.search:focus-within { border-color: rgba(var(--accent-rgb),.45); box-shadow: 0 0 0 3px rgba(var(--accent-rgb),.12); }
 .search .mag { color: var(--faint); display: flex; flex: none; }
 .search input {
   flex: 1; min-width: 0; background: transparent; border: none; outline: none;
@@ -245,11 +312,11 @@ input, textarea, select { font-family: inherit; }
   transition: border-color var(--t-micro) var(--ease), background var(--t-micro) var(--ease),
     box-shadow var(--t-micro) var(--ease);
 }
-.dd-trigger:hover { border-color: rgba(27,26,61,.22); }
+.dd-trigger:hover { border-color: rgba(var(--ink-rgb),.22); }
 .dd-trigger:focus-visible {
-  outline: none; border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12);
+  outline: none; border-color: rgba(var(--accent-rgb),.45); box-shadow: 0 0 0 3px rgba(var(--accent-rgb),.12);
 }
-.dd.open .dd-trigger { background: var(--card); border-color: rgba(62,181,109,.45); }
+.dd.open .dd-trigger { background: var(--card); border-color: rgba(var(--accent-rgb),.45); }
 .dd-trigger:disabled { opacity: .55; cursor: not-allowed; }
 .dd-label {
   flex: 1; min-width: 0; text-align: left;
@@ -272,7 +339,7 @@ input, textarea, select { font-family: inherit; }
   transition: background var(--t-micro) var(--ease);
 }
 .dd-opt:hover, .dd-opt.active { background: var(--bg); }
-.dd-opt.sel { background: rgba(62,181,109,.10); }
+.dd-opt.sel { background: rgba(var(--accent-rgb),.10); }
 .dd-icon { display: flex; flex: none; color: var(--muted); }
 .dd-opt.sel .dd-icon { color: var(--accent); }
 .dd-opt-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -280,7 +347,7 @@ input, textarea, select { font-family: inherit; }
 .dd-sep { height: 1px; margin: 5px 8px; background: var(--border); }
 .dd-clear { color: var(--c-red-deep); }
 .dd-clear .dd-icon { color: var(--c-red-deep); }
-.dd-clear:hover, .dd-clear.active { background: rgba(216,134,137,.12); }
+.dd-clear:hover, .dd-clear.active { background: rgba(var(--red-rgb),.12); }
 .dd-empty { padding: 10px; font: 400 12.5px var(--font-ui); color: var(--faint); }
 
 /* the app filter in the toolbar sits at the design's 208px, and the settings
@@ -298,14 +365,14 @@ input, textarea, select { font-family: inherit; }
   cursor: pointer; white-space: nowrap;
   transition: border-color var(--t-micro) var(--ease);
 }
-.cmd-btn:hover { border-color: rgba(27,26,61,.22); }
+.cmd-btn:hover { border-color: rgba(var(--ink-rgb),.22); }
 /* A keycap is not machine text: ⌘ ⇧ ↵ ↑ come from the *system* font, because
    JetBrains Mono does not carry them and the fallback is tofu. The mono stack
    stays behind it for the letters and digits, where its slashed zero is what
    keeps ⌘0 (sidebar) apart from ⌘O (open session). */
 .kbd {
   font: 500 10.5px -apple-system, BlinkMacSystemFont, "Segoe UI Symbol", var(--font-mono);
-  background: rgba(27,26,61,.05); border-radius: 5px; padding: 2px 5px; color: var(--muted);
+  background: rgba(var(--ink-rgb),.05); border-radius: 5px; padding: 2px 5px; color: var(--muted);
   font-variant-numeric: slashed-zero;
 }
 /* One cap per key in the dialog, so they read as separate presses. */
@@ -320,16 +387,16 @@ input, textarea, select { font-family: inherit; }
 /* pill switch */
 .switch {
   width: 40px; height: 23px; border-radius: var(--r-pill);
-  background: rgba(27,26,61,.14); transition: background var(--t-base) var(--ease);
+  background: rgba(var(--ink-rgb),.14); transition: background var(--t-base) var(--ease);
   flex: none; cursor: pointer; display: inline-block; position: relative;
 }
 .switch.sm { width: 40px; }
-.switch.on { background: var(--accent); box-shadow: 0 4px 12px rgba(62,181,109,.35); }
+.switch.on { background: var(--accent); box-shadow: 0 4px 12px rgba(var(--accent-rgb),.35); }
 .switch .knob {
   position: absolute; top: 3px; left: 3px;
   width: 17px; height: 17px; border-radius: var(--r-pill);
   background: #fff; transition: transform var(--t-base) var(--ease);
-  box-shadow: 0 1px 3px rgba(27,26,61,.25);
+  box-shadow: 0 1px 3px rgba(var(--shadow-rgb),.25);
 }
 .switch.on .knob, .switch.sm.on .knob { transform: translateX(17px); }
 
@@ -340,8 +407,8 @@ input, textarea, select { font-family: inherit; }
  */
 .restore-bar {
   flex: none; display: flex; align-items: center; gap: 10px;
-  padding: 10px 24px; border-bottom: 1px solid rgba(216,134,137,.35);
-  background: rgba(216,134,137,.08);
+  padding: 10px 24px; border-bottom: 1px solid rgba(var(--red-rgb),.35);
+  background: rgba(var(--red-rgb),.08);
   font: 400 12.5px var(--font-ui); color: var(--c-red-deep);
 }
 .restore-bar .rb-icon { color: var(--c-red-deep); display: flex; flex: none; }
@@ -358,17 +425,17 @@ input, textarea, select { font-family: inherit; }
 /* filter chips */
 .fchip {
   padding: 5px 11px; border-radius: var(--r-pill);
-  border: 1px solid var(--border2); background: rgba(255,255,255,.7);
+  border: 1px solid var(--border2); background: rgba(var(--surface-rgb),.7);
   font: 500 11.5px var(--font-ui); color: var(--text2); cursor: pointer;
   transition: all var(--t-micro) var(--ease);
 }
-.fchip:hover { border-color: rgba(27,26,61,.24); }
-.fchip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.fchip:hover { border-color: rgba(var(--ink-rgb),.24); }
+.fchip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 
 .tls-chip {
   font: 500 9px var(--font-mono); letter-spacing: .08em;
   color: var(--accent);
-  background: rgba(62,181,109,.10);
+  background: rgba(var(--accent-rgb),.10);
   border-radius: 4px; padding: 2px 5px; flex: none;
 }
 
@@ -413,7 +480,7 @@ input, textarea, select { font-family: inherit; }
 }
 .detail-empty .glyph {
   width: 56px; height: 56px; border-radius: var(--r-card);
-  background: rgba(62,181,109,.10); color: var(--accent);
+  background: rgba(var(--accent-rgb),.10); color: var(--accent);
   display: flex; align-items: center; justify-content: center;
 }
 .detail-empty .big { font: 600 14px var(--font-ui); color: var(--text); }
@@ -486,7 +553,7 @@ input, textarea, select { font-family: inherit; }
 .timing { max-width: 640px; }
 .timing-row { display: grid; grid-template-columns: 130px minmax(0, 1fr) 72px; align-items: center; gap: 14px; padding: 6px 0; }
 .timing-row .tl { font: 400 12.5px var(--font-ui); color: var(--text2); }
-.timing-bar { height: 8px; background: rgba(27,26,61,.06); border-radius: var(--r-pill); position: relative; overflow: hidden; }
+.timing-bar { height: 8px; background: rgba(var(--ink-rgb),.06); border-radius: var(--r-pill); position: relative; overflow: hidden; }
 .timing-bar > span { position: absolute; top: 0; bottom: 0; left: 0; border-radius: var(--r-pill); opacity: .9; }
 .timing-row .tv { text-align: right; font: 400 11.5px var(--font-mono); color: var(--muted); }
 .timing-note {
@@ -508,8 +575,8 @@ input, textarea, select { font-family: inherit; }
 .page-inner.w640 { max-width: 780px; }
 .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 9px; }
 .page-title {
-  margin: 0; font: 400 38px var(--font-display);
-  letter-spacing: -.018em; line-height: 1.1; color: var(--text);
+  margin: 0; font: 600 34px var(--font-display);
+  letter-spacing: -.03em; line-height: 1.1; color: var(--text);
 }
 .page-sub {
   margin: 0 0 28px; max-width: 60ch;
@@ -519,7 +586,7 @@ input, textarea, select { font-family: inherit; }
 
 .btn-primary {
   display: inline-flex; align-items: center; gap: 8px;
-  padding: 10px 17px; border-radius: var(--r-pill); background: var(--accent); color: #fff;
+  padding: 10px 17px; border-radius: var(--r-pill); background: var(--accent); color: var(--accent-ink);
   font: 500 13px var(--font-ui); cursor: pointer; white-space: nowrap;
   box-shadow: var(--e-accent);
   transition: background var(--t-base) var(--ease);
@@ -530,7 +597,7 @@ input, textarea, select { font-family: inherit; }
    is kept as an alias so callers do not all have to change. */
 .btn-primary.cyan { background: var(--accent); }
 .btn-primary.cyan:hover { background: var(--accent-hover); }
-.btn-primary.red { background: #c4676b; box-shadow: none; }
+.btn-primary.red { background: var(--c-red); box-shadow: none; }
 .btn-primary.red:hover { background: var(--c-red-deep); }
 .btn-neutral {
   display: inline-flex; align-items: center; gap: 8px;
@@ -539,18 +606,18 @@ input, textarea, select { font-family: inherit; }
   font: 500 12.5px var(--font-ui); color: var(--text2); cursor: pointer; white-space: nowrap;
   transition: border-color var(--t-micro) var(--ease), background var(--t-micro) var(--ease);
 }
-.btn-neutral:hover { border-color: rgba(27,26,61,.26); background: var(--input); }
+.btn-neutral:hover { border-color: rgba(var(--ink-rgb),.26); background: var(--input); }
 
 /* rules */
 .rule {
-  border: 1px solid var(--border); background: rgba(255,255,255,.86); border-radius: 18px;
+  border: 1px solid var(--border); background: rgba(var(--surface-rgb),.86); border-radius: 18px;
   margin-bottom: 12px; overflow: hidden; box-shadow: var(--e-xs);
 }
 .rule-head { display: flex; align-items: center; gap: 13px; padding: 15px 18px; }
 .rule-kind {
   font: 500 10px var(--font-mono);
   letter-spacing: .07em; text-transform: uppercase; color: var(--accent);
-  border: none; background: rgba(62,181,109,.10);
+  border: none; background: rgba(var(--accent-rgb),.10);
   border-radius: 6px; padding: 4px 9px;
 }
 .rule-kind { cursor: pointer; outline: none; }
@@ -575,7 +642,7 @@ input, textarea, select { font-family: inherit; }
   border-radius: 11px; padding: 10px 13px; outline: none;
   transition: border-color var(--t-micro) var(--ease), box-shadow var(--t-micro) var(--ease);
 }
-.rule-input:focus { border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12); }
+.rule-input:focus { border-color: rgba(var(--accent-rgb),.45); box-shadow: 0 0 0 3px rgba(var(--accent-rgb),.12); }
 .rule-name-input {
   flex: 1; min-width: 0; font: 500 14px var(--font-ui);
   color: var(--text); background: transparent; border: 1px solid transparent;
@@ -619,10 +686,10 @@ input, textarea, select { font-family: inherit; }
   color: var(--text); background: var(--input);
   border: 1px solid var(--border); border-radius: var(--r-field); padding: 12px; outline: none;
 }
-.intercept-headers:focus { border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12); }
+.intercept-headers:focus { border-color: rgba(var(--accent-rgb),.45); box-shadow: 0 0 0 3px rgba(var(--accent-rgb),.12); }
 .intercept-actions { display: flex; justify-content: flex-end; gap: 10px; }
-.btn-neutral.danger { color: var(--c-red-deep); border-color: rgba(216,134,137,.5); background: rgba(216,134,137,.10); }
-.btn-neutral.danger:hover { background: rgba(216,134,137,.18); border-color: rgba(216,134,137,.5); }
+.btn-neutral.danger { color: var(--c-red-deep); border-color: rgba(var(--red-rgb),.5); background: rgba(var(--red-rgb),.10); }
+.btn-neutral.danger:hover { background: rgba(var(--red-rgb),.18); border-color: rgba(var(--red-rgb),.5); }
 
 /* network conditions (settings) */
 .net-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 4px 0 8px; }
@@ -632,7 +699,7 @@ input, textarea, select { font-family: inherit; }
 /* scripts editor */
 .page-head-actions { display: flex; align-items: center; gap: 12px; flex: none; }
 .script-toggle { display: flex; align-items: center; gap: 10px; color: var(--muted); cursor: pointer; font: 400 12.5px var(--font-ui); }
-.editor { border: 1px solid var(--border); border-radius: 18px; overflow: hidden; background: rgba(255,255,255,.9); box-shadow: var(--e-xs); }
+.editor { border: 1px solid var(--border); border-radius: 18px; overflow: hidden; background: rgba(var(--surface-rgb),.9); box-shadow: var(--e-xs); }
 .editor-tab {
   display: flex; align-items: center; gap: 10px; padding: 11px 18px;
   background: var(--input); border-bottom: 1px solid var(--border);
@@ -648,7 +715,7 @@ input, textarea, select { font-family: inherit; }
 
 /* breakpoints */
 .bp-card {
-  border: 1px solid var(--border); background: rgba(255,255,255,.86); border-radius: 18px;
+  border: 1px solid var(--border); background: rgba(var(--surface-rgb),.86); border-radius: 18px;
   padding: 20px; display: flex; align-items: center; gap: 16px; box-shadow: var(--e-xs);
 }
 .bp-icon {
@@ -656,7 +723,7 @@ input, textarea, select { font-family: inherit; }
   display: flex; align-items: center; justify-content: center; flex: none;
   color: var(--faint); background: var(--input); border: 1px solid var(--border);
 }
-.bp-icon.armed { color: var(--c-amber); background: rgba(192,138,74,.12); border-color: rgba(192,138,74,.3); }
+.bp-icon.armed { color: var(--c-amber); background: rgba(var(--amber-rgb),.12); border-color: rgba(var(--amber-rgb),.3); }
 .bp-card .t { font: 600 14px var(--font-ui); color: var(--text); }
 .bp-card .s, .cert-card .s { font: 400 13px var(--font-ui); color: var(--muted); margin-top: 3px; }
 
@@ -677,9 +744,9 @@ input, textarea, select { font-family: inherit; }
   color: var(--faint); background: var(--input); border: 1px solid var(--border);
 }
 .cert-icon.trusted {
-  color: #fff; border: none;
+  color: var(--accent-ink); border: none;
   background: linear-gradient(135deg, var(--c-indigo), var(--accent));
-  box-shadow: 0 8px 20px rgba(62,181,109,.30);
+  box-shadow: 0 8px 20px rgba(var(--accent-rgb),.30);
 }
 .cert-name { font: 600 16px var(--font-ui); color: var(--text); }
 .cert-fp { font: 400 11.5px/1.6 var(--font-mono); color: var(--muted); margin-top: 8px; word-break: break-all; }
@@ -687,8 +754,8 @@ input, textarea, select { font-family: inherit; }
   font: 600 11px var(--font-ui);
   padding: 3px 9px; border-radius: var(--r-pill); flex: none;
 }
-.cert-status.trusted { color: var(--accent); background: rgba(62,181,109,.10); }
-.cert-status.untrusted { color: var(--c-amber); background: rgba(192,138,74,.12); }
+.cert-status.trusted { color: var(--accent); background: rgba(var(--accent-rgb),.10); }
+.cert-status.untrusted { color: var(--c-amber); background: rgba(var(--amber-rgb),.12); }
 .cert-actions { display: flex; gap: 9px; flex-wrap: wrap; }
 .cert-meta { display: flex; flex-direction: column; gap: 10px; }
 .cert-meta .k { font: 600 10.5px var(--font-ui); letter-spacing: .09em; text-transform: uppercase; color: var(--faint); margin-bottom: 4px; }
@@ -705,7 +772,7 @@ input, textarea, select { font-family: inherit; }
   height: 30px; flex: none;
   display: flex; align-items: center; gap: 14px;
   padding: 0 24px;
-  background: rgba(255,255,255,.6); border-top: 1px solid var(--border);
+  background: rgba(var(--surface-rgb),.6); border-top: 1px solid var(--border);
   font: 400 11px var(--font-mono); color: var(--muted);
 }
 .statusbar .live { display: flex; align-items: center; gap: 6px; }
@@ -723,7 +790,7 @@ input, textarea, select { font-family: inherit; }
 
 .palette {
   position: absolute; top: 88px; left: 50%; transform: translateX(-50%);
-  width: 540px; background: rgba(255,255,255,.92); backdrop-filter: blur(16px);
+  width: 540px; background: rgba(var(--surface-rgb),.92); backdrop-filter: blur(16px);
   border: 1px solid var(--border2);
   border-radius: var(--r-card); box-shadow: var(--e-lg); overflow: hidden;
   z-index: 51; animation: novapop .16s var(--ease);
@@ -734,14 +801,14 @@ input, textarea, select { font-family: inherit; }
   flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text);
   font: 400 13px var(--font-ui);
 }
-.palette-input .esc { font: 500 10.5px var(--font-mono); color: var(--muted); background: rgba(27,26,61,.05); border-radius: 5px; padding: 2px 5px; }
+.palette-input .esc { font: 500 10.5px var(--font-mono); color: var(--muted); background: rgba(var(--ink-rgb),.05); border-radius: 5px; padding: 2px 5px; }
 .palette-list { max-height: 300px; overflow-y: auto; padding: 6px; }
 .palette-empty { padding: 22px 12px; text-align: center; color: var(--faint); font: 400 12.5px var(--font-ui); }
 .palette-item {
   display: flex; align-items: center; gap: 10px; padding: 9px 11px;
   border-radius: var(--r-tag); cursor: pointer; color: var(--text); width: 100%; text-align: left;
 }
-.palette-item.active { background: rgba(62,181,109,.10); }
+.palette-item.active { background: rgba(var(--accent-rgb),.10); }
 .palette-item .picon { display: flex; width: 15px; color: var(--muted); }
 .palette-item.active .picon { color: var(--accent); }
 .palette-item .plabel { flex: 1; font: 500 12.5px var(--font-ui); }
@@ -819,7 +886,7 @@ input, textarea, select { font-family: inherit; }
   font: 500 11.5px var(--font-ui); white-space: nowrap;
 }
 .ob-pip:hover { color: var(--text2); }
-.ob-pip.active { background: rgba(62,181,109,.10); color: var(--text); }
+.ob-pip.active { background: rgba(var(--accent-rgb),.10); color: var(--text); }
 .ob-pip-mark {
   display: flex; align-items: center; justify-content: center; flex: none;
   width: 18px; height: 18px; border-radius: var(--r-pill);
@@ -828,7 +895,7 @@ input, textarea, select { font-family: inherit; }
 }
 .ob-pip.active .ob-pip-mark { border-color: var(--accent); color: var(--accent); }
 /* Done is the one state that fills — green marks the thing that happened. */
-.ob-pip.done .ob-pip-mark { background: var(--accent); border-color: var(--accent); color: #fff; }
+.ob-pip.done .ob-pip-mark { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .ob-pip-label { overflow: hidden; text-overflow: ellipsis; }
 
 /* A fixed height, not a minimum: the four steps carry different amounts of prose,
@@ -841,7 +908,7 @@ input, textarea, select { font-family: inherit; }
   width: 44px; height: 44px; border-radius: var(--r-field);
   border: 1px solid var(--border); background: var(--input); color: var(--muted);
 }
-.ob-icon.done { border-color: rgba(62,181,109,.32); background: rgba(62,181,109,.10); color: var(--accent); }
+.ob-icon.done { border-color: rgba(var(--accent-rgb),.32); background: rgba(var(--accent-rgb),.10); color: var(--accent); }
 .ob-copy { min-width: 0; }
 .ob-title { font: 600 14.5px var(--font-ui); color: var(--text); margin-bottom: 5px; }
 .ob-state { display: flex; align-items: center; gap: 8px; font: 400 12.5px var(--font-ui); color: var(--text2); }
@@ -859,13 +926,13 @@ input, textarea, select { font-family: inherit; }
    control it points at stays clickable */
 .coach {
   position: absolute; z-index: 55; width: 264px;
-  background: var(--card); border: 1px solid rgba(62,181,109,.35);
+  background: var(--card); border: 1px solid rgba(var(--accent-rgb),.35);
   border-radius: var(--r-card); box-shadow: var(--e-pop);
   padding: 13px 15px 11px; animation: novaflow .22s var(--ease);
 }
 .coach-arrow {
   position: absolute; width: 10px; height: 10px; background: var(--card);
-  border-left: 1px solid rgba(62,181,109,.35); border-top: 1px solid rgba(62,181,109,.35);
+  border-left: 1px solid rgba(var(--accent-rgb),.35); border-top: 1px solid rgba(var(--accent-rgb),.35);
 }
 .coach.below .coach-arrow { top: -6px; left: 22px; transform: rotate(45deg); }
 .coach.right .coach-arrow { left: -6px; top: 20px; transform: rotate(-45deg); }
@@ -875,7 +942,7 @@ input, textarea, select { font-family: inherit; }
   padding: 4px 12px; border-radius: var(--r-pill); cursor: pointer;
   font: 600 11.5px var(--font-ui); color: var(--accent);
 }
-.coach-btn:hover { background: rgba(62,181,109,.10); color: var(--accent-hover); }
+.coach-btn:hover { background: rgba(var(--accent-rgb),.10); color: var(--accent-hover); }
 
 /* crash screen — the error boundary's fallback. Deliberately plain: it renders
    when the design system's own tree has already failed once. */
@@ -900,16 +967,16 @@ input, textarea, select { font-family: inherit; }
 /* toast */
 .toast {
   position: absolute; bottom: 48px; left: 50%; transform: translateX(-50%);
-  background: var(--card); border: 1px solid rgba(62,181,109,.35); color: var(--text);
+  background: var(--card); border: 1px solid rgba(var(--accent-rgb),.35); color: var(--text);
   font: 500 12.5px var(--font-ui);
-  padding: 14px 16px; border-radius: 14px; box-shadow: 0 10px 28px rgba(27,26,61,.12);
+  padding: 14px 16px; border-radius: 14px; box-shadow: 0 10px 28px rgba(var(--shadow-rgb),.12);
   z-index: 60; display: flex; align-items: center; gap: 11px; animation: novaflow .2s var(--ease);
   max-width: min(520px, calc(100vw - 48px));
 }
 .toast .mark { color: var(--accent); display: flex; flex: none; }
 /* An error borrows the red the status column already uses for 5xx, so the two
    places the app reports a failure agree on what failure looks like. */
-.toast.error { border-color: rgba(168,91,94,.4); }
+.toast.error { border-color: rgba(var(--red-rgb),.4); }
 .toast.error .mark { color: var(--c-red-deep); }
 
 /* load-the-rest affordance under a truncated body preview */
@@ -962,7 +1029,7 @@ input, textarea, select { font-family: inherit; }
   /* Width comes from the divider; this is the first-paint fallback. */
   width: var(--tree-w); flex: none;
   display: flex; flex-direction: column; min-height: 0;
-  background: rgba(255,255,255,.66);
+  background: rgba(var(--surface-rgb),.66);
   border-right: 1px solid var(--border);
 }
 .tree-body { flex: 1; overflow-y: auto; min-height: 0; padding: 14px 10px 10px; }
@@ -986,7 +1053,7 @@ input, textarea, select { font-family: inherit; }
 /* Selection is the accent, but as a tint plus a hairline rather than a fill:
    the tree is a permanent surface, and a solid green row would shout. */
 .tree-row.on {
-  background: #fff; border: 1px solid rgba(62,181,109,.28);
+  background: var(--card); border: 1px solid rgba(var(--accent-rgb),.28);
   color: var(--accent); padding: 6px 8px;
 }
 .tree-row.indent { padding-left: 8px; }
@@ -1025,7 +1092,7 @@ input, textarea, select { font-family: inherit; }
   border-radius: var(--r-field); background: var(--input); border: 1px solid var(--border);
 }
 .fbar-search:focus-within {
-  border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12);
+  border-color: rgba(var(--accent-rgb),.45); box-shadow: 0 0 0 3px rgba(var(--accent-rgb),.12);
 }
 .fbar-search .mag, .fbar-search .clear { display: flex; flex: none; color: var(--faint); }
 .fbar-search .clear { cursor: pointer; color: var(--muted); }
@@ -1043,14 +1110,14 @@ input, textarea, select { font-family: inherit; }
   font: 500 11.5px var(--font-ui); cursor: pointer; white-space: nowrap;
 }
 .fbar-search .build:hover { color: var(--text2); background: var(--hover); }
-.fbar-search .build.on { color: var(--accent); border-color: rgba(62,181,109,.32); background: rgba(62,181,109,.08); }
+.fbar-search .build.on { color: var(--accent); border-color: rgba(var(--accent-rgb),.32); background: rgba(var(--accent-rgb),.08); }
 .fbar-search .reset:hover, .fbar-search .save:hover { color: var(--accent-hover); }
 
 /* A saved filter is a chip among the chips, with its own way out. */
 .fchip.saved { display: inline-flex; align-items: center; gap: 6px; padding-right: 6px; }
 .fchip.saved .x { display: flex; color: var(--faint); }
 .fchip.saved .x:hover { color: var(--c-red-deep); }
-.fchip.saved:hover { border-color: rgba(27,26,61,.24); }
+.fchip.saved:hover { border-color: rgba(var(--ink-rgb),.24); }
 
 /* Groups, not a single row: the eyebrow is what says which axis a chip is on,
    and that is the whole reason the rows are split (design.md §4.1). */
@@ -1101,14 +1168,14 @@ input, textarea, select { font-family: inherit; }
   border-left: 2px solid transparent; border-bottom: 1px solid var(--bsoft);
   /* No entry animation: rows mount as they scroll into view (design.md §7). */
 }
-.ft-row.even { background: rgba(255,255,255,.72); }
+.ft-row.even { background: rgba(var(--surface-rgb),.72); }
 .ft-row.odd { background: var(--row-alt); }
 .ft-row:hover { background: var(--hover); }
-.ft-row.sel { border-left-color: var(--accent); background: rgba(62,181,109,.11); }
+.ft-row.sel { border-left-color: var(--accent); background: rgba(var(--accent-rgb),.11); }
 /* Marked rows are a *set*, so they read as a wash rather than as the one row
    the inspector is showing: ⌘-click adds to a batch, it does not move focus. */
-.ft-row.marked { background: rgba(140,120,243,.13); }
-.ft-row.marked.sel { background: rgba(62,181,109,.16); border-left-color: var(--c-indigo); }
+.ft-row.marked { background: rgba(var(--indigo-rgb),.13); }
+.ft-row.marked.sel { background: rgba(var(--accent-rgb),.16); border-left-color: var(--c-indigo); }
 /* A flow still in flight has no status and no duration yet; dim the row rather
    than leaving it looking like a completed one with holes in it. */
 .ft-row.pending { color: var(--muted); }
@@ -1174,7 +1241,7 @@ input, textarea, select { font-family: inherit; }
      the table's floor rather than the table yielding to it. */
   flex: 0 1 auto; min-height: 96px;
   display: flex; flex-direction: column;
-  border-top: 1px solid var(--border); background: rgba(255,255,255,.9);
+  border-top: 1px solid var(--border); background: rgba(var(--surface-rgb),.9);
 }
 .insp-strip .detail-empty { flex: 1; }
 
@@ -1193,7 +1260,7 @@ input, textarea, select { font-family: inherit; }
 .summary-bar {
   flex: none; display: flex; align-items: center; gap: 10px;
   height: 38px; padding: 0 16px;
-  background: rgba(255,255,255,.8);
+  background: rgba(var(--surface-rgb),.8);
   border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
 }
 .summary-bar .url {
@@ -1211,7 +1278,7 @@ input, textarea, select { font-family: inherit; }
   cursor: pointer;
 }
 .summary-bar .act:hover { border-color: var(--accent); color: var(--accent-hover); }
-.summary-bar .act.on { border-color: var(--accent); color: var(--accent); background: rgba(62,181,109,.10); }
+.summary-bar .act.on { border-color: var(--accent); color: var(--accent); background: rgba(var(--accent-rgb),.10); }
 /* One line, and only as wide as it needs: the URL beside it is the thing being
    read, and a note is a margin scribble. */
 .summary-bar .note {
@@ -1220,7 +1287,7 @@ input, textarea, select { font-family: inherit; }
   background: var(--input); outline: none;
   font: 400 11.5px var(--font-ui); color: var(--text);
 }
-.summary-bar .note:focus { border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12); }
+.summary-bar .note:focus { border-color: rgba(var(--accent-rgb),.45); box-shadow: 0 0 0 3px rgba(var(--accent-rgb),.12); }
 
 .insp { flex: 1; display: flex; min-height: 0; }
 .insp-pane {
@@ -1233,7 +1300,7 @@ input, textarea, select { font-family: inherit; }
 
 .insp-head {
   flex: none; display: flex; align-items: center; gap: 12px;
-  padding: 8px 14px; background: rgba(243,243,248,.7);
+  padding: 8px 14px; background: rgba(var(--surface-rgb),.7);
   border-bottom: 1px solid var(--border);
 }
 .insp-head .title { flex: none; font: 600 12.5px var(--font-ui); color: var(--text); }
@@ -1272,7 +1339,7 @@ input, textarea, select { font-family: inherit; }
 /* Raw is reconstructed, and says so rather than implying wire fidelity. */
 .raw-note {
   font: 400 10.5px var(--font-ui); color: var(--c-amber);
-  background: rgba(192,138,74,.08); border-radius: var(--r-tag);
+  background: rgba(var(--amber-rgb),.08); border-radius: var(--r-tag);
   padding: 6px 9px; margin-bottom: 10px;
 }
 
@@ -1300,7 +1367,7 @@ input, textarea, select { font-family: inherit; }
   height: 34px; padding: 0 12px; border-radius: var(--r-field);
   background: var(--input); border: 1px solid var(--border);
 }
-.sc-search:focus-within { border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12); }
+.sc-search:focus-within { border-color: rgba(var(--accent-rgb),.45); box-shadow: 0 0 0 3px rgba(var(--accent-rgb),.12); }
 .sc-search .mag { display: flex; flex: none; color: var(--faint); }
 .sc-search input {
   flex: 1; min-width: 0; background: transparent; border: none; outline: none;
@@ -1374,7 +1441,7 @@ input, textarea, select { font-family: inherit; }
   width: 16px; height: 16px; flex: none; border-radius: 5px;
   border: 1px solid var(--border2); background: var(--card);
   display: flex; align-items: center; justify-content: center;
-  color: #fff; cursor: pointer;
+  color: var(--accent-ink); cursor: pointer;
 }
 .fb-check.on { background: var(--accent); border-color: var(--accent); }
 
@@ -1385,7 +1452,7 @@ input, textarea, select { font-family: inherit; }
 }
 .fb-sel { flex: none; padding: 0 6px; cursor: pointer; }
 .fb-val { flex: 1; min-width: 0; padding: 0 9px; font-family: var(--font-mono); }
-.fb-val:focus, .fb-sel:focus { border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12); }
+.fb-val:focus, .fb-sel:focus { border-color: rgba(var(--accent-rgb),.45); box-shadow: 0 0 0 3px rgba(var(--accent-rgb),.12); }
 .fb-x { display: flex; flex: none; color: var(--faint); cursor: pointer; }
 .fb-x:hover { color: var(--c-red-deep); }
 
@@ -1395,7 +1462,7 @@ input, textarea, select { font-family: inherit; }
   border: 1px dashed var(--border2); color: var(--muted);
   font: 500 11.5px var(--font-ui); cursor: pointer;
 }
-.fb-add:hover { color: var(--accent); border-color: rgba(62,181,109,.45); }
+.fb-add:hover { color: var(--accent); border-color: rgba(var(--accent-rgb),.45); }
 .fb-add .kbd { font-size: 10px; }
 
 
@@ -1441,7 +1508,7 @@ input, textarea, select { font-family: inherit; }
   font: 500 11.5px var(--font-ui); color: var(--muted);
 }
 .fb-toggle:hover, .fb-act:hover { color: var(--text2); background: var(--hover); }
-.fb-toggle.on { color: var(--accent); border-color: rgba(62,181,109,.32); background: rgba(62,181,109,.08); }
+.fb-toggle.on { color: var(--accent); border-color: rgba(var(--accent-rgb),.32); background: rgba(var(--accent-rgb),.08); }
 .fb-act.accent { color: var(--accent); }
 .fb-act.accent:hover { color: var(--accent-hover); }
 
@@ -1451,12 +1518,12 @@ input, textarea, select { font-family: inherit; }
 .cm-btn {
   display: flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px 0 10px;
   border-radius: var(--r-pill); border: 1px solid var(--border2);
-  background: rgba(255,255,255,.7); cursor: pointer; white-space: nowrap;
+  background: rgba(var(--surface-rgb),.7); cursor: pointer; white-space: nowrap;
 }
-.cm-btn:hover { border-color: rgba(27,26,61,.24); }
+.cm-btn:hover { border-color: rgba(var(--ink-rgb),.24); }
 /* An axis with a selection is accent-tinted rather than solid: several of these
    sit in a row, and four solid green buttons would be a wall. */
-.cm-btn.on { border-color: rgba(62,181,109,.42); background: rgba(62,181,109,.08); }
+.cm-btn.on { border-color: rgba(var(--accent-rgb),.42); background: rgba(var(--accent-rgb),.08); }
 .cm-label {
   font: 600 10px var(--font-ui); letter-spacing: .09em; text-transform: uppercase;
   color: var(--faint);
@@ -1492,7 +1559,7 @@ input, textarea, select { font-family: inherit; }
   margin-top: 4px; padding: 7px 8px; border-top: 1px solid var(--border);
   font: 500 11.5px var(--font-ui); color: var(--c-red-deep); cursor: pointer;
 }
-.cm-clear:hover { background: rgba(216,134,137,.08); }
+.cm-clear:hover { background: rgba(var(--red-rgb),.08); }
 
 
 /* --------------------------- save-filter dialog --------------------------- */
@@ -1510,7 +1577,7 @@ input, textarea, select { font-family: inherit; }
   background: var(--input); outline: none;
   font: 400 13px var(--font-ui); color: var(--text);
 }
-.sf-body input:focus { border-color: rgba(62,181,109,.45); box-shadow: 0 0 0 3px rgba(62,181,109,.12); }
+.sf-body input:focus { border-color: rgba(var(--accent-rgb),.45); box-shadow: 0 0 0 3px rgba(var(--accent-rgb),.12); }
 
 /* What is being saved. The name is free text, so without this the dialog asks
    you to name something it never shows you. */
@@ -1522,7 +1589,7 @@ input, textarea, select { font-family: inherit; }
 .sf-what .v { font: 400 12px var(--font-mono); color: var(--text2); word-break: break-word; }
 .sf-note {
   margin-top: 12px; padding: 8px 10px; border-radius: var(--r-tag);
-  background: rgba(192,138,74,.10); color: var(--c-amber);
+  background: rgba(var(--amber-rgb),.10); color: var(--c-amber);
   font: 400 11.5px var(--font-ui);
 }
 .sf-foot {

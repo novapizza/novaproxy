@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { useEffect, useState } from "react";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
-import "@fontsource-variable/petrona";
+import "@fontsource-variable/space-grotesk";
 import "./styles.css";
 import type { Flow } from "./api";
 import { FlowsSection } from "./flows/FlowsSection";
