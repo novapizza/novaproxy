@@ -1,9 +1,10 @@
 # NovaProxy — Design Reference
 
-> The visual language the app is built from, imported from the Claude Design project
-> *NovaProxy Design System* (`NovaProxy Design System.dc.html` for the tokens and parts,
-> `NovaProxy-standalone-src.dc.html` for the screens). This documents the system so any
-> session can extend the UI consistently. `src/styles.css` is the implementation.
+> The visual language the app is built from: the Nova Suite tokens as the canvas
+> *NovaProxy Redesign* applies them (board 01 Flows on Mac, 02 NovaProxy Dark, 03 Windows,
+> 04–15 inspector, MCP, filters, palette, rules, breakpoints, scripts, certificate, setup and
+> empty states). This documents the system so any session can extend the UI consistently.
+> `src/styles.css` is the implementation.
 
 NovaProxy is a **desktop HTTPS-debugging proxy** (Charles/Proxyman-style) — it captures,
 inspects, and manipulates live network traffic. The window is a left icon rail, a header bar,
@@ -13,22 +14,25 @@ one of five rail-switched sections, and a status bar, plus a command palette and
 
 ## 1. Look & Feel
 
-- **Tone:** Professional developer tool, but light and calm rather than dense and dark.
-  Depth comes from white panels floating on a mint wash with hairline borders — never from
-  heavy strokes or dark surfaces.
-- **One theme.** Light only. There is no `data-nova-theme` switch and no user-configurable
-  accent; the green below *is* the accent. (Both existed before the redesign and were removed
-  deliberately — do not reintroduce a second palette without redoing the whole system.)
+- **Tone:** Professional developer tool, light and calm rather than dense and dark. Depth
+  comes from Mist panels beside white work areas with hairline borders, never from heavy
+  strokes, glass blur or shadows on resting controls.
+- **Two themes, light by default.** NovaProxy Dark is opt-in from the sun/moon button at the
+  foot of the rail and is stored as the `theme` pref. Both themes use the same token names;
+  dark redefines them under `:root[data-theme="dark"]`. `index.html` applies the saved
+  theme before first paint so a dark window does not flash white. There is still no
+  user-configurable accent.
 - **Typography — three families, three jobs:**
-  - **Petrona** (`--font-display`) — page titles only. Serif, 400 weight, negative tracking.
-  - **Inter** (`--font-ui`) — everything a human wrote: labels, buttons, prose.
-  - **JetBrains Mono** (`--font-mono`) — everything a machine wrote: URLs, headers, hashes,
-    durations, status codes, code. If the proxy captured it, it is mono.
+  - **Space Grotesk** (`--font-display`): page titles, the setup dialog, empty-state headlines.
+  - **Inter** (`--font-ui`): everything a human wrote: labels, buttons, prose.
+  - **JetBrains Mono** (`--font-mono`): everything a machine wrote: URLs, headers, hashes,
+    durations, status codes, code, the header subtitle and the status bar. If the proxy
+    captured it, it is mono.
   All three are bundled locally via `@fontsource-variable/*` and imported in `src/main.tsx`,
   so the app keeps its typography with no network.
-- **Green means live.** The accent is for the thing that acts — active rail item, primary
-  button, toggle-on, active tab underline, focus ring, row selection. It never fills a
-  whole surface.
+- **Green means live.** NovaProxy green (700 `#237A46` in light, 300 `#9BE3B4` in dark) is the
+  only accent: active rail item (as a 10% tint), primary button, toggle-on, chip-on, active
+  tab underline, focus ring, row selection. It never fills a whole surface.
 - **Icons:** Lucide at **1.6px stroke**, via `src/icons.tsx`. That module owns the
   name→glyph map and the stroke weight; import `Icon` from there rather than reaching into
   `lucide-react` directly.
@@ -37,51 +41,49 @@ one of five rail-switched sections, and a status bar, plus a command palette and
 
 ## 2. Tokens
 
-All of them live in one `.nova` block at the top of `src/styles.css`. Reference the variable,
-never the literal.
+All of them live in the `.nova` block at the top of `src/styles.css` (light) and its
+`:root[data-theme="dark"] .nova` twin. Reference the variable, never the literal.
 
 ### Colour
-| Token | Value | Role |
-|---|---|---|
-| `--accent` / `--accent-hover` | `#3EB56D` / `#2E9A59` | Primary action; hover & press |
-| `--mint` | `#9BE3B4` | Gradient blooms, brandmark |
-| `--bg` | `#F2F6F3` | Flat canvas base |
-| `--wash` | two mint radials over `#F8FBF8 → #EFF5F1` | The page background itself |
-| `--panel` | `rgba(255,255,255,.62)` | Rail and bars (with `backdrop-filter: blur(18px)`) |
-| `--list` | `rgba(255,255,255,.82)` | Flow-list panel |
-| `--card` | `#FFFFFF` | Cards, modals, detail panel |
-| `--input` | `#F7FAF8` | Inset fields, code surfaces, table key cells |
-| `--hover` | `rgba(27,26,61,.05)` | Hover wash |
-| `--row-alt` | `rgba(242,246,243,.55)` | Zebra row in the flows table |
-| `--thead` | `rgba(242,246,243,.96)` | Sticky table header, with `blur(10px)` |
-| `--border` / `--border2` / `--bsoft` | `rgba(27,26,61,.07)` / `.12` / `.045` | Hairline, interactive, inner row |
-| `--text` / `--text2` / `--muted` / `--faint` | `#1B1A3D` / `#3B3A5C` / `#6B6A86` / `#A9A8BE` | Four-level ink hierarchy |
-| `--shadow` / `--overlay` | `rgba(27,26,61,.10)` / `.28` | Modal shadow, scrim |
-
-**Semantics.** Green, salmon and violet come from the design. Blue, cyan, amber and pink are
-**derived** — the design ships no equivalents, and the app needs seven for methods, chips,
-timing phases and cert states. They are pitched in the same low-chroma, ink-leaning register;
-if the design system ever specifies them, replace these values.
-
-| Token | Value | Designed? | Used for |
+| Token | Light | Dark | Role |
 |---|---|---|---|
-| `--c-green` / `--c-green-deep` | `#3EB56D` / `#2E9A59` | yes | 2xx, GET/POST, download phase |
-| `--c-violet` | `#7C5CE0` | yes | 3xx, PATCH, MCP, keywords |
-| `--c-indigo` | `#8C78F3` | yes | WebSocket, MCP badge, gradients |
-| `--c-red` / `--c-red-deep` | `#D88689` / `#A85B5E` | yes | 4xx / 5xx, PUT/DELETE, destructive |
-| `--c-blue` | `#5E86C9` | derived | 1xx, TCP connect, plaintext chip |
-| `--c-cyan` | `#3FA9A0` | derived | TLS handshake, resent |
-| `--c-amber` | `#C08A4A` | derived | Server wait, armed breakpoint, untrusted CA |
-| `--c-pink` | `#C77BB4` | derived | Spare semantic slot |
+| `--accent` / `--accent-hover` | `#237A46` / `#1C6339` | `#9BE3B4` / `#B9ECCA` | Primary action; hover |
+| `--accent-ink` | `#FFFFFF` | `#0B0A10` | Text on an accent fill |
+| `--bg` / `--list` | `#FFFFFF` | `#0B0A10` | Window, flows table |
+| `--panel` / `--thead` | `#F6F5FA` (Mist) | `#100E17` | Rail, tree, bars, table head, pane heads |
+| `--card` | `#FFFFFF` | `#16131F` | Cards, modals |
+| `--input` / `--code-bg` | `#EFEDF6` | `#1C1830` | Fields, code surfaces |
+| `--hover` | ink 4.5% | white 5% | Hover wash |
+| `--row-alt` | ink 2.2% | white 1.8% | Zebra row |
+| `--border` / `--border2` / `--bsoft` | ink 9% / 16% / 5% | white 8% / 14% / 5% | Hairline, interactive, inner row |
+| `--text` / `--text2` / `--muted` / `--faint` | `#1C1830` / `#3B3A5C` / `#5B5672` / `#8A85A0` | `#EDEAF7` / `#CFC9E4` / `#A9A3BF` / `#6B6585` | Four-level ink |
+| `--overlay` | ink 28% | `rgba(7,6,11,.62)` | Scrim |
+
+Tints are written `rgba(var(--accent-rgb), .10)` and the like (`--ink-rgb`, `--shadow-rgb`,
+`--surface-rgb`, `--red-rgb`, `--amber-rgb`, `--indigo-rgb`), so both themes reach them.
+`color-mix()` would be shorter but needs a newer WebKit than macOS 11 ships.
+
+**Semantics** are the Nova app hues: 700 in light, 300 in dark.
+
+| Token | Light | Dark | Used for |
+|---|---|---|---|
+| `--c-green` | `#237A46` | `#9BE3B4` | 2xx, GET/POST, download phase |
+| `--c-violet` | `#6D28D9` | `#C4B5FD` | 3xx, PATCH, MCP, keywords |
+| `--c-indigo` | `#4338CA` | `#A5B4FC` | WebSocket, marked rows |
+| `--c-orange` | `#C2410C` | `#FDBA74` | 4xx, PUT |
+| `--c-red` / `--c-red-deep` | `#B91C1C` / `#991B1B` | `#FCA5A5` / `#F87171` | 5xx, DELETE, destructive, recording |
+| `--c-blue` | `#1D4ED8` | `#93C5FD` | 1xx, TCP connect, plaintext chip |
+| `--c-cyan` | `#0E7490` | `#67E8F9` | TLS handshake, resent, GraphQL |
+| `--c-amber` | `#B45309` | `#FCD34D` | Server wait, armed breakpoint, untrusted CA |
+| `--c-pink` | `#BE185D` | `#F9A8D4` | Spare semantic slot |
 
 ### Scale
 ```
-radius     --r-tag 8  --r-field 12  --r-card 16  --r-panel 20  --r-pill 999
-elevation  --e-xs 0 2px 6px  ·  --e-sm 0 6px 18px  ·  --e-md 0 8px 24px  ·  --e-lg 0 24px 60px
-           --e-pop 0 14px 34px (dropdown panels), all rgba(27,26,61,·),
-           plus --e-accent for green buttons
-table      --row-h 34  --thead-h 32  --tree-w 252  --table-min 1140
-spacing    4 icon→label · 8 chip gaps · 12 card gaps · 24 panel padding · 48 section breaks
+radius     --r-tag 6  --r-field 11  --r-card 18  --r-panel 20  --r-pill 999  (rail items 14)
+elevation  --e-xs · --e-sm · --e-md · --e-lg · --e-pop, all rgba(var(--shadow-rgb),·);
+           only floating things (menus, modals, toasts) cast a shadow
+table      --row-h 32  --thead-h 32  --tree-w 252  --table-min 1140
+spacing    4 icon→label · 8 chip gaps · 12 card gaps · 16–20 bar padding · 48 section breaks
 motion     --t-micro 120ms · --t-base 200ms · --t-page 360ms, all on --ease
            cubic-bezier(.2,.8,.2,1)
 ```
@@ -89,17 +91,17 @@ motion     --t-micro 120ms · --t-base 200ms · --t-page 360ms, all on --ease
 ### Type ramp
 | Role | Spec |
 |---|---|
-| Page title | Petrona 400 · 38px · −0.018em |
-| Section head | Petrona 400 · 27px · −0.015em |
+| Page title | Space Grotesk 600 · 34px · −0.03em |
+| Empty-state headline | Space Grotesk 600 · 22px · −0.02em |
 | Body | Inter 400 · 14/1.6 |
-| UI label | Inter 500 · 13px |
-| Eyebrow | Inter 600 · 11px · +0.09–0.11em · uppercase |
+| UI label | Inter 500 · 12.5px |
+| Eyebrow | Inter 600 · 10.5px · +0.06–0.09em · uppercase |
 | Data | JetBrains Mono 400 · 12px |
 
 ### Scrollbars
 ```css
 ::-webkit-scrollbar{width:10px;height:10px}
-::-webkit-scrollbar-thumb{background:rgba(27,26,61,.16);border-radius:999px;border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb{background:rgba(127,122,150,.32);border-radius:999px;border:3px solid transparent;background-clip:content-box}
 ::-webkit-scrollbar-track{background:transparent}
 ```
 
@@ -112,36 +114,36 @@ window chrome, and the design does not double it.
 
 ```
 ┌──────┬───────────────────────────────────────────────────────────────┐
-│ rail │  header (62px): title/sub │ Recording │ Clear │ … │ ⌘P │ proxy │
-│ 78px ├────────────┬──────────────────────────────────────────────────┤
+│ rail │  header (58px): title/sub │ Recording │ Clear │ … │ ⌘P │ proxy │
+│ 74px ├────────────┬──────────────────────────────────────────────────┤
 │      │ tree 252px │ Proto / Type / Status chip groups   Reset filters │
 │  ≈   │  Favorites ├──────────────────────────────────────────────────┤
-│  ⑂   │  All       │ table — sticky head 32px, 34px rows, zebra       │
+│  ⑂   │  All       │ table — sticky head 32px, 32px rows, zebra       │
 │  ⏸   │  Apps      ├──────────────────────────────────────────────────┤
 │  {}   │  Domains   │ POST · 204 · url                 N rows · 1 sel  │
 │  ⛨   │            ├───────────────────────┬──────────────────────────┤
 │  ⚙   │  ⌘⇧F       │ Request  Header Query │ Response  Header Body …  │
 ├──────┴────────────┴───────────────────────┴──────────────────────────┤
-│ ● recording  N flows · M hosts  Auto Select   ↑17 ↓4 KB/s  CA  host  │  30px
+│ ● recording  N flows · M hosts  Auto Select   ↑17 ↓4 KB/s  CA  host  │  28px
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### Rail (78px)
-`--panel` + blur, right hairline. The 32px brandmark on top, then five items —
-**Flows, Rules, Break, Scripts, Certs** — each a 58px-wide, 16px-radius stack of a 19px
-Lucide icon over a 10px/600 label. Active item is a **white pill** with `--e-sm` and a
-hairline border, icon and label in `--accent`; inactive is `--muted` on transparent, hover
-`--hover`. A spacer pushes the settings gear to the bottom.
+### Rail (74px)
+`--panel`, right hairline. The 36px app icon on top, then five items, **Flows, Rules,
+Break, Scripts, Certs**, each a 58×54px, 14px-radius stack of a 19px Lucide icon over a
+10px/600 label. The active item is a 10% accent tint with icon and label in `--accent`;
+inactive is `--faint` on transparent, hover `--hover`. A spacer pushes the theme switch
+(sun/moon) and the settings gear to the bottom.
 
-### Header (62px)
+### Header (58px)
 Bottom hairline, no fill. Left: the section title (Inter 600/14.5px) over
-`default workspace · host:port`. Then a hairline divider and pill buttons —
-**Recording/Paused** (salmon tint + pulsing dot when live) and **Clear**. Right:
-**Commands** with a `⌘P` keycap, then the **System proxy** switch. The app filter is not
-here — it is a row in the Flows scope tree (§4.1).
+`default workspace · host:port` in 11px mono `--faint`. Then a hairline divider and 30px
+outline pills: **Recording/Paused** (red tint + pulsing dot when live) and **Clear**.
+Right: **Commands** with a `⌘P` keycap, then the **System proxy** switch. The app filter is
+not here; it is a row in the Flows scope tree (§4.1).
 
-### Status bar (30px)
-`rgba(255,255,255,.6)`, top hairline, 11px mono `--muted`. Left: a state pip (pulsing salmon
+### Status bar (28px)
+`--panel`, top hairline, 11px mono `--muted`. Left: a state pip (pulsing red
 when recording) and `recording | paused | stopped`, then `N flows · M hosts`, then the
 **Auto Select** toggle (follow-tail: keep the newest row selected). Right: throughput
 (`↑ 17 KB/s ↓ 4 KB/s`, from `src/stats.ts`), `upstream: direct`, CA trust (green/amber),
@@ -213,11 +215,11 @@ is visible without switching to the Pinned scope.
 
 > `--table-min` (1140px) is what the full set needs; the **default set is seven** (`#`, URL,
 > Client, Method, Status, Duration, SSL) and needs 746. The window's `minWidth` is 940, the
-> rail takes 78 and the tree 252 — so the default set fits with the tree hidden (862px) and
-> the table scrolls sideways with it open (610px). That is the intended answer at that size:
+> rail takes 74 and the tree 252 — so the default set fits with the tree hidden (866px) and
+> the table scrolls sideways with it open (614px). That is the intended answer at that size:
 > **columns drop or the table scrolls; they never squeeze below their content.**
 
-Row states: **selected** takes a 2px accent left border over `rgba(62,181,109,.11)`; hover is
+Row states: **selected** takes a 2px accent left border over `accent .09`; hover is
 `--hover`; **in flight** shows `···` in `--faint` for status, an empty duration and a pulsing
 pip; **error** puts pip and status in `--c-red-deep`; **tunneled** shows host only, and the
 body panes say why; **resent** carries a `--c-cyan` marker; **MCP** a violet `MCP` tag after
@@ -271,7 +273,7 @@ Every chord in this section is defined in `issues/0003-keyboard-shortcuts.md` §
 tree footer keycap and the Auto Select label are the only two places the UI spells one out.
 
 ### 4.2 Rules — centred column
-Petrona title, a prose subtitle with mono spans in accent, and a green **New rule** pill.
+Space Grotesk title, a prose subtitle with mono spans in accent, and a green **New rule** pill.
 Each rule is an 18px-radius `rgba(255,255,255,.86)` card: a head row of enable switch, mono
 uppercase kind tag, name, and a trash icon; then a two-column body of uppercase field label
 over an `--input` field.
@@ -296,20 +298,20 @@ a hint explaining which trust domain is in play. Below it the **SSL proxying sco
 ## 5. Component patterns
 
 ### Method badge
-`min-width:42px`, radius 5px, 9.5px/500 mono, `+.05em`. Green reads, salmon mutates, violet
-is protocol traffic:
+`min-width:42px`, radius 5px, 9.5px/500 mono, `+.05em`. Green reads, orange and red
+mutate, violet patches, indigo is protocol traffic:
 
 | Method | Text | Tint |
 |---|---|---|
-| GET | `--c-green` | `rgba(62,181,109,.10)` |
-| POST | `--c-green-deep` | `rgba(62,181,109,.18)` |
-| PUT | `--c-red-deep` | `rgba(216,134,137,.16)` |
-| DELETE | `--c-red-deep` | `rgba(216,134,137,.20)` |
-| PATCH | `--c-violet` | `rgba(124,92,224,.12)` |
-| WS / other | `--c-indigo` | `rgba(140,120,243,.14)` |
+| GET | `--c-green` | accent 10% |
+| POST | `--c-green` | accent 18% |
+| PUT | `--c-orange` | orange 12% |
+| DELETE | `--c-red` | red 11% |
+| PATCH | `--c-violet` | violet 11% |
+| WS / other | `--c-indigo` | indigo 11% |
 
 ### Status scale
-`1xx` blue · `2xx` green · `3xx` violet · `4xx` salmon · `5xx`/aborted deep salmon ·
+`1xx` blue · `2xx` green · `3xx` violet · `4xx` orange · `5xx`/aborted red ·
 pending `--faint`.
 
 ### Data table
@@ -333,15 +335,15 @@ is recoverable without opening Settings.
 
 ### Menu button (filter axis)
 A pill with an uppercase eyebrow for the axis, the selection beside it, and a
-chevron; a selection **tints** the pill (`rgba(62,181,109,.08)` on a
-`rgba(62,181,109,.42)` hairline) rather than filling it, since several sit in one
+chevron; a selection **tints** the pill (`accent .08` on a
+`accent .42` hairline) rather than filling it, since several sit in one
 row. The panel is a `--card` popover with `--e-pop`, capped at 300px and
 scrolling, closed by click-outside or Escape (`src/usePopover.ts`) — not by a
 scrim, because the point is that the rows behind it stay readable while you pick.
 
 ### Toggle switch
-40×23px pill track, `rgba(27,26,61,.14)` off / `--accent` on with an accent glow. Knob is a
-17px white circle at `top/left: 3px` that `translateX(17px)` on `--t-base`.
+36×20px pill track, `ink .14` off / `--accent` on, flat. Knob is a
+16px white circle at `top/left: 2px` that `translateX(16px)` on `--t-base`.
 
 ### Chips, tags, pills
 Filter chips (`.fchip`) are pill-shaped, 11.5px/500, white-ish over a hairline; active is
@@ -354,14 +356,14 @@ this*, never *this is the one setting* — there is no `All` chip to switch back
 **Reset filters**.
 
 ### Buttons
-- **Primary** — accent pill, white text, `--e-accent`, hover `--accent-hover`, press
-  `scale(.98)`. `.red` is `#C4676B`. `.cyan` is an alias of primary: the design collapses
+- **Primary** — 34px accent pill, `--accent-ink` text, flat (no glow), hover
+  `--accent-hover`, press `scale(.98)`. `.red` is `--c-red`. `.cyan` is an alias of primary: the design collapses
   secondary-accent actions into the one green.
-- **Neutral** — white pill, `--border2` hairline, `--text2`; hover darkens the border.
+- **Neutral** — transparent pill, `--border2` hairline, `--text2`; hover darkens the border.
 
 ### Fields and focus
 Inputs sit on `--input` with an 11–12px radius. Focus is
-`border-color: rgba(62,181,109,.45)` plus `box-shadow: 0 0 0 3px rgba(62,181,109,.12)` —
+`border-color: rgba(var(--accent-rgb),.45)` plus `box-shadow: 0 0 0 3px rgba(var(--accent-rgb),.12)` —
 a ring, not a colour swap.
 
 ### Dropdown
@@ -373,41 +375,36 @@ and hand focus back, click-outside to dismiss).
 
 - **Trigger** — the search field's twin: 36px, 11px radius, `--input` on a `--border` hairline,
   12.5px/500 label that ellipsises, `chevron-down` 14px in `--muted`. Hover darkens the border
-  to `rgba(27,26,61,.22)`; **open** swaps to `--card` with a `rgba(62,181,109,.45)` border and
+  to `ink .22`; **open** swaps to `--card` with a `accent .45` border and
   rotates the chevron 180° over `--t-base`. Disabled drops to 55% opacity.
 - **Panel** — 42px below the trigger, 14px radius, `--card`, hairline, `--e-pop`; 6px padding,
   `max-height:300px` and its own scroll so a long list (every captured app) cannot outgrow the
   window.
 - **Rows** — `8px 10px`, 9px radius, 14px icon in `--muted`; hover is `--bg`. **Selected** is
-  the mint wash `rgba(62,181,109,.10)` with the icon and a trailing `check` in `--accent`.
+  an `accent .10` tint with the icon and a trailing `check` in `--accent`.
 - **Clear row** — a hairline separator, then `x` + label in `--c-red-deep` over a
   `rgba(216,134,137,.12)` hover. Rendered only when there is a filter to clear.
 
 ### Brandmark
-The mark is **Intercept Node** — a transport axis running across the tile, broken in the
-middle, with the letter **N** standing in the break. The two ends are hollow rings (client
-and server); the N is the only solid mass on the axis, because the proxy is the only point
-that actually holds the data. A four-point nova star sits on the N's right shoulder, the
-same relationship NovaPad uses, so the two icons read as one family. Everything is one
-stroke family with round caps so it sits with the Lucide set. Its gradient runs
-`--accent → --accent-hover`, with a `--mint` bloom top-right on the app tiles. The mark
-uses **no second hue**: `--c-indigo` / `--c-violet` / `--c-cyan` are semantic tokens
-(status, method, protocol phase) and never brand.
+The app icon is the Nova Suite icon family (canvas board 04, the same art as
+`NovaSuite.AppIcon` on novasuite.coding4pizza.com): a near-black tile `#13111A` shared by
+every suite app, a NovaProxy green glow in the top-left corner, a green hairline, and the
+**Intercept Node** glyph: a transport axis broken in the middle, hollow rings for client and
+server, and the **N** standing in the break in the app gradient (`#DCFCE7 → #6EDB9A →
+#2E9A59`), with the white nova star on its right shoulder.
 
-- **At or below 32px the drawing changes** — the hollow rings bleed shut and the star
-  disappears, so the wire becomes a solid tick and the N grows. `src/Brandmark.tsx` is that
-  simplified form, inline SVG so the gradient runs on tokens; the rail is its only caller,
-  at 32px. Below 24px it drops the wire too, leaving the N and the star.
-- **The app defaults to light; the app icon does not.** Dock and taskbar icons sit on the
-  user's wallpaper, not on our UI, and a white tile disappears on a light wallpaper. So
-  `.icns` / `.ico` ship the dark tile, while the light tile (`novaproxy-icon-light.svg`) is
-  the default *inside* the app — splash, About, empty state — and on the web and in docs.
-- Sources and generators live in `assets/logo/` (`build.py` holds the geometry on a 1024
-  grid; `render.py`, `icns.py`, `preview.py` cut the rasters). App-icon output is checked in
-  under `src-tauri/icons/`, and `tauri.conf.json` bundles the 32/128/128@2x/`.icns`/`.ico`
-  set. `assets/logo/README.md` documents the full ladder, the tray template rule and which
-  variant goes where. The previous mark — nova node with wire and arrow, indigo→cyan tile —
-  is kept in `assets/logo/_previous/`.
+- The tile is dark in both themes, inside the app as on the Dock: it is the app's face, not
+  a surface of the UI. `src/Brandmark.tsx` draws it inline (rail 36px, empty state 64px,
+  setup dialog 30px).
+- **At or below 32px the OS icon changes**: the rings bleed shut and the star goes, so the
+  wire becomes a solid tick and the N grows (`novaproxy-icon-small*.svg`, used by the
+  16/24/32 slots of `.ico` and `.icns`).
+- macOS uses Apple's 824/1024 grid; Windows and Linux fill about 94% of the box, because a
+  margin there reads as a small icon in the taskbar.
+- Sources and generators live in `assets/logo/` (`build.py` → `suite_tile()` holds the tile;
+  `render.py`, `icns.py`, `preview.py` cut the rasters). App-icon output is checked in under
+  `src-tauri/icons/`. `assets/logo/README.md` documents the full ladder and the tray
+  template rule. Older marks are kept in `assets/logo/_previous/`.
 
 ### Code surfaces
 `--code-bg` (`#F7FAF8`), hairline border, 14px radius, 12px mono, `line-height:1.7`,
@@ -424,7 +421,7 @@ uses **no second hue**: `--c-indigo` / `--c-violet` / `--c-cyan` are semantic to
   and **Continue** (primary).
 - **Command palette (z50/51):** a 540px `rgba(255,255,255,.92)` blurred sheet, 88px from top.
   Search icon + input + `esc` keycap; rows are a 15px icon, a 12.5px/500 label, and a mono
-  keycap, with the active row on `rgba(62,181,109,.10)` and its icon in accent.
+  keycap, with the active row on `accent .10` and its icon in accent.
 - **Settings modal (z40):** 560px, four tabs — General / Network / MCP / Getting started.
 - **Save filter (z40):** the settings shell at 440px. One text field, pre-filled
   with a short suggested name and selected, so accepting the default is still one
@@ -472,7 +469,7 @@ on every scroll.
 
 - **Green means live.** Primary green is for the thing that acts. It never fills a surface.
 - **Mono is machine text.** Anything the proxy captured is JetBrains Mono; anything we wrote
-  is Inter. Petrona is page titles and nothing else.
+  is Inter. Space Grotesk is for titles and headlines and nothing else.
 - **Contrast by surface.** White on the mint wash plus hairline borders. If something needs
   to stand out, raise it with `--e-sm`, do not darken it.
 - **Never hardcode a colour, radius, shadow or font stack.** Every one has a token; a literal
