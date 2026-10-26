@@ -422,7 +422,16 @@ server, and the **N** standing in the break in the app gradient (`#DCFCE7 → #6
 - **Command palette (z50/51):** a 540px `rgba(255,255,255,.92)` blurred sheet, 88px from top.
   Search icon + input + `esc` keycap; rows are a 15px icon, a 12.5px/500 label, and a mono
   keycap, with the active row on `accent .10` and its icon in accent.
-- **Settings modal (z40):** 560px, four tabs — General / Network / MCP / Getting started.
+- **Settings modal (z40):** 560px, three tabs — General / Network / MCP. General opens with a
+  **Setup** row that reruns the first-run setup.
+- **First-run setup (z40, board 14):** 720×520, two columns. Left, on `--panel`: the app icon
+  and "Set up NovaProxy" in Space Grotesk, then the steps as 40px rows with a 22px numbered
+  mark (accent ring when current, accent fill and a check when done). Right: an accent eyebrow
+  `Step N of M`, the step title in Space Grotesk 26px, a live status line, the blurb, a mono
+  info card (CA subject and fingerprint; proxy address), and for the system proxy step the
+  curl and `export` lines for routing one app by hand. Footer: **Skip for now** on the left,
+  **Back** and the step's action on the right. The modal's height is fixed so the buttons
+  never move; a long step scrolls. Steps and their done-ness live in `src/onboarding.ts`.
 - **Save filter (z40):** the settings shell at 440px. One text field, pre-filled
   with a short suggested name and selected, so accepting the default is still one
   keystroke; under it, the filter it will keep spelled out — the name is free

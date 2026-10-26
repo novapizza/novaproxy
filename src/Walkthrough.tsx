@@ -12,6 +12,7 @@
  */
 
 import { Brandmark } from "./Brandmark";
+import { CodeSnippet } from "./CodeSnippet";
 import type { ShowToast } from "./filter";
 import { useEffect, useLayoutEffect, useState } from "react";
 import { api, type CaStatus, type HelperStatus, type ProxyStatus } from "./api";
@@ -114,83 +115,116 @@ export function OnboardingWizard({
 
   return (
     <div className="scrim modal-scrim" onClick={() => onDismiss(false)}>
-      <div className="modal ob" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head ob-head">
-          <Brandmark size={30} title={null} />
-          <h2>Set up NovaProxy</h2>
-          <span className="modal-x" title="Close" onClick={() => onDismiss(false)}>
-            <Icon name="x" size={16} />
-          </span>
-        </div>
-
-        <div className="ob-rail">
+      <div
+        className="modal ob"
+        role="dialog"
+        aria-labelledby="ob-title"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="ob-side">
+          <div className="ob-brand">
+            <Brandmark size={32} title={null} />
+            <span>Set up NovaProxy</span>
+          </div>
           {steps.map((s, i) => {
             const st = stepState(s.id, statuses);
             return (
-              <div
+              <button
                 key={s.id}
+                type="button"
                 className={`ob-pip ${i === index ? "active" : ""} ${st.done ? "done" : ""}`}
-                title={s.title}
+                aria-current={i === index ? "step" : undefined}
                 onClick={() => setAt(i)}
               >
                 <span className="ob-pip-mark">
                   {st.done ? <Icon name="check" size={12} /> : i + 1}
                 </span>
                 <span className="ob-pip-label">{s.title}</span>
-              </div>
+              </button>
             );
           })}
         </div>
 
-        <div className="modal-body ob-body">
-          <div className="ob-step">
-            <span className={`ob-icon ${state.done ? "done" : ""}`}>
-              <Icon name={step.icon} size={22} />
-            </span>
-            <div className="ob-copy">
-              <div className="ob-title">{step.title}</div>
-              <div className="ob-state">
-                <span className={`dot ${state.done ? "ok" : "warn"}`} />
-                {stepStatusLine(step.id, state.done, statuses)}
-              </div>
-            </div>
-          </div>
-
-          <p>{step.blurb}</p>
-          {step.id === "certificate" && ca && <p className="ob-fine">{trustHint(ca)}</p>}
-          {state.note && <p className="warn-note">{state.note}</p>}
-        </div>
-
-        <div className="ob-foot">
+        <div className="ob-main">
+          <button type="button" className="modal-x ob-x" aria-label="Close" onClick={() => onDismiss(false)}>
+            <Icon name="x" size={16} />
+          </button>
           <span className="ob-count">
             Step {index + 1} of {steps.length}
           </span>
-          <span className="spacer" />
-          {index > 0 && (
-            <div className="btn-neutral" onClick={() => !busy && setAt(index - 1)}>
-              Back
-            </div>
-          )}
-          {state.done ? (
-            <div
-              className="btn-primary"
-              onClick={() => (last ? onDismiss(!done) : setAt(index + 1))}
-            >
-              {last ? "Finish" : "Next"}
-            </div>
-          ) : (
-            <>
-              <div className="btn-neutral" onClick={() => !busy && (last ? onDismiss(true) : setAt(index + 1))}>
-                Skip
-              </div>
-              <div
-                className={`btn-primary ${busy || !canRun(step.id, helper) ? "disabled" : ""}`}
-                onClick={() => !busy && canRun(step.id, helper) && void run()}
+          <h2 id="ob-title" className="ob-title">{step.title}</h2>
+          <div className="ob-state">
+            <span className={`dot ${state.done ? "ok" : "warn"}`} />
+            {stepStatusLine(step.id, state.done, statuses)}
+          </div>
+
+          <div className="ob-body">
+            <p>{step.blurb}</p>
+            {step.id === "certificate" && ca && (
+              <>
+                <div className="ob-card mono">
+                  {ca.subject}
+                  <br />
+                  SHA-256 {ca.fingerprint}
+                </div>
+                <p className="ob-fine">{trustHint(ca)}</p>
+              </>
+            )}
+            {step.id === "proxy" && (
+              <>
+                <div className="ob-card mono">
+                  {proxy.host ?? "127.0.0.1"}:{proxy.port ?? "—"}
+                </div>
+                {/* What Settings › Getting started used to hand out: for one app
+                    or one shell, without touching the OS proxy at all. */}
+                <span className="ob-eyebrow">Or route one app by hand</span>
+                <CodeSnippet text={`curl -x http://127.0.0.1:${proxy.port ?? 9090} https://example.com`} />
+                <CodeSnippet
+                  text={`export HTTP_PROXY=http://127.0.0.1:${proxy.port ?? 9090}
+export HTTPS_PROXY=http://127.0.0.1:${proxy.port ?? 9090}
+export NODE_EXTRA_CA_CERTS="${ca?.cert_path ?? "<ca.pem path>"}"`}
+                />
+              </>
+            )}
+            {state.note && <p className="warn-note">{state.note}</p>}
+          </div>
+
+          <div className="ob-foot">
+            {!state.done && (
+              <button
+                type="button"
+                className="btn-neutral ob-skip"
+                disabled={busy}
+                onClick={() => (last ? onDismiss(true) : setAt(index + 1))}
+              >
+                Skip for now
+              </button>
+            )}
+            <span className="spacer" />
+            {index > 0 && (
+              <button type="button" className="btn-neutral" disabled={busy} onClick={() => setAt(index - 1)}>
+                Back
+              </button>
+            )}
+            {state.done ? (
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => (last ? onDismiss(!done) : setAt(index + 1))}
+              >
+                {last ? "Finish" : "Next"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={busy || !canRun(step.id, helper)}
+                onClick={() => void run()}
               >
                 {busy ? "Working…" : step.action}
-              </div>
-            </>
-          )}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

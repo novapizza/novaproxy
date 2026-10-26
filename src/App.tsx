@@ -39,6 +39,7 @@ import { ShortcutsDialog } from "./ShortcutsDialog";
 import { formatChord, shortcut } from "./shortcuts";
 import { trustHint, trustLabel } from "./trust";
 import { launchDecision } from "./onboarding";
+import { CodeSnippet } from "./CodeSnippet";
 import { Coachmark, OnboardingWizard, type CoachTarget } from "./Walkthrough";
 import { loadPrefs, savePrefs, type Prefs } from "./prefs";
 
@@ -540,7 +541,7 @@ export function App() {
       { id: "rules", icon: "git-branch", label: "Open Rules", run: () => goSection("rules") },
       { id: "scripts", icon: "braces", label: "Open Scripts", run: () => goSection("scripts") },
       { id: "certs", icon: "shield-check", label: "Open Certificate", run: () => goSection("certs") },
-      { id: "walkthrough", icon: "play", label: "Show the getting-started walkthrough", run: () => { setSettingsOpen(false); setCoach(null); openOnboarding(); } },
+      { id: "walkthrough", icon: "play", label: "Set up NovaProxy", run: () => { setSettingsOpen(false); setCoach(null); openOnboarding(); } },
     ],
     [recording, proxy.running, proxy.system_proxy, mcpOnly, selected],
   );
@@ -852,7 +853,6 @@ export function App() {
       {/* settings modal */}
       {settingsOpen && (
         <SettingsModal
-          port={proxy.port ?? 9090} ca={ca}
           net={net} setNet={saveNet}
           mcp={mcp} setMcp={setMcp}
           helper={helper} setHelper={setHelper}
@@ -1319,22 +1319,19 @@ function TlsScopeCard({ showToast }: { showToast: ShowToast }) {
 
 /* ------------------------------ settings modal ------------------------------ */
 
-type SettingsTab = "general" | "network" | "mcp" | "setup";
+type SettingsTab = "general" | "network" | "mcp";
 
 const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "general", label: "General" },
   { id: "network", label: "Network" },
   { id: "mcp", label: "MCP" },
-  { id: "setup", label: "Getting started" },
 ];
 
 function SettingsModal({
-  port, ca, net, setNet, mcp, setMcp,
+  net, setNet, mcp, setMcp,
   helper, setHelper, update, setUpdate, onCheckUpdates, revealUpdates,
   prefs, setPrefs, showToast, onClose, onWalkthrough,
 }: {
-  port: number;
-  ca: CaStatus | null;
   net: NetworkConditions;
   setNet: (n: NetworkConditions) => void;
   mcp: McpStatus | null;
@@ -1381,7 +1378,7 @@ function SettingsModal({
               helper={helper} setHelper={setHelper}
               update={update} setUpdate={setUpdate}
               onCheckUpdates={onCheckUpdates} revealUpdates={revealUpdates}
-              showToast={showToast}
+              showToast={showToast} onWalkthrough={onWalkthrough}
             />
           )}
 
@@ -1427,29 +1424,6 @@ function SettingsModal({
             <McpCard mcp={mcp} setMcp={setMcp} showToast={showToast} />
           </>)}
 
-          {tab === "setup" && (<>
-            <h3>Guided setup</h3>
-            <p>
-              The four things a new install needs — the privileged helper, a trusted root
-              certificate, the system proxy, and a first captured request — in order.
-            </p>
-            <div className="cert-actions">
-              <div className="btn-primary" onClick={onWalkthrough}>
-                <Icon name="play" />Run the walkthrough
-              </div>
-            </div>
-
-            <h3>1. Route traffic through the proxy</h3>
-            <CodeSnippet text={`curl -x http://127.0.0.1:${port} https://example.com`} />
-
-            <h3>2. Trust the root certificate</h3>
-            <p>Open the Certs panel and click “Install &amp; trust” so HTTPS decrypts cleanly.</p>
-            <CodeSnippet
-              text={`export HTTP_PROXY=http://127.0.0.1:${port}
-export HTTPS_PROXY=http://127.0.0.1:${port}
-export NODE_EXTRA_CA_CERTS="${ca?.cert_path ?? "<ca.pem path>"}"`}
-            />
-          </>)}
           </div>
         </div>
       </div>
@@ -1468,7 +1442,7 @@ const LAUNCH_ITEMS: DropdownItem[] = [
 
 function GeneralTab({
   prefs, setPrefs, helper, setHelper, update, setUpdate,
-  onCheckUpdates, revealUpdates, showToast,
+  onCheckUpdates, revealUpdates, showToast, onWalkthrough,
 }: {
   prefs: Prefs;
   setPrefs: (p: Prefs) => void;
@@ -1479,9 +1453,22 @@ function GeneralTab({
   onCheckUpdates: () => Promise<void>;
   revealUpdates: boolean;
   showToast: ShowToast;
+  onWalkthrough: () => void;
 }) {
   return (
     <>
+      <h3>Setup</h3>
+      <div className="pref-row">
+        <span className="k">Helper, certificate, system proxy, first capture</span>
+        <button type="button" className="btn-neutral" onClick={onWalkthrough}>
+          <Icon name="play" />Set up NovaProxy…
+        </button>
+      </div>
+      <p>
+        Runs the first-run setup again. It shows which steps are already done, and the system
+        proxy step also has the curl and shell lines for routing one app by hand.
+      </p>
+
       <h3>Flows table</h3>
       <div className="pref-row">
         <span className="k">Follow the tail</span>
@@ -1787,17 +1774,3 @@ function McpCard({
   );
 }
 
-function CodeSnippet({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <div className="code-block">
-      <pre>{text}</pre>
-      <button
-        className="cb-copy"
-        onClick={() => { void api.copyText(text); setCopied(true); setTimeout(() => setCopied(false), 1200); }}
-      >
-        {copied ? "Copied" : "Copy"}
-      </button>
-    </div>
-  );
-}
