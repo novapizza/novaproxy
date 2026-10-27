@@ -759,6 +759,21 @@ input, textarea, select { font-family: inherit; }
 }
 
 /* ------------------------------ status bar ------------------------------ */
+/* macOS only: a 34px strip under the native traffic lights (Overlay title
+   bar). The side padding matches on both ends so the title centres on the
+   window, not on what is left of it after the lights. */
+.titlebar {
+  height: 34px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0 84px;
+  background: var(--panel); border-bottom: 1px solid var(--border);
+  font: 400 12.5px var(--font-ui); color: var(--muted);
+  user-select: none; -webkit-user-select: none; cursor: default;
+}
+/* Clicks fall through to the strip, which is the drag region. */
+.titlebar span { pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.titlebar strong { color: var(--text); font-weight: 600; }
+
 .statusbar {
   height: 28px; flex: none;
   display: flex; align-items: center; gap: 16px;

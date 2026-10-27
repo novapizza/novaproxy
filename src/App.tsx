@@ -97,6 +97,14 @@ const RULE_KIND_LABEL: Record<RuleKind, string> = {
 
 /* -------------------------------- App -------------------------------- */
 
+type CaptureState = "recording" | "paused" | "stopped";
+const CAPTURE_LABEL: Record<CaptureState, string> = {
+  recording: "Recording",
+  paused: "Paused",
+  stopped: "Stopped",
+};
+const IS_MAC = /Mac/.test(navigator.userAgent);
+
 export function App() {
   const { flows, recording, selectedId, proxy, ca, setRecording, clear, select } = useStore();
 
@@ -655,9 +663,23 @@ export function App() {
     [flows],
   );
 
+  /* One state for the toolbar pill and the status bar, so the two cannot
+     disagree (they did: "Paused" up top, "stopped" below). Recording wins,
+     as in the design; otherwise the engine decides paused vs stopped. */
+  const captureState: CaptureState = recording ? "recording" : proxy.running ? "paused" : "stopped";
+  // Before the engine starts there is no address yet; show the one it will take.
+  const proxyAddr = proxy.running ? `${proxy.host}:${proxy.port}` : "127.0.0.1:9090";
 
   return (
     <div className="nova">
+      {/* macOS draws the traffic lights over this strip (titleBarStyle Overlay,
+          tauri.macos.conf.json); the title is ours so it can sit centred with
+          the workspace beside it, as in the design. */}
+      {IS_MAC && (
+        <div className="titlebar" data-tauri-drag-region>
+          <span><strong>NovaProxy</strong> — default workspace</span>
+        </div>
+      )}
       <div className="body">
         {/* rail */}
         <div className="rail">
@@ -692,16 +714,17 @@ export function App() {
           <div className="toolbar">
             <div className="hd-name">
               <div className="hd-title">{SECTION_TITLE[section]}</div>
-              <div className="hd-sub">default workspace · {proxy.host}:{proxy.port}</div>
+              <div className="hd-sub">default workspace · {proxyAddr}</div>
             </div>
             <div className="tool-sep" />
             <div
               ref={recBtnRef}
               className={`tool-btn rec-btn ${recording ? "on" : ""}`}
+              title={recording ? "Pause capture" : "Start recording"}
               onClick={() => setRecording(!recording)}
             >
               <span className="rec-dot" />
-              {recording ? "Recording" : "Paused"}
+              {CAPTURE_LABEL[captureState]}
             </div>
             <div className="tool-btn" onClick={() => void clearAll()}>
               <Icon name="eraser" />
@@ -792,9 +815,7 @@ export function App() {
 
       {/* status bar */}
       <div className="statusbar">
-        <span className={`live ${recording && proxy.running ? "on" : ""}`}>
-          {!proxy.running ? "stopped" : recording ? "recording" : "paused"}
-        </span>
+        <span className={`live ${recording ? "on" : ""}`}>{captureState}</span>
         <span>{flows.length} flows · {hostCount} hosts</span>
         <span
           className={`autosel ${autoSelect ? "on" : ""}`}
@@ -808,7 +829,7 @@ export function App() {
         <span title="Throughput over the last minute">{throughput}</span>
         <span>upstream: direct</span>
         <span className={ca?.trusted ? "foot-ok" : "foot-warn"}>CA {ca?.trusted ? "trusted" : "not installed"}</span>
-        <span>{proxy.running ? `${proxy.host}:${proxy.port}` : "127.0.0.1:9090"}</span>
+        <span>{proxyAddr}</span>
       </div>
 
       {/* command palette */}

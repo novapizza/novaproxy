@@ -109,8 +109,11 @@ motion     --t-micro 120ms · --t-base 200ms · --t-page 360ms, all on --ease
 
 ## 3. Layout
 
-The root is a full-viewport flex column. There is **no in-app titlebar** — the OS draws the
-window chrome, and the design does not double it.
+The root is a full-viewport flex column. On **macOS** it starts with a 34px title strip
+(`.titlebar`, `--panel`, bottom hairline): the window uses `titleBarStyle: Overlay` with a
+hidden native title (`tauri.macos.conf.json`), the traffic lights sit over the strip's left
+end, and **NovaProxy** — default workspace is centred in 12.5px `--muted`. The strip is the
+drag region. Windows and Linux keep the native title bar.
 
 ```
 ┌──────┬───────────────────────────────────────────────────────────────┐
@@ -138,7 +141,9 @@ inactive is `--faint` on transparent, hover `--hover`. A spacer pushes the theme
 ### Header (58px)
 Bottom hairline, no fill. Left: the section title (Inter 600/14.5px) over
 `default workspace · host:port` in 11px mono `--faint`. Then a hairline divider and 30px
-outline pills: **Recording/Paused** (red tint + pulsing dot when live) and **Clear**.
+outline pills: **Recording/Paused/Stopped** (red tint + pulsing dot when live) and **Clear**.
+The pill and the status bar read one state: `recording` if capture is on, else `paused`
+while the engine runs, else `stopped`.
 Right: **Commands** with a `⌘P` keycap, then the **System proxy** switch. The app filter is
 not here; it is a row in the Flows scope tree (§4.1).
 
