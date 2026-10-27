@@ -13,23 +13,37 @@
 //! glyph.
 
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
 use std::process::Command;
 
 /// Size of the PNG we hand the UI, in points. The table draws it at 13px, so a
 /// 32px raster covers a 2× display without being a needless payload.
+#[cfg(any(target_os = "macos", windows))]
 const PX: u32 = 32;
 
 /// A `data:` URL for the app's icon, ready for an `<img src>`.
 ///
-/// `bundle` is a path ending in `.app` — the outermost bundle, which is what
-/// `procinfo` already rolls helper processes up to.
+/// `bundle` is what `procinfo` recorded as the app's icon source: on macOS a
+/// path ending in `.app` (the outermost bundle, which helper processes are
+/// rolled up to), on Windows the executable, which carries its icon itself.
 pub fn icon_data_url(bundle: &str) -> Option<String> {
-    if !cfg!(target_os = "macos") {
-        return None;
-    }
-    let icns = find_icns(Path::new(bundle))?;
-    let png = to_png(&icns)?;
+    let png = png_of(bundle)?;
     Some(format!("data:image/png;base64,{}", b64(&png)))
+}
+
+#[cfg(target_os = "macos")]
+fn png_of(bundle: &str) -> Option<Vec<u8>> {
+    to_png(&find_icns(Path::new(bundle))?)
+}
+
+#[cfg(windows)]
+fn png_of(exe: &str) -> Option<Vec<u8>> {
+    crate::windows::icon::png_for(exe, PX)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
+fn png_of(_bundle: &str) -> Option<Vec<u8>> {
+    None
 }
 
 /// The most promising `.icns` in a bundle's `Resources`.
@@ -38,6 +52,7 @@ pub fn icon_data_url(bundle: &str) -> Option<String> {
 /// beside the app icon, and the app icon is nearly always the largest — a
 /// heuristic, but one that fails to *another icon of the same app*, which is a
 /// far better failure than parsing the wrong plist key.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn find_icns(bundle: &Path) -> Option<PathBuf> {
     let dir = bundle.join("Contents/Resources");
     let mut best: Option<(u64, PathBuf)> = None;
@@ -55,6 +70,7 @@ fn find_icns(bundle: &Path) -> Option<PathBuf> {
 }
 
 /// `sips` writes to a file, not to stdout, so this goes through a temp path.
+#[cfg(target_os = "macos")]
 fn to_png(icns: &Path) -> Option<Vec<u8>> {
     let out = std::env::temp_dir().join(format!("novaproxy-icon-{}.png", std::process::id()));
     let status = Command::new("sips")

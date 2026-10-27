@@ -31,6 +31,12 @@ impl CaMaterial {
         if cert_path.exists() && key_path.exists() {
             let cert_pem = fs::read_to_string(&cert_path)?;
             let key_pem = fs::read_to_string(&key_path)?;
+            // Builds before 0.7 wrote the key with the profile's inherited ACL.
+            // Tightening it on every load is idempotent and costs one syscall.
+            #[cfg(windows)]
+            if let Err(e) = nova_os::windows::acl::restrict_to_owner(&key_path) {
+                tracing::warn!("could not restrict the CA key's permissions: {e}");
+            }
             return Ok(Self { cert_pem, key_pem, cert_path });
         }
 
@@ -85,7 +91,8 @@ fn generate() -> Result<(String, String)> {
     Ok((cert.pem(), key_pair.serialize_pem()))
 }
 
-/// Write a file readable/writable only by the owner (0600 on unix).
+/// Write a file readable/writable only by the owner (0600 on unix, an
+/// owner-only protected DACL on Windows).
 fn write_private(path: &Path, contents: &str) -> Result<()> {
     fs::write(path, contents)?;
     #[cfg(unix)]
@@ -93,6 +100,8 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     }
+    #[cfg(windows)]
+    nova_os::windows::acl::restrict_to_owner(path)?;
     Ok(())
 }
 

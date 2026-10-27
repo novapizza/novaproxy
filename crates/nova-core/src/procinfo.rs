@@ -8,8 +8,9 @@
 //! keep-alive, so a port maps to one process for its lifetime; we still expire
 //! the cache so reused ephemeral ports don't misattribute over time.
 //!
-//! macOS-only for now (uses `netstat2` + `libproc`). Other platforms always
-//! return `None`, leaving `Flow::process`/`Flow::pid` unset.
+//! macOS (`netstat2` + `libproc`) and Windows (`netstat2` +
+//! `nova_os::windows::process`). Linux always returns `None`, leaving
+//! `Flow::process`/`Flow::pid` unset.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -20,7 +21,8 @@ use std::time::{Duration, Instant};
 pub struct ProcInfo {
     pub pid: u32,
     pub name: String,
-    /// Path of the outermost `.app` bundle, when the process is in one. Kept so
+    /// Where the app's icon comes from: the outermost `.app` bundle on macOS,
+    /// the executable on Windows. Kept so
     /// the UI can ask for the app's icon by name later, without holding a path
     /// on every flow — a `.app` path per flow is bytes the table never renders.
     pub bundle: Option<String>,
@@ -108,7 +110,7 @@ pub fn global() -> &'static ProcResolver {
     RESOLVER.get_or_init(ProcResolver::new)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", windows))]
 fn snapshot() -> HashMap<u16, ProcInfo> {
     use netstat2::{
         get_sockets_info, AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo,
@@ -131,19 +133,7 @@ fn snapshot() -> HashMap<u16, ProcInfo> {
         let Some(&pid) = si.associated_pids.first() else {
             continue;
         };
-        let (name, bundle) = names
-            .entry(pid)
-            .or_insert_with(|| {
-                let path = libproc::proc_pid::pidpath(pid as i32).ok();
-                let bundle = path.as_deref().and_then(bundle_path);
-                let name = path
-                    .as_deref()
-                    .and_then(bundle_app_name)
-                    .or_else(|| libproc::proc_pid::name(pid as i32).ok().filter(|n| !n.is_empty()))
-                    .unwrap_or_else(|| format!("pid {pid}"));
-                (name, bundle)
-            })
-            .clone();
+        let (name, bundle) = names.entry(pid).or_insert_with(|| describe(pid)).clone();
         // Keep the first process seen for a given local port.
         map.entry(tcp.local_port).or_insert(ProcInfo {
             pid,
@@ -152,6 +142,32 @@ fn snapshot() -> HashMap<u16, ProcInfo> {
         });
     }
     map
+}
+
+/// `(display name, icon source)` for a PID.
+///
+/// On macOS the icon source is the outermost `.app` bundle; on Windows it is
+/// the executable itself, which carries its own icon resource.
+#[cfg(target_os = "macos")]
+fn describe(pid: u32) -> (String, Option<String>) {
+    let path = libproc::proc_pid::pidpath(pid as i32).ok();
+    let bundle = path.as_deref().and_then(bundle_path);
+    let name = path
+        .as_deref()
+        .and_then(bundle_app_name)
+        .or_else(|| libproc::proc_pid::name(pid as i32).ok().filter(|n| !n.is_empty()))
+        .unwrap_or_else(|| format!("pid {pid}"));
+    (name, bundle)
+}
+
+#[cfg(windows)]
+fn describe(pid: u32) -> (String, Option<String>) {
+    use nova_os::windows::process::{display_name, image_path};
+    match image_path(pid) {
+        Some(path) => (display_name(&path), Some(path)),
+        // Protected and system processes refuse even limited queries.
+        None => (format!("pid {pid}"), None),
+    }
 }
 
 /// Why the name comes from the bundle, not the executable.
@@ -235,7 +251,26 @@ mod macos_tests {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::ProcResolver;
+
+    #[test]
+    fn a_local_connection_resolves_to_the_process_that_opened_it() {
+        // Both ends are ours, so the client port must resolve to this test
+        // binary — the same path a browser's connection to the proxy takes.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let info = ProcResolver::new()
+            .resolve(&client.local_addr().unwrap().to_string())
+            .expect("our own socket is in the TCP table");
+        assert_eq!(info.pid, std::process::id());
+        assert!(!info.name.starts_with("pid "), "resolved a name: {}", info.name);
+        assert!(info.bundle.is_some_and(|p| p.to_ascii_lowercase().ends_with(".exe")));
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn snapshot() -> HashMap<u16, ProcInfo> {
     HashMap::new()
 }

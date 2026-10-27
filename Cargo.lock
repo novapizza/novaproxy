@@ -2695,6 +2695,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2735,6 +2736,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
+ "windows-sys 0.59.0",
  "zip",
 ]
 

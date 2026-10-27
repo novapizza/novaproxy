@@ -16,6 +16,10 @@ use nova_core::{ca::CaMaterial, EngineHandle, FlowSink, WsSink};
 
 use crate::mcp::McpHandle;
 use nova_proto::{Flow, Interception, NetworkConditions, Rule, TlsScope, WsMessage};
+
+/// The snapshot of the OS proxy settings taken before NovaProxy changed them.
+/// Named here because the sign-in restore reads it without an `AppState`.
+pub const SYSPROXY_BACKUP_FILE: &str = "sysproxy_backup.json";
 use tauri::ipc::Channel;
 
 /// Forwards engine [`Flow`] updates to whichever frontend channel is currently
@@ -195,7 +199,7 @@ impl AppState {
     }
 
     pub fn sysproxy_backup_path(&self) -> PathBuf {
-        self.data_dir.join("sysproxy_backup.json")
+        self.data_dir.join(SYSPROXY_BACKUP_FILE)
     }
 
     pub fn mcp_path(&self) -> PathBuf {

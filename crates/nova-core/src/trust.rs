@@ -7,7 +7,7 @@
 //! | Platform | User domain (default) | All users (opt-in) |
 //! |---|---|---|
 //! | macOS | login keychain, `add-trusted-cert` without `-d` (keychain dialog) | System keychain, `-d`, one `osascript` admin prompt |
-//! | Windows | `certutil -user -addstore ROOT` (no prompt at all) | `certutil -addstore ROOT` behind one UAC prompt |
+//! | Windows | `certutil -user -addstore ROOT` (Windows' own security-warning dialog, no admin) | `certutil -addstore ROOT` behind one UAC prompt |
 //! | Linux | NSS databases — Chrome/Chromium plus every Firefox profile (no prompt) | `/usr/local/share/ca-certificates` or `/etc/pki/…/anchors` + `update-ca-*`, one `pkexec` prompt |
 //!
 //! **Linux's user domain is browsers only.** Linux has no per-user OpenSSL trust
@@ -431,9 +431,10 @@ pub mod windows {
 
     /// `certutil [-user] -addstore -f ROOT <cert>`.
     ///
-    /// `-user` targets the current user's store, which needs no elevation at all
-    /// — not even a prompt. Without it, `certutil` writes the machine store and
-    /// requires administrator rights.
+    /// `-user` targets the current user's store, which needs no elevation —
+    /// but Windows still shows its own "You are about to install a
+    /// certificate…" security warning, which no API can suppress. Without it,
+    /// `certutil` writes the machine store and requires administrator rights.
     pub fn install_args(cert_path: &Path, domain: TrustDomain) -> Vec<String> {
         let mut args = Vec::new();
         if domain == TrustDomain::User {
@@ -466,16 +467,6 @@ pub mod windows {
         args
     }
 
-    /// `certutil [-user] -store ROOT` — dumps the store for a presence check.
-    pub fn store_query_args(domain: TrustDomain) -> Vec<String> {
-        let mut args = Vec::new();
-        if domain == TrustDomain::User {
-            args.push("-user".to_string());
-        }
-        args.extend(["-store".to_string(), ROOT_STORE.to_string()]);
-        args
-    }
-
     /// The user store needs no elevation; the machine store needs one UAC prompt.
     pub fn elevation(domain: TrustDomain) -> Elevation {
         match domain {
@@ -501,20 +492,32 @@ pub mod windows {
     /// On Windows, being in the ROOT store *is* the trust — there is no separate
     /// trust-settings layer to check, unlike macOS.
     ///
-    /// `certutil -store` identifies certs by SHA-1 thumbprint, so that is what we
-    /// look for; the SHA-256 fingerprint is also tried because newer builds print
-    /// both and matching either is still an exact match on our certificate.
+    /// Asked of Crypt32 directly, by SHA-1 thumbprint. The user side reads the
+    /// user's *own* store only: `certutil -user -store ROOT` (what this used to
+    /// parse) lists the logical store, which includes every machine root, so a
+    /// machine-wide install also read as a per-user one. See
+    /// [`nova_os::windows::certstore`].
+    #[cfg(windows)]
     pub fn trust_state(ca: &CaId) -> TrustState {
-        let matches = |domain: TrustDomain| {
-            let args = store_query_args(domain);
-            let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-            let out = capture("certutil", &refs);
-            contains_digest(&out, &ca.sha1) || contains_digest(&out, &ca.sha256)
-        };
+        let sha1 = thumbprint_bytes(&ca.sha1);
         TrustState {
-            user: matches(TrustDomain::User),
-            system: matches(TrustDomain::System),
+            user: nova_os::windows::certstore::in_user_root(&sha1),
+            system: nova_os::windows::certstore::in_machine_root(&sha1),
         }
+    }
+
+    /// `AA:BB:…` → bytes. Anything malformed yields an empty vector, which the
+    /// store lookup treats as "not found".
+    pub fn thumbprint_bytes(thumbprint: &str) -> Vec<u8> {
+        let hex = hex_only(thumbprint);
+        if hex.len() % 2 != 0 {
+            return Vec::new();
+        }
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+            .collect::<std::result::Result<_, _>>()
+            .unwrap_or_default()
     }
 }
 
@@ -886,9 +889,17 @@ mod tests {
 
     #[test]
     fn macos_uninstall_plan_attempts_both_steps() {
-        let plan = macos::uninstall_plan(Path::new("/tmp/ca.pem"), TrustDomain::User).unwrap();
-        assert_eq!(plan.steps.len(), 2);
-        assert!(plan.best_effort, "the delete must run even if there was no trust setting");
+        // The user domain needs `$HOME` to find the login keychain, which a
+        // Windows runner does not set; the system domain has the same shape.
+        let mut domains = vec![TrustDomain::System];
+        if std::env::var_os("HOME").is_some() {
+            domains.push(TrustDomain::User);
+        }
+        for domain in domains {
+            let plan = macos::uninstall_plan(Path::new("/tmp/ca.pem"), domain).unwrap();
+            assert_eq!(plan.steps.len(), 2);
+            assert!(plan.best_effort, "the delete must run even if there was no trust setting");
+        }
     }
 
     #[test]
@@ -931,15 +942,10 @@ mod tests {
     }
 
     #[test]
-    fn windows_store_query_selects_the_store() {
-        assert_eq!(
-            args_of(&windows::store_query_args(TrustDomain::User)),
-            vec!["-user", "-store", "ROOT"]
-        );
-        assert_eq!(
-            args_of(&windows::store_query_args(TrustDomain::System)),
-            vec!["-store", "ROOT"]
-        );
+    fn windows_thumbprints_parse_to_bytes() {
+        assert_eq!(windows::thumbprint_bytes("1A:2b:3C"), vec![0x1a, 0x2b, 0x3c]);
+        assert!(windows::thumbprint_bytes("1A:2").is_empty(), "odd length is malformed");
+        assert!(windows::thumbprint_bytes("").is_empty());
     }
 
     #[test]

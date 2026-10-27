@@ -14,7 +14,7 @@
 //! | Platform | Mechanism | Prompt |
 //! |---|---|---|
 //! | macOS | `networksetup` per network service | one admin password per change (batched into a single `osascript`) |
-//! | Windows | `HKCU\…\Internet Settings` via `reg.exe` | none — the settings are per-user |
+//! | Windows | WinINet per-connection options (LAN + each RAS/VPN entry), see [`crate::windows::inet`] | none — the settings are per-user |
 //! | Linux | `gsettings org.gnome.system.proxy` | none — dconf is per-user |
 //!
 //! Command *plans* are pure data (see [`crate::oscmd`]), so what each platform
@@ -44,15 +44,23 @@ pub struct ServiceBackup {
     pub secure_port: String,
 }
 
-/// Saved `Internet Settings` values (Windows). Absent values mean the registry
-/// value did not exist and must not exist again after a restore.
+/// Saved WinINet proxy settings (Windows).
+///
+/// Current builds fill [`connections`](Self::connections): one entry for the
+/// LAN default and one per RAS/VPN entry, each restored exactly. The four flat
+/// fields are what builds before 0.7 wrote (raw `Internet Settings` registry
+/// values); they are read only to restore a snapshot such a build left behind.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WindowsBackup {
+    #[serde(default)]
+    pub connections: Vec<windows::ConnectionSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_enable: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_server: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_override: Option<String>,
-    /// A PAC/auto-config URL, which takes precedence over manual settings and is
-    /// therefore cleared while we are active — and put back on restore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_config_url: Option<String>,
 }
 
@@ -253,153 +261,112 @@ pub mod macos {
 
 /* -------------------------------- Windows -------------------------------- */
 
+/// The Windows proxy *model*: what to write, given what was there. Pure data,
+/// compiled everywhere so it is tested on every CI runner; the WinINet calls
+/// that read and apply it are in [`crate::windows::inet`].
+///
+/// Why WinINet's per-connection options rather than the `Internet Settings`
+/// registry values the first version wrote with `reg.exe`:
+///
+/// - **Running apps never noticed.** WinINet caches its settings; a registry
+///   write is invisible until something calls `InternetSetOption(…REFRESH)`.
+///   Chrome and Edge kept going direct until restarted.
+/// - **"Automatically detect settings" stayed on.** That flag lives in the
+///   binary `DefaultConnectionSettings` blob, not in a named value, and WPAD
+///   wins over a manual proxy. The per-connection API owns that blob.
+/// - **VPN connections were missed.** Each RAS/VPN entry has its own settings,
+///   used instead of the LAN ones while it is connected.
 pub mod windows {
     use super::*;
 
-    pub const INTERNET_SETTINGS: &str =
-        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+    /// `PROXY_TYPE_*` bits of `INTERNET_PER_CONN_FLAGS`.
+    pub const DIRECT: u32 = 0x1;
+    pub const PROXY: u32 = 0x2;
+    pub const AUTO_PROXY_URL: u32 = 0x4;
+    pub const AUTO_DETECT: u32 = 0x8;
 
-    /// Bypass list used when the user had none. `<local>` is the Windows idiom for
-    /// "don't proxy plain hostnames", which keeps localhost traffic direct.
+    /// Bypass list used when the user had none. `<local>` is the Windows idiom
+    /// for "don't proxy plain hostnames", which keeps intranet names direct.
     pub const DEFAULT_BYPASS: &str = "<local>";
 
-    /// Extract a value from `reg query … /v <name>` output.
+    /// One WinINet connection's proxy settings.
+    #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct ConnectionSettings {
+        /// `None` for the LAN default; otherwise a RAS/VPN entry name.
+        #[serde(default)]
+        pub name: Option<String>,
+        /// `PROXY_TYPE_*` bits.
+        pub flags: u32,
+        #[serde(default)]
+        pub server: Option<String>,
+        #[serde(default)]
+        pub bypass: Option<String>,
+        /// A PAC URL. Kept while we are active (only its flag is cleared), so
+        /// restoring is a flag flip and the URL can never be lost.
+        #[serde(default)]
+        pub autoconfig_url: Option<String>,
+    }
+
+    /// Point one connection at `host:port`.
     ///
-    /// Lines look like `    ProxyServer    REG_SZ    127.0.0.1:9090`; the value
-    /// itself may contain spaces, so only the first two columns are split off.
-    pub fn parse_reg_value(output: &str, name: &str) -> Option<String> {
-        for line in output.lines() {
-            // `reg query` prints a blank line, the key path, then the values, so
-            // non-matching lines are skipped rather than ending the search.
-            let Some(rest) = line.trim().strip_prefix(name) else { continue };
-            // The type column is next; skip it and keep everything after, since
-            // the value itself may contain spaces.
-            let mut parts = rest.trim_start().splitn(2, char::is_whitespace);
-            let Some(ty) = parts.next() else { continue };
-            if !ty.starts_with("REG_") {
-                continue;
-            }
-            return Some(parts.next().unwrap_or("").trim().to_string());
-        }
-        None
-    }
-
-    /// `REG_DWORD` values print as `0x1`.
-    pub fn parse_dword(value: &str) -> Option<u32> {
-        let v = value.trim();
-        let hex = v.strip_prefix("0x").or_else(|| v.strip_prefix("0X"));
-        match hex {
-            Some(h) => u32::from_str_radix(h, 16).ok(),
-            None => v.parse().ok(),
+    /// Auto-detect and the PAC flag are cleared because both win over a manual
+    /// proxy; the user's bypass list survives so their intranet stays direct.
+    pub fn enabled(host: &str, port: u16, prior: &ConnectionSettings) -> ConnectionSettings {
+        ConnectionSettings {
+            name: prior.name.clone(),
+            flags: DIRECT | PROXY,
+            server: Some(format!("{host}:{port}")),
+            bypass: Some(
+                prior
+                    .bypass
+                    .clone()
+                    .filter(|b| !b.trim().is_empty())
+                    .unwrap_or_else(|| DEFAULT_BYPASS.to_string()),
+            ),
+            autoconfig_url: prior.autoconfig_url.clone(),
         }
     }
 
-    fn query(name: &str) -> Option<String> {
-        let out = capture("reg", &["query", INTERNET_SETTINGS, "/v", name]);
-        parse_reg_value(&out, name).filter(|v| !v.is_empty())
-    }
-
-    pub fn snapshot() -> Backup {
-        let win = WindowsBackup {
-            proxy_enable: query("ProxyEnable").and_then(|v| parse_dword(&v)),
-            proxy_server: query("ProxyServer"),
-            proxy_override: query("ProxyOverride"),
-            auto_config_url: query("AutoConfigURL"),
-        };
-        Backup { windows: Some(win), ..Default::default() }
-    }
-
-    fn set_sz(name: &str, value: &str) -> Step {
-        Step::with_args(
-            "reg",
-            vec![
-                "add".to_string(),
-                INTERNET_SETTINGS.to_string(),
-                "/v".to_string(),
-                name.to_string(),
-                "/t".to_string(),
-                "REG_SZ".to_string(),
-                "/d".to_string(),
-                value.to_string(),
-                "/f".to_string(),
-            ],
-        )
-    }
-
-    fn set_dword(name: &str, value: u32) -> Step {
-        Step::with_args(
-            "reg",
-            vec![
-                "add".to_string(),
-                INTERNET_SETTINGS.to_string(),
-                "/v".to_string(),
-                name.to_string(),
-                "/t".to_string(),
-                "REG_DWORD".to_string(),
-                "/d".to_string(),
-                value.to_string(),
-                "/f".to_string(),
-            ],
-        )
-    }
-
-    fn delete(name: &str) -> Step {
-        Step::with_args(
-            "reg",
-            vec![
-                "delete".to_string(),
-                INTERNET_SETTINGS.to_string(),
-                "/v".to_string(),
-                name.to_string(),
-                "/f".to_string(),
-            ],
-        )
-    }
-
-    /// Turn on the manual proxy, preserving the user's bypass list.
+    /// What a restore writes back, connection by connection.
     ///
-    /// A PAC URL wins over manual settings in WinINET, so an existing
-    /// `AutoConfigURL` is removed while we are active — it is in the snapshot and
-    /// comes back on restore.
-    pub fn enable_plan(host: &str, port: u16, backup: &WindowsBackup) -> Plan {
-        let mut steps = vec![
-            set_sz("ProxyServer", &format!("{host}:{port}")),
-            set_dword("ProxyEnable", 1),
-        ];
-        let bypass = backup
-            .proxy_override
-            .clone()
-            .unwrap_or_else(|| DEFAULT_BYPASS.to_string());
-        steps.push(set_sz("ProxyOverride", &bypass));
+    /// A snapshot from a build before 0.7 has no `connections`, only the raw
+    /// registry values; those describe the LAN connection, and are translated
+    /// into the flags they meant. Such a build never touched auto-detect, so
+    /// the restore leaves it off — the state that build left the machine in.
+    pub fn to_restore(backup: &WindowsBackup) -> Vec<ConnectionSettings> {
+        if !backup.connections.is_empty() {
+            return backup.connections.clone();
+        }
+        let mut flags = DIRECT;
+        if backup.proxy_enable == Some(1) {
+            flags |= PROXY;
+        }
         if backup.auto_config_url.is_some() {
-            steps.push(delete("AutoConfigURL"));
+            flags |= AUTO_PROXY_URL;
         }
-        // HKCU: the user owns these keys, so no elevation is needed at all.
-        Plan::new(steps, Elevation::None)
+        vec![ConnectionSettings {
+            name: None,
+            flags,
+            server: backup.proxy_server.clone(),
+            bypass: backup.proxy_override.clone(),
+            autoconfig_url: backup.auto_config_url.clone(),
+        }]
     }
 
-    /// Restore exactly what was there — including a corporate PAC URL, and
-    /// including *removing* values that did not exist before.
-    pub fn disable_plan(backup: &WindowsBackup) -> Plan {
-        let mut steps = Vec::new();
-        match backup.proxy_enable {
-            Some(v) => steps.push(set_dword("ProxyEnable", v)),
-            None => steps.push(delete("ProxyEnable")),
-        }
-        match &backup.proxy_server {
-            Some(v) => steps.push(set_sz("ProxyServer", v)),
-            None => steps.push(delete("ProxyServer")),
-        }
-        match &backup.proxy_override {
-            Some(v) => steps.push(set_sz("ProxyOverride", v)),
-            None => steps.push(delete("ProxyOverride")),
-        }
-        if let Some(url) = &backup.auto_config_url {
-            steps.push(set_sz("AutoConfigURL", url));
-        }
-        // Deleting a value that is already absent fails; every other step must
-        // still run.
-        Plan::best_effort(steps, Elevation::None)
+    /// The `RunOnce` value that restores the proxy at the next sign-in, and the
+    /// command-line flag it launches the app with.
+    ///
+    /// Belt and braces for the one exit no hook sees: a restart or sign-out
+    /// while the proxy is on kills the process, and until the user happened to
+    /// open NovaProxy again every app on the machine pointed at a dead port.
+    /// The value is written on enable and removed on every clean restore.
+    pub const RUN_ONCE_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\RunOnce";
+    pub const RUN_ONCE_VALUE: &str = "NovaProxyRestoreSystemProxy";
+    pub const RESTORE_ARG: &str = "--restore-system-proxy";
+
+    /// `"C:\…\NovaProxy.exe" --restore-system-proxy`, quoted for `RunOnce`.
+    pub fn run_once_command(exe: &std::path::Path) -> String {
+        format!("\"{}\" {RESTORE_ARG}", exe.display())
     }
 }
 
@@ -505,6 +472,7 @@ pub fn snapshot() -> Backup {
     // `oscmd::EXEC_COUNT`.
     tracing::info!(
         services = backup.services.len(),
+        connections = backup.windows.as_ref().map_or(0, |w| w.connections.len()),
         ms = t.elapsed().as_millis() as u64,
         spawns,
         spawn_ms,
@@ -523,7 +491,7 @@ fn snapshot_inner() -> Backup {
     }
     #[cfg(target_os = "windows")]
     {
-        windows::snapshot()
+        Backup { windows: Some(crate::windows::inet::snapshot()), ..Default::default() }
     }
     #[cfg(target_os = "linux")]
     {
@@ -558,7 +526,7 @@ pub fn enable(host: &str, port: u16, backup: &Backup) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         let win = backup.windows.clone().unwrap_or_default();
-        windows::enable_plan(host, port, &win).run()
+        crate::windows::inet::enable(host, port, &win)
     }
     #[cfg(target_os = "linux")]
     {
@@ -588,7 +556,7 @@ pub fn disable(backup: &Backup) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         let win = backup.windows.clone().unwrap_or_default();
-        windows::disable_plan(&win).run()
+        crate::windows::inet::disable(&win)
     }
     #[cfg(target_os = "linux")]
     {
@@ -599,6 +567,24 @@ pub fn disable(backup: &Backup) -> Result<()> {
     {
         let _ = backup;
         anyhow::bail!("System proxy control is not implemented for this platform");
+    }
+}
+
+/// Can [`disable`] run right now without putting a prompt in front of anyone?
+///
+/// Decides whether the app restores the proxy by itself — at quit, before an
+/// update, and at launch after a crash — or leaves it to a "Restore" button.
+/// Windows and Linux settings are per-user, so always; macOS only through the
+/// privileged helper, because otherwise it means an administrator password
+/// dialog appearing during quit or before any window exists.
+pub fn restore_is_silent() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::helper::usable()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
     }
 }
 
@@ -730,110 +716,115 @@ mod tests {
 
     /* ------------------------------- Windows ------------------------------- */
 
-    #[test]
-    fn windows_parses_reg_query_output() {
-        let out = "\r\nHKEY_CURRENT_USER\\Software\\...\\Internet Settings\r\n    ProxyServer    REG_SZ    127.0.0.1:9090\r\n\r\n";
-        assert_eq!(
-            windows::parse_reg_value(out, "ProxyServer").as_deref(),
-            Some("127.0.0.1:9090")
-        );
-        assert!(windows::parse_reg_value(out, "AutoConfigURL").is_none());
+    fn lan(flags: u32) -> windows::ConnectionSettings {
+        windows::ConnectionSettings { flags, ..Default::default() }
     }
 
     #[test]
-    fn windows_parses_values_containing_spaces() {
-        // A bypass list is semicolon-separated but can contain spaces.
-        let out = "    ProxyOverride    REG_SZ    *.corp.example;<local>; 10.0.0.1\r\n";
-        assert_eq!(
-            windows::parse_reg_value(out, "ProxyOverride").as_deref(),
-            Some("*.corp.example;<local>; 10.0.0.1")
-        );
-    }
-
-    #[test]
-    fn windows_parses_dwords_in_hex_or_decimal() {
-        assert_eq!(windows::parse_dword("0x1"), Some(1));
-        assert_eq!(windows::parse_dword("0x0"), Some(0));
-        assert_eq!(windows::parse_dword(" 1 "), Some(1));
-        assert_eq!(windows::parse_dword("nonsense"), None);
-    }
-
-    #[test]
-    fn windows_enable_writes_server_and_flag_without_elevation() {
-        let plan = windows::enable_plan("127.0.0.1", 9090, &WindowsBackup::default());
-        assert_eq!(
-            plan.elevation,
-            Elevation::None,
-            "HKCU is the user's own key — no UAC prompt at all"
-        );
-        let lines = shell_of(&plan);
-        assert!(lines.iter().any(|l| l.contains("ProxyServer") && l.contains("127.0.0.1:9090")));
-        assert!(lines.iter().any(|l| l.contains("ProxyEnable") && l.contains("REG_DWORD")));
-        assert!(
-            lines.iter().any(|l| l.contains("ProxyOverride") && l.contains("<local>")),
-            "localhost stays direct by default: {lines:?}"
-        );
-    }
-
-    #[test]
-    fn windows_enable_preserves_an_existing_bypass_list() {
-        let backup = WindowsBackup {
-            proxy_override: Some("*.corp.example;<local>".into()),
+    fn windows_enable_turns_on_the_manual_proxy_and_nothing_that_would_beat_it() {
+        let prior = windows::ConnectionSettings {
+            flags: windows::DIRECT | windows::AUTO_DETECT | windows::AUTO_PROXY_URL,
+            autoconfig_url: Some("http://corp/proxy.pac".into()),
             ..Default::default()
         };
-        let lines = shell_of(&windows::enable_plan("127.0.0.1", 9090, &backup));
-        assert!(
-            lines.iter().any(|l| l.contains("*.corp.example;<local>")),
-            "the user's own bypass list must survive: {lines:?}"
+        let on = windows::enabled("127.0.0.1", 9090, &prior);
+        assert_eq!(on.server.as_deref(), Some("127.0.0.1:9090"));
+        assert_eq!(on.flags, windows::DIRECT | windows::PROXY);
+        assert_eq!(
+            on.flags & (windows::AUTO_DETECT | windows::AUTO_PROXY_URL),
+            0,
+            "WPAD and a PAC URL both win over a manual proxy"
+        );
+        assert_eq!(
+            on.autoconfig_url.as_deref(),
+            Some("http://corp/proxy.pac"),
+            "the URL itself is kept, so a restore is a flag flip and it can never be lost"
         );
     }
 
     #[test]
-    fn windows_enable_clears_a_pac_url_because_it_would_win() {
-        let backup = WindowsBackup {
-            auto_config_url: Some("http://corp/proxy.pac".into()),
+    fn windows_enable_keeps_the_users_bypass_list_or_defaults_to_local() {
+        let prior = windows::ConnectionSettings {
+            bypass: Some("*.corp.example;<local>".into()),
             ..Default::default()
         };
-        let lines = shell_of(&windows::enable_plan("127.0.0.1", 9090, &backup));
-        assert!(
-            lines.iter().any(|l| l.contains("delete") && l.contains("AutoConfigURL")),
-            "WinINET prefers a PAC URL, so manual settings would be ignored: {lines:?}"
+        assert_eq!(
+            windows::enabled("127.0.0.1", 1, &prior).bypass.as_deref(),
+            Some("*.corp.example;<local>")
         );
+        assert_eq!(windows::enabled("127.0.0.1", 1, &lan(1)).bypass.as_deref(), Some("<local>"));
+        let blank = windows::ConnectionSettings { bypass: Some("  ".into()), ..Default::default() };
+        assert_eq!(windows::enabled("127.0.0.1", 1, &blank).bypass.as_deref(), Some("<local>"));
     }
 
     #[test]
-    fn windows_enable_leaves_pac_alone_when_there_was_none() {
-        let lines = shell_of(&windows::enable_plan("127.0.0.1", 9090, &WindowsBackup::default()));
-        assert!(!lines.iter().any(|l| l.contains("AutoConfigURL")));
+    fn windows_enable_keeps_the_connection_name() {
+        let vpn = windows::ConnectionSettings { name: Some("Corp VPN".into()), ..lan(1) };
+        assert_eq!(windows::enabled("127.0.0.1", 1, &vpn).name.as_deref(), Some("Corp VPN"));
     }
 
     #[test]
-    fn windows_disable_restores_a_corporate_pac_setup() {
+    fn windows_restore_puts_every_connection_back_verbatim() {
         let backup = WindowsBackup {
-            proxy_enable: Some(0),
-            proxy_server: None,
-            proxy_override: Some("<local>".into()),
-            auto_config_url: Some("http://corp/proxy.pac".into()),
+            connections: vec![
+                windows::ConnectionSettings {
+                    flags: windows::DIRECT | windows::AUTO_DETECT,
+                    ..Default::default()
+                },
+                windows::ConnectionSettings {
+                    name: Some("Corp VPN".into()),
+                    flags: windows::DIRECT | windows::PROXY,
+                    server: Some("proxy.corp:3128".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
         };
-        let lines = shell_of(&windows::disable_plan(&backup));
-        assert!(lines.iter().any(|l| l.contains("AutoConfigURL") && l.contains("http://corp/proxy.pac")));
-        assert!(
-            lines.iter().any(|l| l.contains("delete") && l.contains("ProxyServer")),
-            "a value that did not exist before must not exist after: {lines:?}"
-        );
-        assert!(lines.iter().any(|l| l.contains("ProxyEnable") && l.ends_with("/f")));
-        assert!(windows::disable_plan(&backup).best_effort);
+        assert_eq!(windows::to_restore(&backup), backup.connections);
     }
 
     #[test]
-    fn windows_disable_from_a_clean_machine_removes_everything_we_added() {
-        let lines = shell_of(&windows::disable_plan(&WindowsBackup::default()));
-        for value in ["ProxyEnable", "ProxyServer", "ProxyOverride"] {
-            assert!(
-                lines.iter().any(|l| l.contains("delete") && l.contains(value)),
-                "{value} was absent before and must be absent after: {lines:?}"
-            );
-        }
+    fn windows_restores_a_snapshot_written_by_an_older_build() {
+        // Pre-0.7 snapshots are raw `Internet Settings` values. A user who
+        // upgrades while the proxy is on must still get their PAC setup back.
+        let json = r#"{"windows":{"proxy_enable":0,"proxy_server":null,
+                       "proxy_override":"<local>","auto_config_url":"http://corp/proxy.pac"}}"#;
+        let backup: Backup = serde_json::from_str(json).expect("old snapshot parses");
+        let restore = windows::to_restore(backup.windows.as_ref().unwrap());
+        assert_eq!(restore.len(), 1);
+        let lan = &restore[0];
+        assert_eq!(lan.name, None, "the old build only ever touched the LAN settings");
+        assert_eq!(lan.flags, windows::DIRECT | windows::AUTO_PROXY_URL);
+        assert_eq!(lan.autoconfig_url.as_deref(), Some("http://corp/proxy.pac"));
+        assert_eq!(lan.bypass.as_deref(), Some("<local>"));
+    }
+
+    #[test]
+    fn windows_old_snapshot_with_a_manual_proxy_comes_back_on() {
+        let old = WindowsBackup {
+            proxy_enable: Some(1),
+            proxy_server: Some("proxy.corp:3128".into()),
+            ..Default::default()
+        };
+        let lan = &windows::to_restore(&old)[0];
+        assert_eq!(lan.flags, windows::DIRECT | windows::PROXY);
+        assert_eq!(lan.server.as_deref(), Some("proxy.corp:3128"));
+    }
+
+    #[test]
+    fn windows_new_snapshots_do_not_write_the_legacy_fields() {
+        let backup = WindowsBackup { connections: vec![lan(1)], ..Default::default() };
+        let json = serde_json::to_string(&backup).unwrap();
+        assert!(!json.contains("proxy_enable"), "got {json}");
+    }
+
+    #[test]
+    fn windows_run_once_command_quotes_the_path() {
+        let cmd = windows::run_once_command(std::path::Path::new(r"C:\Program Files\NovaProxy\NovaProxy.exe"));
+        assert_eq!(
+            cmd,
+            r#""C:\Program Files\NovaProxy\NovaProxy.exe" --restore-system-proxy"#
+        );
     }
 
     /* -------------------------------- Linux -------------------------------- */
@@ -906,26 +897,30 @@ mod tests {
         let backup = Backup {
             services: vec![service("Wi-Fi", true, "proxy.corp", "3128")],
             windows: Some(WindowsBackup {
-                proxy_enable: Some(1),
-                proxy_server: Some("127.0.0.1:1".into()),
-                proxy_override: None,
-                auto_config_url: Some("http://corp/p.pac".into()),
+                connections: vec![windows::ConnectionSettings {
+                    name: Some("Corp VPN".into()),
+                    flags: windows::DIRECT | windows::AUTO_PROXY_URL,
+                    server: None,
+                    bypass: Some("<local>".into()),
+                    autoconfig_url: Some("http://corp/p.pac".into()),
+                }],
+                ..Default::default()
             }),
             gnome: Some(GnomeBackup { mode: "manual".into(), ..Default::default() }),
         };
         let json = serde_json::to_string(&backup).unwrap();
         let back: Backup = serde_json::from_str(&json).unwrap();
         assert_eq!(back.services[0].web_host, "proxy.corp");
-        assert_eq!(back.windows.unwrap().auto_config_url.as_deref(), Some("http://corp/p.pac"));
+        assert_eq!(back.windows, backup.windows);
         assert_eq!(back.gnome.unwrap().mode, "manual");
     }
 
     #[test]
     fn every_platform_restore_is_best_effort() {
         // The contract that matters: a partial failure must never stop a restore
-        // halfway, on any platform.
+        // halfway, on any platform. (Windows applies connections one at a time in
+        // `windows::inet::disable`, which carries on past a failing one.)
         assert!(macos::disable_plan(&Backup { services: vec![service("Wi-Fi", false, "", "")], ..Default::default() }).best_effort);
-        assert!(windows::disable_plan(&WindowsBackup::default()).best_effort);
         assert!(linux::disable_plan(&GnomeBackup::default()).best_effort);
     }
 
@@ -937,7 +932,6 @@ mod tests {
             &Backup { services: vec![service("Wi-Fi", false, "", "")], ..Default::default() },
         );
         assert_eq!(mac.elevation, Elevation::MacAdmin);
-        assert_eq!(windows::enable_plan("127.0.0.1", 1, &WindowsBackup::default()).elevation, Elevation::None);
         assert_eq!(linux::enable_plan("127.0.0.1", 1).elevation, Elevation::None);
     }
 }

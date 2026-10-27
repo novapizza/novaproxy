@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Icon } from "./icons";
-import { formatChord, isMac, shortcutGroups } from "./shortcuts";
+import { formatChord, isMac, shortcutGroups, withModKey } from "./shortcuts";
 
 /**
  * Help → Keyboard Shortcuts.
@@ -53,7 +53,7 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
                 <div className="sc-row" key={s.id}>
                   <span className="l">
                     {s.label}
-                    {s.when && <span className="when">{s.when}</span>}
+                    {s.when && <span className="when">{withModKey(s.when, mac)}</span>}
                   </span>
                   <span className="keys">
                     {formatChord(s.chord, mac).map((k, i) => (

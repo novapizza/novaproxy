@@ -246,7 +246,11 @@ fn os_version() -> String {
             .trim()
             .to_string()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        nova_core::windows::os_version()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         String::new()
     }
@@ -257,23 +261,36 @@ fn os_version() -> String {
 /// Selecting the file rather than opening it: the user's next move is to drag it
 /// into an issue or an email, and an unzip window is not that.
 pub fn reveal(path: &Path) -> anyhow::Result<()> {
+    #[cfg(not(windows))]
     use nova_core::oscmd::{Elevation, Plan, Step};
 
     let file = path.display().to_string();
-    let step = if cfg!(target_os = "macos") {
-        Step::with_args("/usr/bin/open", vec!["-R".into(), file])
-    } else if cfg!(target_os = "windows") {
-        // `/select,<path>` is one argument to explorer, comma included.
-        Step::with_args("explorer", vec![format!("/select,{file}")])
-    } else {
-        // No Linux file manager reliably selects a file, so open the folder.
-        let dir = path
-            .parent()
-            .map(|p| p.display().to_string())
-            .unwrap_or(file);
-        Step::with_args("xdg-open", vec![dir])
-    };
-    Plan::new(vec![step], Elevation::None).run()
+    #[cfg(windows)]
+    {
+        // Not a `Plan`: explorer exits 1 even when it selected the file, which
+        // a plan reports as a failure. And `/select,"<path>"` must reach it
+        // verbatim — Rust's own argument quoting wraps the whole thing in
+        // quotes when the path has a space, and explorer then opens Documents.
+        use std::os::windows::process::CommandExt;
+        nova_core::oscmd::command("explorer")
+            .raw_arg(format!("/select,\"{file}\""))
+            .spawn()?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let step = if cfg!(target_os = "macos") {
+            Step::with_args("/usr/bin/open", vec!["-R".into(), file])
+        } else {
+            // No Linux file manager reliably selects a file, so open the folder.
+            let dir = path
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or(file);
+            Step::with_args("xdg-open", vec![dir])
+        };
+        Plan::new(vec![step], Elevation::None).run()
+    }
 }
 
 #[cfg(test)]

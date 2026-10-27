@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  chordText,
   formatChord,
   isMac,
   matchChord,
@@ -9,6 +10,7 @@ import {
   shortcut,
   shortcutGroups,
   suppressedWhileTyping,
+  withModKey,
 } from "./shortcuts";
 
 const ev = (over: Partial<KeyboardEvent> & { key: string }) =>
@@ -81,6 +83,22 @@ describe("formatChord", () => {
     expect(formatChord("Mod+/", true)).toEqual(["⌘", "/"]);
     expect(formatChord("Mod+,", true)).toEqual(["⌘", ","]);
     expect(formatChord("Mod+0", true)).toEqual(["⌘", "0"]);
+  });
+});
+
+describe("chordText and withModKey", () => {
+  it("renders an inline label per platform", () => {
+    expect(chordText("Mod+N", true)).toBe("⌘N");
+    expect(chordText("Mod+N", false)).toBe("Ctrl+N");
+    expect(chordText("Mod+Shift+F", false)).toBe("Ctrl+Shift+F");
+  });
+
+  it("never tells a Windows user to press ⌘", () => {
+    for (const s of SHORTCUTS) {
+      if (s.when) expect(withModKey(s.when, false)).not.toContain("⌘");
+    }
+    expect(withModKey("⌘S saves the session first", false)).toBe("Ctrl+S saves the session first");
+    expect(withModKey("⌘S saves the session first", true)).toBe("⌘S saves the session first");
   });
 });
 

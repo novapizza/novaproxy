@@ -31,6 +31,7 @@ use std::sync::OnceLock;
 
 /// Where the marker is dropped, as a C string so the handler does not have to
 /// build one. Set once by [`install`], read by the handler.
+#[cfg(target_os = "macos")]
 static MARKER: OnceLock<std::ffi::CString> = OnceLock::new();
 
 /// The file a crash leaves behind, read and deleted by the next launch.
@@ -72,11 +73,11 @@ pub fn report_previous() {
 /// The returned handle **must be kept alive**: dropping it detaches the
 /// exception port and the next crash goes unrecorded, exactly as before.
 ///
-/// macOS only. `crash-handler` supports Linux and Windows too, but a Mach
-/// exception port is what makes this worth having — it sees crashes on threads
-/// the app does not own, the webview's included — and neither of the other
-/// platforms is bundled today. Wiring them up without being able to run them
-/// would be guessing.
+/// macOS and Windows. On macOS a Mach exception port sees crashes on threads
+/// the app does not own, the webview's included. On Windows it is the
+/// unhandled-exception filter (plus heap corruption, which bypasses it); the
+/// webview runs out of process there, so its crashes are WebView2's to report.
+/// Linux is not bundled, and wiring it up without running it would be guessing.
 #[cfg(target_os = "macos")]
 pub fn install() -> Option<crash_handler::CrashHandler> {
     use crash_handler::{CrashEventResult, CrashHandler};
@@ -115,9 +116,76 @@ pub fn install() -> Option<crash_handler::CrashHandler> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// The marker path as a NUL-terminated UTF-16 string, for `CreateFileW`.
+#[cfg(windows)]
+static MARKER_W: OnceLock<Vec<u16>> = OnceLock::new();
+
+#[cfg(windows)]
+pub fn install() -> Option<crash_handler::CrashHandler> {
+    use crash_handler::{CrashEventResult, CrashHandler};
+    use std::os::windows::ffi::OsStrExt;
+
+    let path: Vec<u16> = marker_path().as_os_str().encode_wide().chain(Some(0)).collect();
+    let _ = MARKER_W.set(path);
+
+    // SAFETY: the callback allocates nothing and takes no locks — see the
+    // module note. The record is the NTSTATUS (`0xC0000005` is an access
+    // violation) as `kind`, with no `code`: Windows has no second level.
+    let handler = unsafe {
+        CrashHandler::attach(crash_handler::make_crash_event(
+            |cc: &crash_handler::CrashContext| {
+                write_marker(cc.exception_code as u32, 0);
+                // `false` so Windows Error Reporting still records the crash
+                // and the process still dies — the same reasoning as macOS.
+                CrashEventResult::Handled(false)
+            },
+        ))
+    };
+    match handler {
+        Ok(h) => Some(h),
+        Err(e) => {
+            tracing::warn!("could not install the crash handler: {e}");
+            None
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn install() -> Option<()> {
     None
+}
+
+/// [`write_marker`] for Windows: `CreateFileW`/`WriteFile`/`CloseHandle`, none
+/// of which allocate.
+#[cfg(windows)]
+fn write_marker(kind: u32, code: u64) {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, WriteFile, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_WRITE,
+    };
+    let Some(path) = MARKER_W.get() else {
+        return;
+    };
+    let mut buf = [0u8; MARKER_MAX];
+    let n = format_marker(&mut buf, kind, code);
+    // SAFETY: `path` is NUL-terminated; `buf` is valid for `n` bytes.
+    unsafe {
+        let h = CreateFileW(
+            path.as_ptr(),
+            FILE_GENERIC_WRITE,
+            0,
+            std::ptr::null(),
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        );
+        if h == INVALID_HANDLE_VALUE {
+            return;
+        }
+        let mut written = 0u32;
+        WriteFile(h, buf.as_ptr(), n as u32, &mut written, std::ptr::null_mut());
+        CloseHandle(h);
+    }
 }
 
 /// Write `kind=<n> code=<n>` into the marker without allocating.

@@ -9,6 +9,7 @@ import {
   type ClauseField,
   type ClauseOp,
 } from "../builder";
+import { chordText } from "../shortcuts";
 
 /**
  * The structured filter rows.
@@ -85,7 +86,7 @@ export function FilterBuilder({
       <div className="fb-add" onClick={() => setClauses([...clauses, newClause()])}>
         <Icon name="plus" size={12} />
         Add condition
-        <span className="kbd">⌘N</span>
+        <span className="kbd">{chordText("Mod+N")}</span>
       </div>
     </div>
   );

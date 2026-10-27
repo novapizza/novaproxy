@@ -1,0 +1,59 @@
+# Tests on every push to main and every pull request, on both shipped
+# platforms.
+#
+# Windows is here because the release workflow builds it but nothing ever ran
+# its code: three tests failed on Windows for months and nobody could see it.
+# The Windows tests in `crates/nova-os/src/windows/` call the real Win32 APIs
+# (WinINet, Crypt32, the TCP table) read-only, so they need a real runner.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: macOS
+            os: macos-14
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # aws-lc-sys assembles with NASM on Windows; see release.yml.
+      - uses: ilammy/setup-nasm@v1
+        if: runner.os == 'Windows'
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ matrix.os }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck the frontend
+        run: npx tsc --noEmit
+
+      - name: Frontend tests
+        run: npx vitest run
+
+      - name: Rust tests
+        run: cargo test --workspace --locked
