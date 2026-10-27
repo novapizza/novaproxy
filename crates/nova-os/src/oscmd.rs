@@ -251,10 +251,22 @@ impl Plan {
 /// `/` is readable by everyone and is never TCC-protected. Unix-only: the
 /// failure mode is a macOS sandbox behaviour with no Windows analogue, and
 /// changing the cwd of `reg.exe`/`certutil` unprompted is not worth the risk.
-fn command(program: &str) -> Command {
+///
+/// On Windows every child is created with `CREATE_NO_WINDOW`. The release build
+/// is a GUI-subsystem process with no console of its own, so each console
+/// program it starts (`certutil`, `powershell`, `where`) would otherwise get a
+/// fresh console window that flashes up and vanishes — several per toggle,
+/// which reads as the app being broken.
+pub fn command(program: &str) -> Command {
     let mut cmd = Command::new(program);
     #[cfg(unix)]
     cmd.current_dir("/");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     cmd
 }
 
@@ -345,9 +357,13 @@ pub fn windows_uac_step(steps: &[Step]) -> Result<Step> {
             .join(",");
         ps.push_str(&format!(" -ArgumentList {list}"));
     }
-    // `-Wait` so the exit status is ours to report; `-WindowStyle Hidden` keeps a
-    // console window from flashing up.
-    ps.push_str(" -Verb RunAs -Wait -WindowStyle Hidden");
+    // `-Wait` so the outcome is ours to report; `-WindowStyle Hidden` keeps the
+    // elevated child's console from flashing up (PowerShell's own is suppressed
+    // by `CREATE_NO_WINDOW` in [`command`]). `-PassThru` plus the `exit` is what
+    // carries the child's exit code back out: without it PowerShell exits 0 for
+    // any child that merely *started*, so a failed `certutil` looked like success.
+    ps.push_str(" -Verb RunAs -Wait -WindowStyle Hidden -PassThru");
+    ps = format!("$p = {ps}; exit $p.ExitCode");
     Ok(Step::with_args(
         "powershell",
         vec![
@@ -452,10 +468,14 @@ mod tests {
         .unwrap();
         assert_eq!(step.program, "powershell");
         let ps = step.args.last().unwrap();
-        assert!(ps.starts_with("Start-Process -FilePath 'certutil'"));
+        assert!(ps.starts_with("$p = Start-Process -FilePath 'certutil'"));
         assert!(ps.contains("-ArgumentList '-addstore','-f','ROOT','C:\\Users\\me\\ca.pem'"));
         assert!(ps.contains("-Verb RunAs"), "UAC is what makes this elevated");
         assert!(ps.contains("-Wait"), "we must observe the outcome");
+        assert!(
+            ps.contains("-PassThru") && ps.ends_with("exit $p.ExitCode"),
+            "the elevated child's exit code must reach us: {ps}"
+        );
     }
 
     #[test]
@@ -513,7 +533,13 @@ mod tests {
 
     #[test]
     fn capture_returns_stdout() {
-        assert_eq!(capture("echo", &["hello"]).trim(), "hello");
+        // `echo` is a shell builtin on Windows, not a program.
+        let echoed = if cfg!(windows) {
+            capture("cmd", &["/c", "echo", "hello"])
+        } else {
+            capture("echo", &["hello"])
+        };
+        assert_eq!(echoed.trim(), "hello");
         assert_eq!(capture("novaproxy-no-such-program", &[]), "");
     }
 

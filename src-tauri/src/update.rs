@@ -95,6 +95,7 @@ pub async fn check_update(
 pub async fn install_update(
     app: AppHandle,
     pending: State<'_, PendingUpdate>,
+    state: State<'_, std::sync::Arc<crate::state::AppState>>,
     channel: Channel<UpdateProgress>,
 ) -> Result<(), String> {
     // Taken, not cloned: once the bytes are installed the handle describes a
@@ -107,8 +108,14 @@ pub async fn install_update(
         .ok_or("no update is pending — check for updates first")?;
 
     let mut downloaded = 0u64;
-    update
-        .download_and_install(
+    // Download and install are separate steps so the system proxy can be put
+    // back in between: on Windows `install` launches the installer and calls
+    // `std::process::exit` itself, so the quit hook in `lib.rs` never runs and
+    // the machine would be left pointed at a dead port while the installer
+    // works. Restoring only once the bytes are here means a failed download
+    // leaves the user's capture undisturbed.
+    let bytes = update
+        .download(
             |chunk, total| {
                 downloaded += chunk as u64;
                 // A dropped channel means the window went away mid-download.
@@ -129,6 +136,11 @@ pub async fn install_update(
         )
         .await
         .map_err(|e| e.to_string())?;
+    let st = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || crate::release_system_proxy(&st, "update"))
+        .await
+        .map_err(|e| e.to_string())?;
+    update.install(bytes).map_err(|e| e.to_string())?;
 
     // How the process leaves is platform-specific, because what "installed"
     // means is:

@@ -160,7 +160,12 @@ pub fn log_dir() -> PathBuf {
             return home.join("Library/Logs/NovaProxy");
         }
     }
-    crate::data_dir().join("logs")
+    // Windows: beside the data dir, not in it — see `crate::data_dir`.
+    #[cfg(windows)]
+    let base = crate::windows_app_dir();
+    #[cfg(not(windows))]
+    let base = crate::data_dir();
+    base.join("logs")
 }
 
 /// Start both streams. Returns `None` if the log directory cannot be created,

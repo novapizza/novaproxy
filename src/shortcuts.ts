@@ -236,6 +236,20 @@ export function formatChord(chord: string, mac = isMac()): string[] {
   return out;
 }
 
+/** A chord as one inline label: `⌘⇧F` on macOS, `Ctrl+Shift+F` elsewhere. */
+export function chordText(chord: string, mac = isMac()): string {
+  return formatChord(chord, mac).join(mac ? "" : "+");
+}
+
+/**
+ * Prose that names a chord (`"⌘S saves the session first"`), with `⌘` read as
+ * the platform's modifier. The registry's notes are written once, macOS-style;
+ * this keeps Windows from being told to press a key it does not have.
+ */
+export function withModKey(text: string, mac = isMac()): string {
+  return mac ? text : text.replace(/⌘/g, "Ctrl+");
+}
+
 /** Does this keyboard event mean this chord? */
 export function matchChord(
   e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey">,

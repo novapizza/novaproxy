@@ -11,3 +11,4 @@ pub mod appicon;
 pub mod helper;
 pub mod oscmd;
 pub mod sysproxy;
+pub mod windows;

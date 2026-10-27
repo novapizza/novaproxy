@@ -36,7 +36,7 @@ export function trustHint(ca: CaStatus): string {
       : "Trusted for your login only — no administrator password was needed. Other user accounts and root-owned daemons will not accept it.";
   }
   if (ca.platform === "windows") {
-    return "Installing for you writes your personal certificate store and needs no prompt at all. Choose “all users” (one UAC prompt) if other accounts or services need to trust it.";
+    return "Installing for you adds the CA to your personal certificate store — no administrator rights, but Windows asks you to confirm in its own security warning. Choose “all users” (one UAC prompt) if other accounts or services need to trust it.";
   }
   if (ca.platform === "linux") {
     return "Installing for you adds the CA to your browser certificate databases (Chrome, Firefox) — no password needed, but command-line tools are not covered. Choose “all users” (one polkit prompt) to add a system trust anchor.";

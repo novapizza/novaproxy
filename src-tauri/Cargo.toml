@@ -54,6 +54,11 @@ tauri-plugin-updater = "2.10.1"
 crash-handler = "0.8.0"
 libc = "0.2.189"
 
+# The crash marker is written from inside an exception filter, where only
+# non-allocating Win32 calls are safe (see `crash.rs`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_Security", "Win32_System_IO"] }
+
 [dev-dependencies]
 # The MCP e2e test speaks JSON-RPC to the endpoint over HTTP.
 nova-core = { path = "../crates/nova-core" }
