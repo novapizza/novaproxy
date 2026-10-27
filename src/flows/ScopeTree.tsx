@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { appIcon, onIconsChanged } from "../appicons";
 import { Icon } from "../icons";
 import { formatChord, shortcut } from "../shortcuts";
 import {
@@ -131,6 +132,20 @@ function appLabel(a: AppNode): string {
   return a.name === "" ? "unknown" : a.name;
 }
 
+/** The app's own icon, from the same per-app cache the table's Client column reads. */
+function AppGlyph({ name }: { name: string }) {
+  const [, bump] = useState(0);
+  useEffect(() => onIconsChanged(() => bump((n) => n + 1)), []);
+  const icon = appIcon(name);
+  return typeof icon === "string" ? (
+    <img className="appicon" src={icon} alt="" />
+  ) : (
+    <span className="app-glyph">
+      <Icon name="app-window" size={14} />
+    </span>
+  );
+}
+
 function TreeHead({ icon, label, count }: { icon: "app-window" | "globe"; label: string; count: number }) {
   return (
     <div className="tree-head">
@@ -168,6 +183,7 @@ function AppRow({
         >
           <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
         </span>
+        <AppGlyph name={app.name} />
         <span className="t" onClick={() => setScope(self)}>
           {appLabel(app)}
         </span>
