@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Core capabilities for the main NovaProxy window.","local":true,"windows":["main"],"permissions":["core:default","dialog:default","clipboard-manager:allow-write-text"]}}
+{"default":{"identifier":"default","description":"Core capabilities for the main NovaProxy window.","local":true,"windows":["main"],"permissions":["core:default","dialog:default","clipboard-manager:allow-write-text","core:window:allow-start-dragging","core:window:allow-internal-toggle-maximize"]}}
