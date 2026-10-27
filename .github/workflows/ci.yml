@@ -55,5 +55,11 @@ jobs:
       - name: Frontend tests
         run: npx vitest run
 
+      # tauri.macos.conf.json bundles the helper as a resource, and the app's
+      # build script fails if the file is missing — even for `cargo test`.
+      - name: Build the privileged helper
+        if: runner.os == 'macOS'
+        run: cargo build --release -p nova-helper --locked
+
       - name: Rust tests
         run: cargo test --workspace --locked
