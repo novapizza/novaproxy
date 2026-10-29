@@ -75,6 +75,20 @@ describe("prefs", () => {
     expect(normalizePrefs({ onboardingDone: true }).onboardingDone).toBe(true);
   });
 
+  it("keeps saved selections that still select something", () => {
+    const blob = JSON.stringify({
+      savedScopes: [
+        { id: "a", label: "Chrome + Slack", scope: { kind: "set", apps: ["Google Chrome", "Slack"], hosts: [] } },
+        { id: "b", label: "nothing", scope: { kind: "set", apps: [], hosts: [] } },
+        { id: "c", label: "", scope: { kind: "host", host: "x.com" } },
+        { id: "d", label: "broken", scope: { kind: "wat" } },
+      ],
+    });
+    const loaded = loadPrefs(fakeStore(blob)).savedScopes;
+    expect(loaded.map((s) => s.id)).toEqual(["a"]);
+    expect(DEFAULT_PREFS.savedScopes).toEqual([]);
+  });
+
   it("does not throw when storage refuses to write", () => {
     const hostile = {
       setItem: () => {

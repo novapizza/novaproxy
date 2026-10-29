@@ -10,7 +10,7 @@ import {
   type SavedFilter,
   type ShowToast,
 } from "../filter";
-import { buildScopeTree, type Scope } from "../scope";
+import { buildScopeTree, type SavedScope, type Scope } from "../scope";
 import { useStore } from "../store";
 import {
   INITIAL_PANES,
@@ -95,6 +95,9 @@ export const FlowsSection = forwardRef<FlowsHandle, {
   /** Filters the user kept, and the two ways the list changes. */
   saved: SavedFilter[];
   setSaved: (s: SavedFilter[]) => void;
+  /** Selections of apps and hosts kept in the tree (Favorites › Saved). */
+  savedScopes: SavedScope[];
+  setSavedScopes: (s: SavedScope[]) => void;
   /**
    * The three dividers. `set` paints while dragging, `commit` persists once at
    * the end — a drag emits hundreds of moves and would otherwise write hundreds
@@ -238,6 +241,8 @@ export const FlowsSection = forwardRef<FlowsHandle, {
         scope={filter.scope}
         setScope={setScope}
         pinnedCount={pinned.size}
+        saved={props.savedScopes}
+        setSaved={props.setSavedScopes}
         filterRef={props.treeFilterRef}
         width={props.treeWidth}
       />

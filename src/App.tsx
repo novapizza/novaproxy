@@ -739,6 +739,8 @@ export function App() {
               commitRequestPct={(p) => { setRequestPct(p); setPrefs({ ...prefs, requestPct: p }); }}
               saved={prefs.savedFilters}
               setSaved={(sf) => setPrefs({ ...prefs, savedFilters: sf })}
+              savedScopes={prefs.savedScopes}
+              setSavedScopes={(ss) => setPrefs({ ...prefs, savedScopes: ss })}
               flows={flows}
               filter={filter}
               patch={patchFilter}

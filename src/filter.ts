@@ -1,6 +1,6 @@
 import type { Flow } from "./api";
 import { protoOf, statusClassOf, typeOf, type Proto, type FlowType, type StatusClass } from "./classify";
-import { ALL_TRAFFIC, matchScope, type Scope, type ScopeContext } from "./scope";
+import { ALL_TRAFFIC, describeScope, matchScope, scopeFromJson, type Scope, type ScopeContext } from "./scope";
 import { FLOW_TYPES, PROTOS, STATUS_CLASSES } from "./classify";
 import { clauseActive, describeClause, matchClauses, type Clause } from "./builder";
 
@@ -236,7 +236,7 @@ export function filterFromJson(raw: unknown): FlowFilter {
     const arr = Array.isArray(list) ? list : [];
     return new Set(arr.filter((x): x is T => typeof x === "string" && ids.has(x)));
   };
-  const scope = j.scope && typeof j.scope === "object" && "kind" in j.scope ? j.scope : ALL_TRAFFIC;
+  const scope = scopeFromJson(j.scope) ?? ALL_TRAFFIC;
   return {
     proto: known(j.proto, PROTOS),
     type: known(j.type, FLOW_TYPES),
@@ -281,10 +281,7 @@ export function describeFilter(f: FlowFilter): string {
   parts.push(...label(f.proto, PROTOS));
   parts.push(...label(f.type, FLOW_TYPES));
   parts.push(...label(f.status, STATUS_CLASSES));
-  if (f.scope.kind === "app") parts.push(f.scope.name || "unknown app");
-  if (f.scope.kind === "host") parts.push(f.scope.host);
-  if (f.scope.kind === "path") parts.push(`${f.scope.host}${f.scope.prefix}`);
-  if (f.scope.kind === "pinned") parts.push("pinned");
+  if (f.scope.kind !== "all") parts.push(describeScope(f.scope));
   for (const c of f.clauses.filter(clauseActive)) parts.push(describeClause(c));
   const q = f.query.trim();
   if (q) parts.push(`“${q}”`);
@@ -309,6 +306,7 @@ export function suggestFilterName(f: FlowFilter): string {
   if (f.scope.kind === "host") parts.push(f.scope.host);
   if (f.scope.kind === "path") parts.push(f.scope.prefix);
   if (f.scope.kind === "pinned") parts.push("pinned");
+  if (f.scope.kind === "set") parts.push(describeScope(f.scope));
   const pick = <T extends string>(set: ReadonlySet<T>, defs: readonly { id: T; label: string }[]) =>
     defs.filter((d) => set.has(d.id)).map((d) => d.label);
   // A full axis is not a distinguishing feature — it filters nothing — so it

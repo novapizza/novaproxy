@@ -994,6 +994,15 @@ input, textarea, select { font-family: inherit; }
 .tree-row.indent3 { padding-left: 40px; }
 .tree-row .twist { display: flex; flex: none; color: var(--faint); width: 12px; }
 .tree-row .twist.hidden { visibility: hidden; }
+.tree-x {
+  flex: none; display: grid; place-items: center; width: 18px; height: 18px; padding: 0;
+  border: 0; border-radius: 5px; background: none; color: var(--faint); cursor: pointer;
+}
+.tree-x:hover { color: var(--text2); background: rgba(0,0,0,.06); }
+/* A saved row's delete shows on hover only: the list is for applying. */
+.tree-row .tree-x { visibility: hidden; }
+.tree-row:hover .tree-x, .tree-row .tree-x:focus-visible { visibility: visible; }
+
 .tree-none { padding: 8px 10px; font: 400 11.5px var(--font-ui); color: var(--faint); }
 
 .tree-foot { flex: none; padding: 10px; border-top: 1px solid var(--border); display: flex; }
@@ -1009,6 +1018,15 @@ input, textarea, select { font-family: inherit; }
 .tree-foot {
   padding: 8px 10px;
 }
+/* Opens the apps & domains picker; lit, with a count, while a pick applies. */
+.tree-pick {
+  display: flex; align-items: center; gap: 4px; height: 24px; padding: 0 6px;
+  border: 1px solid transparent; border-radius: 6px; background: none;
+  color: var(--faint); cursor: pointer;
+}
+.tree-pick:hover { color: var(--text2); background: var(--hover); }
+.tree-pick.on { color: var(--accent); border-color: rgba(62,181,109,.35); background: rgba(62,181,109,.08); }
+.tree-pick .c { font: 600 10.5px var(--font-mono); }
 .tree-foot > .kbd { font: 400 10.5px var(--font-mono); color: var(--faint); }
 
 /* ------------------------------ filter bar ------------------------------- */
@@ -1540,3 +1558,57 @@ input, textarea, select { font-family: inherit; }
   padding: 16px 22px; margin-top: 4px;
 }
 .btn-primary.sm { padding: 8px 16px; font-size: 12.5px; }
+
+/* ------------------------- apps & domains picker -------------------------- */
+
+.sp-modal { width: 680px; height: min(560px, 82vh); }
+.sp-search {
+  display: flex; align-items: center; gap: 8px; margin: 14px 22px 0; padding: 0 10px;
+  height: 34px; border-radius: var(--r-field); border: 1px solid var(--border);
+  background: var(--input); color: var(--faint);
+}
+.sp-search input {
+  flex: 1; min-width: 0; height: 100%; border: 0; outline: none; background: transparent;
+  font: 400 13px var(--font-ui); color: var(--text);
+}
+.sp-cols { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 22px 0; }
+.sp-col { display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.sp-col-head {
+  flex: none; display: flex; align-items: center; gap: 7px; padding: 9px 12px;
+  border-bottom: 1px solid var(--border); background: var(--panel);
+  font: 600 10.5px var(--font-ui); letter-spacing: .09em; text-transform: uppercase; color: var(--faint);
+}
+.sp-any { letter-spacing: 0; text-transform: none; font-weight: 500; }
+.sp-none {
+  border: 0; background: none; padding: 0; cursor: pointer;
+  font: 600 11px var(--font-ui); letter-spacing: 0; text-transform: none; color: var(--accent);
+}
+.sp-list { flex: 1; overflow-y: auto; padding: 4px; }
+.sp-row {
+  display: flex; align-items: center; gap: 9px; padding: 6px 8px; border-radius: 7px; cursor: pointer;
+  font: 500 12.5px var(--font-ui); color: var(--text2);
+}
+.sp-row:hover { background: var(--hover); }
+.sp-row.on { color: var(--accent); }
+.sp-row.mono .t { font: 400 11.5px var(--font-mono); }
+.sp-row input { flex: none; margin: 0; accent-color: var(--accent); width: 14px; height: 14px; }
+.sp-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-row .n { flex: none; font: 400 11px var(--font-mono); color: var(--faint); }
+.sp-summary { flex: none; display: flex; gap: 10px; padding: 12px 22px 0; }
+.sp-summary .k {
+  flex: none; font: 600 10.5px var(--font-ui); letter-spacing: .09em;
+  text-transform: uppercase; color: var(--faint); padding-top: 2px;
+}
+.sp-summary .v {
+  font: 400 12px var(--font-ui); color: var(--text2);
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.sp-foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 14px 22px 16px; }
+.sp-foot .spacer { flex: 1; }
+.sp-name {
+  width: 260px; height: 32px; padding: 0 10px; border-radius: var(--r-field);
+  border: 1px solid var(--border); background: var(--input); outline: none;
+  font: 400 12.5px var(--font-ui); color: var(--text);
+}
+.sp-name:focus { border-color: rgba(62,181,109,.45); }
+.sp-name:disabled { opacity: .5; }

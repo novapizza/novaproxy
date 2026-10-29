@@ -1,4 +1,5 @@
 import { filterFromJson, filterToJson, type SavedFilter } from "./filter";
+import { scopeFromJson, type SavedScope } from "./scope";
 import {
   DEFAULT_COLUMNS,
   normalizeColumns,
@@ -64,6 +65,12 @@ export interface Prefs {
    */
   savedFilters: SavedFilter[];
   /**
+   * Selections of apps and hosts the user named in the sidebar (Favorites ›
+   * Saved). Kept across launches for the same reason as filters: an app or a
+   * host name means the same thing next week, where a pinned flow id does not.
+   */
+  savedScopes: SavedScope[];
+  /**
    * Look for a new version at launch. On by default: a debugging proxy holds a
    * root CA and a TLS stack, so running an old build is a security decision the
    * user should have to make deliberately. The check only ever *reports* —
@@ -91,6 +98,7 @@ export const DEFAULT_PREFS: Prefs = {
   inspectorPct: 42,
   requestPct: 50,
   savedFilters: [],
+  savedScopes: [],
   autoCheckUpdates: true,
   onboardingDone: false,
 };
@@ -112,6 +120,21 @@ function normalizeSaved(raw: unknown): SavedFilter[] {
     const { id, label, filter } = item as Partial<SavedFilter>;
     if (typeof id !== "string" || typeof label !== "string" || label.trim() === "") continue;
     out.push({ id, label, filter: filterToJson(filterFromJson(filter)) });
+  }
+  return out;
+}
+
+/** Keep a saved selection only if it still names something to select. */
+function normalizeSavedScopes(raw: unknown): SavedScope[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SavedScope[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const { id, label, scope } = item as Partial<SavedScope>;
+    if (typeof id !== "string" || typeof label !== "string" || label.trim() === "") continue;
+    const s = scopeFromJson(scope);
+    if (!s || s.kind === "all") continue;
+    out.push({ id, label, scope: s });
   }
   return out;
 }
@@ -151,6 +174,7 @@ export function normalizePrefs(raw: unknown): Prefs {
     inspectorPct: clampIn(v.inspectorPct, INSPECTOR_PCT, DEFAULT_PREFS.inspectorPct),
     requestPct: clampIn(v.requestPct, REQUEST_PCT, DEFAULT_PREFS.requestPct),
     savedFilters: normalizeSaved(v.savedFilters),
+    savedScopes: normalizeSavedScopes(v.savedScopes),
     // Only an explicit `false` opts out, so a pref file written by an older
     // build keeps the safer default.
     autoCheckUpdates: v.autoCheckUpdates !== false,

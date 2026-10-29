@@ -1,5 +1,6 @@
 /* Throwaway visual harness: renders the Flows section with mock flows so the
    layout can be screenshotted without a Tauri runtime. Not shipped. */
+import type { SavedScope } from "./scope";
 import { createRoot } from "react-dom/client";
 import { useEffect, useState } from "react";
 import "@fontsource-variable/inter";
@@ -75,6 +76,7 @@ function Harness() {
   const [treeWidth, setTreeWidth] = useState(DEFAULT_PREFS.treeWidth);
   const [inspectorPct, setInspectorPct] = useState(DEFAULT_PREFS.inspectorPct);
   const [requestPct, setRequestPct] = useState(DEFAULT_PREFS.requestPct);
+  const [savedScopes, setSavedScopes] = useState<SavedScope[]>([]);
   const [saved, setSaved] = useState<SavedFilter[]>([
     { id: "s1", label: "JSON · 4xx · 5xx", filter: { type: ["json"], status: ["4xx", "5xx"] } },
     { id: "s2", label: "slack.com", filter: { scope: { kind: "host", host: "slack.com" } } },
@@ -108,6 +110,8 @@ function Harness() {
             setWidths={setWidths}
             saved={saved}
             setSaved={setSaved}
+            savedScopes={savedScopes}
+            setSavedScopes={setSavedScopes}
             treeWidth={treeWidth}
             setTreeWidth={setTreeWidth}
             commitTreeWidth={setTreeWidth}

@@ -8,9 +8,10 @@ import type { Flow } from "./api";
  * them. That separation is what lets "Google Chrome" stay selected while the
  * status chips change underneath.
  *
- * There is no `saved` scope. A saved filter *is* a whole filter (Proxyman shows
- * it as a chip in the chip row, not as a tree row), so it replaces the filter
- * instead of narrowing one — see `FlowFilter` in `filter.ts`.
+ * A saved filter is not a scope: it *is* a whole filter (a chip in the chip row),
+ * so it replaces the filter instead of narrowing one — see `FlowFilter` in
+ * `filter.ts`. What the tree saves is a selection of apps and hosts
+ * (`SavedScope`), which applies as a scope like any row.
  */
 export type Scope =
   | { kind: "all" }
@@ -20,7 +21,16 @@ export type Scope =
   | { kind: "app"; name: string }
   | { kind: "host"; host: string }
   /** One host and a path prefix, e.g. `/v3/shoots`. Matches the prefix or below it. */
-  | { kind: "path"; host: string; prefix: string };
+  | { kind: "path"; host: string; prefix: string }
+  /**
+   * Several apps and/or several hosts, picked in the apps & domains picker.
+   *
+   * Within a group the picks OR (Chrome or Slack); between the groups they AND
+   * (…talking to api.github.com). An empty group does not narrow. A set is only
+   * ever built with two or more picks — one pick is the plain `app`/`host`
+   * scope, so the two ways of choosing one row cannot disagree (`scopeOf`).
+   */
+  | { kind: "set"; apps: string[]; hosts: string[] };
 
 export const ALL_TRAFFIC: Scope = { kind: "all" };
 
@@ -43,6 +53,11 @@ export function matchScope(f: Flow, scope: Scope, ctx: ScopeContext = {}): boole
       return f.host === scope.host;
     case "path":
       return f.host === scope.host && isUnder(f.path, scope.prefix);
+    case "set":
+      return (
+        (scope.apps.length === 0 || scope.apps.includes(f.process ?? "")) &&
+        (scope.hosts.length === 0 || scope.hosts.includes(f.host))
+      );
   }
 }
 
@@ -64,11 +79,73 @@ export function scopeKey(scope: Scope): string {
     case "app": return `app:${scope.name}`;
     case "host": return `host:${scope.host}`;
     case "path": return `path:${scope.host}${scope.prefix}`;
+    // Sorted, so picking Chrome then Slack is the same selection as the reverse.
+    case "set": return `set:${[...scope.apps].sort().join("\u0000")}|${[...scope.hosts].sort().join("\u0000")}`;
   }
 }
 
 export function sameScope(a: Scope, b: Scope): boolean {
   return scopeKey(a) === scopeKey(b);
+}
+
+/* ------------------------------ multi-select ------------------------------ */
+
+/** The apps and hosts a scope picks, as the picker's checkboxes see it. */
+export function picksOf(scope: Scope): { apps: string[]; hosts: string[] } {
+  switch (scope.kind) {
+    case "app": return { apps: [scope.name], hosts: [] };
+    case "host": return { apps: [], hosts: [scope.host] };
+    case "set": return { apps: scope.apps, hosts: scope.hosts };
+    // A path, Pinned or All traffic picks no app or host: the picker starts empty.
+    default: return { apps: [], hosts: [] };
+  }
+}
+
+/** The scope for this many picks: none is All traffic, one is the plain row scope. */
+export function scopeOf(apps: string[], hosts: string[]): Scope {
+  if (apps.length + hosts.length === 0) return ALL_TRAFFIC;
+  if (apps.length === 1 && hosts.length === 0) return { kind: "app", name: apps[0] };
+  if (hosts.length === 1 && apps.length === 0) return { kind: "host", host: hosts[0] };
+  return { kind: "set", apps, hosts };
+}
+
+/** A scope in words: `Google Chrome, Slack · api.github.com`. */
+export function describeScope(scope: Scope): string {
+  switch (scope.kind) {
+    case "all": return "all traffic";
+    case "pinned": return "pinned";
+    case "app": return scope.name || "unknown app";
+    case "host": return scope.host;
+    case "path": return `${scope.host}${scope.prefix}`;
+    case "set":
+      return [scope.apps.map((a) => a || "unknown app").join(", "), scope.hosts.join(", ")]
+        .filter(Boolean)
+        .join(" · ");
+  }
+}
+
+/**
+ * Rebuild a scope read from storage, or `null` when it is not one.
+ *
+ * A blob on disk was written by some other build, so each kind's fields are
+ * checked rather than trusted — a `set` with a non-string pick would otherwise
+ * reach `includes` and match nothing, silently.
+ */
+export function scopeFromJson(raw: unknown): Scope | null {
+  if (!raw || typeof raw !== "object") return null;
+  const j = raw as Record<string, unknown>;
+  const str = (v: unknown): v is string => typeof v === "string";
+  const strs = (v: unknown) => (Array.isArray(v) ? [...new Set(v.filter(str))] : []);
+  switch (j.kind) {
+    case "all": return ALL_TRAFFIC;
+    case "pinned": return { kind: "pinned" };
+    case "app": return str(j.name) ? { kind: "app", name: j.name } : null;
+    case "host": return str(j.host) ? { kind: "host", host: j.host } : null;
+    case "path":
+      return str(j.host) && str(j.prefix) ? { kind: "path", host: j.host, prefix: j.prefix } : null;
+    case "set": return scopeOf(strs(j.apps), strs(j.hosts));
+    default: return null;
+  }
 }
 
 /* --------------------------------- the tree -------------------------------- */
@@ -209,4 +286,11 @@ function byAppOrder(a: AppNode, b: AppNode): number {
  */
 function byCountThenName<T extends { count: number }>(name: (x: T) => string) {
   return (a: T, b: T) => b.count - a.count || name(a).localeCompare(name(b));
+}
+
+/** A selection of apps and hosts the user named and kept, shown under Favorites. */
+export interface SavedScope {
+  id: string;
+  label: string;
+  scope: Scope;
 }

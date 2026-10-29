@@ -1,9 +1,13 @@
 import { useMemo, useState } from "react";
 import { Icon } from "../icons";
 import { formatChord, shortcut } from "../shortcuts";
+import { ScopePicker } from "./ScopePicker";
 import {
+  describeScope,
+  picksOf,
   sameScope,
   type AppNode,
+  type SavedScope,
   type HostNode,
   type PathNode,
   type Scope,
@@ -23,6 +27,8 @@ export function ScopeTree({
   scope,
   setScope,
   pinnedCount,
+  saved,
+  setSaved,
   filterRef,
   width,
 }: {
@@ -30,6 +36,9 @@ export function ScopeTree({
   scope: Scope;
   setScope: (s: Scope) => void;
   pinnedCount: number;
+  /** Selections kept from the picker, under Favorites › Saved. */
+  saved: SavedScope[];
+  setSaved: (s: SavedScope[]) => void;
   /** Focus target for the tree filter (⌘⇧F). */
   filterRef?: React.RefObject<HTMLInputElement | null>;
   /** Set by the divider; the CSS token is only the first-paint fallback. */
@@ -37,6 +46,9 @@ export function ScopeTree({
 }) {
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const [needle, setNeedle] = useState("");
+  const [picking, setPicking] = useState(false);
+  // How many apps and domains the active pick holds, for the filter button.
+  const pickCount = scope.kind === "set" ? picksOf(scope).apps.length + picksOf(scope).hosts.length : 0;
 
   const toggle = (key: string) =>
     setOpen((prev) => {
@@ -67,14 +79,34 @@ export function ScopeTree({
       <div className="tree-body">
         {/* Favourites appear only once there is something in them: a permanent
             empty "Pinned" row is a control that does nothing. */}
-        {pinnedCount > 0 && (
+        {(pinnedCount > 0 || saved.length > 0) && (
           <>
             <div className="tree-eyebrow">Favorites</div>
-            <div {...row({ kind: "pinned" })}>
-              <Icon name="pin" size={14} />
-              <span className="t">Pinned</span>
-              <span className="n">{pinnedCount}</span>
-            </div>
+            {pinnedCount > 0 && (
+              <div {...row({ kind: "pinned" })}>
+                <Icon name="pin" size={14} />
+                <span className="t">Pinned</span>
+                <span className="n">{pinnedCount}</span>
+              </div>
+            )}
+            {saved.map((sv) => (
+              <div key={sv.id} {...row(sv.scope)} title={describeScope(sv.scope)}>
+                <Icon name="filter" size={14} />
+                <span className="t">{sv.label}</span>
+                <button
+                  type="button"
+                  className="tree-x"
+                  aria-label={`Delete saved filter ${sv.label}`}
+                  title="Delete"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSaved(saved.filter((x) => x.id !== sv.id));
+                  }}
+                >
+                  <Icon name="x" size={12} />
+                </button>
+              </div>
+            ))}
           </>
         )}
 
@@ -112,7 +144,16 @@ export function ScopeTree({
       </div>
 
       <div className="tree-foot">
-        <Icon name="filter" size={13} />
+        <button
+          type="button"
+          className={`tree-pick ${pickCount ? "on" : ""}`}
+          title={pickCount ? `Filtering by ${describeScope(scope)}` : "Filter by several apps and domains"}
+          aria-label="Filter by several apps and domains"
+          onClick={() => setPicking(true)}
+        >
+          <Icon name="filter" size={13} />
+          {pickCount > 0 && <span className="c">{pickCount}</span>}
+        </button>
         <input
           ref={filterRef}
           value={needle}
@@ -122,6 +163,16 @@ export function ScopeTree({
         />
         <span className="kbd">{formatChord(shortcut("filter.tree").chord).join("")}</span>
       </div>
+      {picking && (
+        <ScopePicker
+          tree={tree}
+          scope={scope}
+          saved={saved}
+          setSaved={setSaved}
+          onApply={setScope}
+          onClose={() => setPicking(false)}
+        />
+      )}
     </div>
   );
 }
