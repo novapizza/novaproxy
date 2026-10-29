@@ -1,3 +1,5 @@
+// First, before react-dom is evaluated: see the module.
+import "./devPerfTracks";
 import React from "react";
 import ReactDOM from "react-dom/client";
 // Bundled locally so a desktop app keeps its typography offline. Variable
@@ -6,16 +8,20 @@ import "@fontsource-variable/petrona";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
 import { App } from "./App";
+import { onRender } from "./perf";
 import { ErrorBoundary, installGlobalErrorHandlers } from "./ErrorBoundary";
 import "./styles.css";
 
 // Before the app mounts, so a throw during the first render is still caught.
 installGlobalErrorHandlers();
 
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <App />
+      <React.Profiler id="app" onRender={onRender}>
+        <App />
+      </React.Profiler>
     </ErrorBoundary>
   </React.StrictMode>,
 );

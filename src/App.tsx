@@ -25,6 +25,7 @@ import {
 } from "./update";
 import { MAX_FLOWS, useStore } from "./store";
 import { FLUSH_MS, StreamQueue, type StreamBatch } from "./streamQueue";
+import { takeRenderTimes } from "./perf";
 import { exportSession, exportHar, importSession } from "./session";
 import { EMPTY_FILTER, toastDuration, type FlowFilter, type ShowToast, type ToastKind } from "./filter";
 import { Brandmark } from "./Brandmark";
@@ -339,7 +340,7 @@ export function App() {
           `messages=${perf.messages} flows_in=${perf.flows} frames_in=${perf.frames} ` +
           `flushes=${perf.flushes} flush_avg_ms=${perf.flushes ? Math.round(perf.flushMs / perf.flushes) : 0} ` +
           `flush_max_ms=${Math.round(perf.flushMaxMs)} lag_max_ms=${Math.round(perf.lagMaxMs)} ` +
-          `hidden=${document.hidden}`,
+          `hidden=${document.hidden} render: ${takeRenderTimes()}`,
       );
       Object.assign(perf, newPerfWindow());
     }, PERF_EVERY_MS);

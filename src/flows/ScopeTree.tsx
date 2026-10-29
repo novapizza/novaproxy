@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { appIcon, onIconsChanged } from "../appicons";
 import { Icon } from "../icons";
 import { formatChord, shortcut } from "../shortcuts";
@@ -56,12 +56,21 @@ export function ScopeTree({
   // How many apps and domains the active pick holds, for the filter button.
   const pickCount = scope.kind === "set" ? picksOf(scope).apps.length + picksOf(scope).hosts.length : 0;
 
-  const toggle = (key: string) =>
-    setOpen((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(key)) next.add(key);
-      return next;
-    });
+  const toggle = useCallback(
+    (key: string) =>
+      setOpen((prev) => {
+        const next = new Set(prev);
+        if (!next.delete(key)) next.add(key);
+        return next;
+      }),
+    [],
+  );
+  // Stable for the memoised rows: the parent passes a fresh `setScope` on every
+  // render, and a row that re-renders because a callback changed identity is
+  // exactly the cost the memo is there to avoid.
+  const setScopeRef = useRef(setScope);
+  setScopeRef.current = setScope;
+  const pick = useCallback((s: Scope) => setScopeRef.current(s), []);
 
   // The tree filter matches names only, and matches app *and* host names, so
   // typing a domain narrows both sections rather than emptying one of them.
@@ -139,16 +148,22 @@ export function ScopeTree({
             setScope(ALL_TRAFFIC);
           }}
         />
-        {apps.map((a) => (
-          <AppRow
-            key={a.name}
-            app={a}
-            scope={scope}
-            setScope={setScope}
-            open={open.has(`app:${a.name}`)}
-            toggle={() => toggle(`app:${a.name}`)}
-          />
-        ))}
+        {apps.map((a) => {
+          const isOpen = open.has(`app:${a.name}`);
+          return (
+            <AppRow
+              key={a.name}
+              app={a}
+              on={scope.kind === "app" && scope.name === a.name}
+              // Only an open row shows its hosts, so only an open row needs the
+              // scope — a closed one then ignores scope changes entirely.
+              scope={isOpen ? scope : null}
+              setScope={pick}
+              open={isOpen}
+              toggle={toggle}
+            />
+          );
+        })}
         {apps.length === 0 && <div className="tree-none">no match</div>}
 
         <TreeHead
@@ -161,16 +176,20 @@ export function ScopeTree({
             setScope(ALL_TRAFFIC);
           }}
         />
-        {domains.map((d) => (
-          <HostRow
-            key={d.host}
-            host={d}
-            scope={scope}
-            setScope={setScope}
-            openKeys={open}
-            toggle={toggle}
-          />
-        ))}
+        {domains.map((d) => {
+          const isOpen = open.has(`host:${d.host}`);
+          return (
+            <HostRow
+              key={d.host}
+              host={d}
+              on={scope.kind === "host" && scope.host === d.host}
+              scope={isOpen ? scope : null}
+              setScope={pick}
+              open={isOpen}
+              toggle={toggle}
+            />
+          );
+        })}
         {domains.length === 0 && <div className="tree-none">no match</div>}
       </div>
 
@@ -270,97 +289,133 @@ function TreeHead({
   );
 }
 
-function AppRow({
-  app,
-  scope,
-  setScope,
-  open,
-  toggle,
-}: {
-  app: AppNode;
-  scope: Scope;
-  setScope: (s: Scope) => void;
-  open: boolean;
-  toggle: () => void;
-}) {
-  const self: Scope = { kind: "app", name: app.name };
-  return (
-    <>
-      <div className={`tree-row indent ${sameScope(scope, self) ? "on" : ""}`}>
-        <span
-          className={`twist ${app.hosts.length > 1 ? "" : "hidden"}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            toggle();
-          }}
-        >
-          <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
-        </span>
-        <AppGlyph name={app.name} />
-        <span className="t" onClick={() => setScope(self)}>
-          {appLabel(app)}
-        </span>
-        <span className="n">{app.count}</span>
-      </div>
-      {open &&
-        app.hosts.map((h) => {
-          const hostScope: Scope = { kind: "host", host: h.host };
-          return (
-            <div
-              key={h.host}
-              className={`tree-row indent2 mono ${sameScope(scope, hostScope) ? "on" : ""}`}
-              onClick={() => setScope(hostScope)}
-            >
-              <span className="t">{h.host}</span>
-              <span className="n">{h.count}</span>
-            </div>
-          );
-        })}
-    </>
-  );
-}
+/**
+ * A row re-renders only when what it shows changed.
+ *
+ * The tree is rebuilt from the whole capture whenever flows arrive, so every
+ * node is a new object each time; under steady traffic that re-rendered every
+ * app and domain row several times a second — most of the renderer's time. A
+ * row's own count moves only when one of its flows does, and a closed row shows
+ * nothing else, so comparing those is enough. An open row also shows its
+ * children, whose counts all add up into its own.
+ */
+const AppRow = memo(
+  function AppRow({
+    app,
+    on,
+    scope,
+    setScope,
+    open,
+    toggle,
+  }: {
+    app: AppNode;
+    on: boolean;
+    scope: Scope | null;
+    setScope: (s: Scope) => void;
+    open: boolean;
+    toggle: (key: string) => void;
+  }) {
+    const self: Scope = { kind: "app", name: app.name };
+    return (
+      <>
+        <div className={`tree-row indent ${on ? "on" : ""}`}>
+          <span
+            className={`twist ${app.hosts.length > 1 ? "" : "hidden"}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggle(`app:${app.name}`);
+            }}
+          >
+            <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
+          </span>
+          <AppGlyph name={app.name} />
+          <span className="t" onClick={() => setScope(self)}>
+            {appLabel(app)}
+          </span>
+          <span className="n">{app.count}</span>
+        </div>
+        {open &&
+          scope &&
+          app.hosts.map((h) => {
+            const hostScope: Scope = { kind: "host", host: h.host };
+            return (
+              <div
+                key={h.host}
+                className={`tree-row indent2 mono ${sameScope(scope, hostScope) ? "on" : ""}`}
+                onClick={() => setScope(hostScope)}
+              >
+                <span className="t">{h.host}</span>
+                <span className="n">{h.count}</span>
+              </div>
+            );
+          })}
+      </>
+    );
+  },
+  (a, b) =>
+    a.app.count === b.app.count &&
+    a.app.hosts.length === b.app.hosts.length &&
+    a.on === b.on &&
+    a.open === b.open &&
+    a.scope === b.scope &&
+    a.setScope === b.setScope &&
+    a.toggle === b.toggle,
+);
 
-function HostRow({
-  host,
-  scope,
-  setScope,
-  openKeys,
-  toggle,
-}: {
-  host: HostNode;
-  scope: Scope;
-  setScope: (s: Scope) => void;
-  openKeys: ReadonlySet<string>;
-  toggle: (key: string) => void;
-}) {
-  const key = `host:${host.host}`;
-  const open = openKeys.has(key);
-  const self: Scope = { kind: "host", host: host.host };
-  return (
-    <>
-      <div className={`tree-row indent mono ${sameScope(scope, self) ? "on" : ""}`}>
-        <span
-          className={`twist ${host.children.length ? "" : "hidden"}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            toggle(key);
-          }}
-        >
-          <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
-        </span>
-        <span className="t" onClick={() => setScope(self)}>
-          {host.host}
-        </span>
-        {host.tls && <span className="tls-chip">TLS</span>}
-        <span className="n">{host.count}</span>
-      </div>
-      {open &&
-        host.children.map((p) => (
-          <PathRow key={p.prefix} host={host.host} node={p} scope={scope} setScope={setScope} />
-        ))}
-    </>
-  );
-}
+/** Memoised on the same terms as {@link AppRow}. */
+const HostRow = memo(
+  function HostRow({
+    host,
+    on,
+    scope,
+    setScope,
+    open,
+    toggle,
+  }: {
+    host: HostNode;
+    on: boolean;
+    scope: Scope | null;
+    setScope: (s: Scope) => void;
+    open: boolean;
+    toggle: (key: string) => void;
+  }) {
+    const self: Scope = { kind: "host", host: host.host };
+    return (
+      <>
+        <div className={`tree-row indent mono ${on ? "on" : ""}`}>
+          <span
+            className={`twist ${host.children.length ? "" : "hidden"}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggle(`host:${host.host}`);
+            }}
+          >
+            <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
+          </span>
+          <span className="t" onClick={() => setScope(self)}>
+            {host.host}
+          </span>
+          {host.tls && <span className="tls-chip">TLS</span>}
+          <span className="n">{host.count}</span>
+        </div>
+        {open &&
+          scope &&
+          host.children.map((p) => (
+            <PathRow key={p.prefix} host={host.host} node={p} scope={scope} setScope={setScope} />
+          ))}
+      </>
+    );
+  },
+  (a, b) =>
+    a.host.count === b.host.count &&
+    a.host.tls === b.host.tls &&
+    a.host.children.length === b.host.children.length &&
+    a.on === b.on &&
+    a.open === b.open &&
+    a.scope === b.scope &&
+    a.setScope === b.setScope &&
+    a.toggle === b.toggle,
+);
 
 /**
  * Path rows are always expanded to their (capped) depth.
