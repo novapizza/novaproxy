@@ -1181,6 +1181,8 @@ input, textarea, select { font-family: inherit; }
 .ft-row .c-client { display: flex; align-items: center; gap: 7px; font-family: var(--font-ui); }
 .ft-row .c-client svg { flex: none; color: var(--c-indigo); }
 .ft-row .appicon { width: 14px; height: 14px; flex: none; border-radius: 3px; }
+.tree-row .appicon { width: 16px; height: 16px; flex: none; border-radius: 4px; }
+.tree-row .app-glyph { display: flex; flex: none; color: var(--faint); }
 .ft-row .c-client .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .ft-row .c-method, .ft-row .c-status { overflow: visible; }
