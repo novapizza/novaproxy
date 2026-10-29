@@ -1,5 +1,5 @@
 import type { Flow } from "./api";
-import { protoOf, statusClassOf, typeOf, type Proto, type FlowType, type StatusClass } from "./classify";
+import { matchesType, protoOf, statusClassOf, type Proto, type FlowType, type StatusClass } from "./classify";
 import { ALL_TRAFFIC, describeScope, matchScope, scopeFromJson, type Scope, type ScopeContext } from "./scope";
 import { FLOW_TYPES, PROTOS, STATUS_CLASSES } from "./classify";
 import { clauseActive, describeClause, matchClauses, type Clause } from "./builder";
@@ -171,7 +171,7 @@ export function buildPredicate(f: FlowFilter, ctx: ScopeContext = {}): (flow: Fl
       // hides it rather than guessing which one it will land in.
       if (sc == null || !status.has(sc)) return false;
     }
-    if (!anyType && !type.has(typeOf(flow))) return false;
+    if (!anyType && !matchesType(flow, type)) return false;
     if (!anyScope && !matchScope(flow, scope, ctx)) return false;
     if (!matchClauses(flow, clauses)) return false;
     return query === "" || matchQuery(flow, query);

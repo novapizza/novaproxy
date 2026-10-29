@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Flow, Header } from "./api";
 import {
+  isFetchXhr,
+  matchesType,
   headerValue,
   protoOf,
   statusClassOf,
@@ -147,5 +149,35 @@ describe("statusClassOf", () => {
 
   it("a status outside 1xx-5xx counts as a failure, not as nothing", () => {
     expect(statusClassOf(mkFlow({ status: 999 }))).toBe("err");
+  });
+});
+
+describe("Fetch/XHR", () => {
+  const req = (...hs: [string, string][]) =>
+    mkFlow({ request_headers: hs.map(([name, value]) => ({ name, value }) as Header) });
+
+  it("is what a browser marks with Sec-Fetch-Dest: empty", () => {
+    expect(isFetchXhr(req(["Sec-Fetch-Dest", "empty"], ["Sec-Fetch-Mode", "cors"]))).toBe(true);
+    expect(isFetchXhr(req(["sec-fetch-dest", "document"]))).toBe(false);
+    expect(isFetchXhr(req(["sec-fetch-dest", "image"]))).toBe(false);
+  });
+
+  it("falls back to X-Requested-With, and is never a non-browser client", () => {
+    expect(isFetchXhr(req(["X-Requested-With", "XMLHttpRequest"]))).toBe(true);
+    expect(isFetchXhr(req(["user-agent", "curl/8.4.0"]))).toBe(false);
+    // The browser's own word wins over a library header.
+    expect(isFetchXhr(req(["sec-fetch-dest", "script"], ["x-requested-with", "XMLHttpRequest"]))).toBe(false);
+  });
+
+  it("matches alongside the payload kind, not instead of it", () => {
+    const jsonFetch = mkFlow({
+      content_type: "application/json",
+      request_headers: [{ name: "sec-fetch-dest", value: "empty" } as Header],
+    });
+    const curlJson = mkFlow({ content_type: "application/json" });
+    expect(matchesType(jsonFetch, new Set(["json"]))).toBe(true);
+    expect(matchesType(jsonFetch, new Set(["xhr"]))).toBe(true);
+    expect(matchesType(curlJson, new Set(["xhr"]))).toBe(false);
+    expect(matchesType(curlJson, new Set(["xhr", "json"]))).toBe(true);
   });
 });

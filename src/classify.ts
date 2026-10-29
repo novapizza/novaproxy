@@ -18,6 +18,12 @@ export type Proto = "http" | "https" | "ws";
  * renders collapses into `document`.
  */
 export type FlowType =
+  /**
+   * Not a payload kind: how the request was made. `typeOf` never returns it;
+   * the type chips test it separately (`matchesType`), so a JSON call made with
+   * `fetch()` answers to both the JSON chip and this one.
+   */
+  | "xhr"
   | "json"
   | "graphql"
   | "mcp"
@@ -40,6 +46,7 @@ export const PROTOS: { id: Proto; label: string }[] = [
 ];
 
 export const FLOW_TYPES: { id: FlowType; label: string }[] = [
+  { id: "xhr", label: "Fetch/XHR" },
   { id: "json", label: "JSON" },
   { id: "graphql", label: "GraphQL" },
   { id: "mcp", label: "MCP" },
@@ -94,7 +101,28 @@ function mediaType(raw: string | null): string {
  * A tunneled CONNECT has no content type on either side and lands in `other`,
  * which is honest: nothing was decrypted, so nothing is known.
  */
-export function typeOf(f: Flow): FlowType {
+/**
+ * A request a page's script made with `fetch()` or `XMLHttpRequest` — what
+ * DevTools files under Fetch/XHR.
+ *
+ * Browsers say so themselves: every current engine sends `Sec-Fetch-Dest:
+ * empty` for those two APIs (a page load, image or script names its
+ * destination instead), and older XHR libraries add `X-Requested-With:
+ * XMLHttpRequest`. Clients that are not browsers send neither, so a curl or a
+ * native app is never Fetch/XHR — which is what the filter means.
+ */
+export function isFetchXhr(f: Flow): boolean {
+  const dest = headerValue(f.request_headers, "sec-fetch-dest");
+  if (dest != null) return dest.trim().toLowerCase() === "empty";
+  return (headerValue(f.request_headers, "x-requested-with") ?? "").toLowerCase() === "xmlhttprequest";
+}
+
+/** True when the flow answers to one of the picked type chips. */
+export function matchesType(f: Flow, types: ReadonlySet<FlowType>): boolean {
+  return types.has(typeOf(f)) || (types.has("xhr") && isFetchXhr(f));
+}
+
+export function typeOf(f: Flow): Exclude<FlowType, "xhr"> {
   if (f.mcp) return "mcp";
 
   const res = mediaType(f.content_type);
