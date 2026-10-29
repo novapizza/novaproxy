@@ -1250,6 +1250,11 @@ input, textarea, select { font-family: inherit; }
 }
 .insp-head .collapse { flex: none; display: flex; color: var(--faint); cursor: pointer; }
 .insp-head .collapse:hover { color: var(--text2); }
+.insp-head .pane-copy {
+  flex: none; display: flex; align-items: center; padding: 3px; border: 0; border-radius: 5px;
+  background: none; color: var(--faint); cursor: pointer;
+}
+.insp-head .pane-copy:hover { color: var(--text2); background: var(--hover); }
 
 .itab {
   flex: none; font: 500 12px var(--font-ui); color: var(--muted); cursor: pointer;
