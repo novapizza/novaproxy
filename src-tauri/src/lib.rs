@@ -345,8 +345,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::subscribe_flows,
-            commands::subscribe_ws,
+            commands::subscribe_stream,
+            commands::set_flow_stream,
             commands::proxy_status,
             commands::start_proxy,
             commands::stop_proxy,

@@ -14,15 +14,19 @@ import type { WsMessage } from "./bindings/WsMessage";
 import type { TlsScope } from "./bindings/TlsScope";
 import type { McpStatus } from "./bindings/McpStatus";
 import type { HelperStatus } from "./bindings/HelperStatus";
+import type { StreamBatch } from "./streamQueue";
 import type { UpdateStatus } from "./bindings/UpdateStatus";
 import type { UpdateProgress } from "./bindings/UpdateProgress";
 
 /** Thin typed wrappers over the Tauri command surface. */
 export const api = {
-  /** Register the streaming channel that receives flow snapshots. */
-  subscribeFlows: (channel: Channel<Flow>) => invoke<void>("subscribe_flows", { channel }),
-  /** Register the streaming channel that receives captured WebSocket frames. */
-  subscribeWs: (channel: Channel<WsMessage>) => invoke<void>("subscribe_ws", { channel }),
+  /** Register the channel that receives flow snapshots and WebSocket frames, batched. */
+  subscribeStream: (channel: Channel<StreamBatch>) => invoke<void>("subscribe_stream", { channel }),
+  /**
+   * Pause or resume flow snapshots, following the record button. The engine
+   * keeps capturing; resuming sends what changed on flows the list holds.
+   */
+  setFlowStream: (live: boolean) => invoke<void>("set_flow_stream", { live }),
   proxyStatus: () => invoke<ProxyStatus>("proxy_status"),
   startProxy: (port?: number) => invoke<ProxyStatus>("start_proxy", { port }),
   stopProxy: () => invoke<ProxyStatus>("stop_proxy"),
