@@ -272,7 +272,7 @@ type FlowChipName =
   | "5xx"
   | "err";
 /** Kinds of scope row, not the host or app itself — those are user data. */
-type ScopeKind = "all" | "pinned" | "app" | "host" | "path";
+type ScopeKind = "all" | "pinned" | "app" | "host" | "path" | "set";
 type OnboardingStep = "open" | "done" | "skip";
 
 export { Channel };

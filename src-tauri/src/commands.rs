@@ -768,6 +768,7 @@ fn ui_event_name(name: &str) -> &'static str {
         "http" => "http",
         "https" => "https",
         "ws" => "ws",
+        "xhr" => "xhr",
         "json" => "json",
         "graphql" => "graphql",
         "mcp" => "mcp",
@@ -788,6 +789,7 @@ fn ui_event_name(name: &str) -> &'static str {
         "pinned" => "pinned",
         "app" => "app",
         "host" => "host",
+        "set" => "set",
         "path" => "path",
         // Onboarding.
         "open" => "open",
@@ -822,9 +824,9 @@ mod ui_track_tests {
             "messages", // pane tabs
             "resend", "copy_curl", // flow actions
             "http", "https", "ws", // proto chips
-            "json", "graphql", "mcp", "form", "xml", "document", "media", "other", // type chips
+            "xhr", "json", "graphql", "mcp", "form", "xml", "document", "media", "other", // type chips
             "1xx", "2xx", "3xx", "4xx", "5xx", "err", // status chips
-            "all", "pinned", "app", "host", "path", // scope kinds
+            "all", "pinned", "app", "host", "path", "set", // scope kinds
             "open", "done", "skip", // onboarding
         ] {
             assert_eq!(ui_event_name(name), name, "{name} is not in the vocabulary");
