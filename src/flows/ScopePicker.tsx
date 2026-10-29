@@ -20,6 +20,7 @@ import {
 export function ScopePicker({
   tree,
   scope,
+  editing,
   saved,
   setSaved,
   onApply,
@@ -27,16 +28,18 @@ export function ScopePicker({
 }: {
   tree: Tree;
   scope: Scope;
+  /** A saved filter to edit: the picker opens on its picks and updates it in place. */
+  editing?: SavedScope;
   saved: SavedScope[];
   setSaved: (s: SavedScope[]) => void;
   onApply: (s: Scope) => void;
   onClose: () => void;
 }) {
-  const start = picksOf(scope);
+  const start = picksOf(editing?.scope ?? scope);
   const [apps, setApps] = useState<ReadonlySet<string>>(new Set(start.apps));
   const [hosts, setHosts] = useState<ReadonlySet<string>>(new Set(start.hosts));
   const [needle, setNeedle] = useState("");
-  const [name, setName] = useState("");
+  const [name, setName] = useState(editing?.label ?? "");
 
   const q = needle.trim().toLowerCase();
   const appRows = useMemo(
@@ -55,7 +58,11 @@ export function ScopePicker({
     tree.domains.map((d) => d.host).filter((h) => hosts.has(h)),
   );
   const label = name.trim();
-  const replacing = label !== "" && saved.some((s) => s.label.toLowerCase() === label.toLowerCase());
+  // Another saved filter with this name, which saving would replace. The one
+  // being edited does not count: keeping its name is not a clash.
+  const clash = (l: string) =>
+    saved.findIndex((s) => s.id !== editing?.id && s.label.toLowerCase() === l.toLowerCase());
+  const replacing = label !== "" && clash(label) >= 0;
 
   const flip = (set: ReadonlySet<string>, v: string) => {
     const next = new Set(set);
@@ -64,14 +71,16 @@ export function ScopePicker({
   };
 
   const apply = () => {
-    if (label !== "") {
+    if (label !== "" && picked.kind !== "all") {
       // Saving under a name that exists replaces it: typing the same name is
       // how a person says "update this one".
-      const at = saved.findIndex((s) => s.label.toLowerCase() === label.toLowerCase());
-      const entry: SavedScope = { id: at >= 0 ? saved[at].id : `ss${Date.now()}`, label, scope: picked };
-      if (picked.kind !== "all") {
-        setSaved(at >= 0 ? saved.map((s, i) => (i === at ? entry : s)) : [...saved, entry]);
-      }
+      const at = clash(label);
+      const id = editing?.id ?? (at >= 0 ? saved[at].id : `ss${Date.now()}`);
+      const entry: SavedScope = { id, label, scope: picked };
+      let next = saved.filter((_, i) => !(editing && i === at)); // an edit renamed onto another drops that one
+      const here = next.findIndex((s) => s.id === id);
+      next = here >= 0 ? next.map((s, i) => (i === here ? entry : s)) : [...next, entry];
+      setSaved(next);
     }
     onApply(picked);
     onClose();
@@ -95,7 +104,7 @@ export function ScopePicker({
         }}
       >
         <div className="modal-head">
-          <h2>Filter apps &amp; domains</h2>
+          <h2>{editing ? `Edit “${editing.label}”` : "Filter apps & domains"}</h2>
           <span className="modal-x" onClick={onClose}><Icon name="x" size={16} /></span>
         </div>
 
@@ -155,7 +164,13 @@ export function ScopePicker({
           <span className="spacer" />
           <button className="tool-btn" onClick={onClose}>Cancel</button>
           <button className="btn-primary sm" onClick={apply}>
-            {label === "" || picked.kind === "all" ? "Apply" : replacing ? "Replace & apply" : "Save & apply"}
+            {label === "" || picked.kind === "all"
+              ? "Apply"
+              : replacing
+              ? "Replace & apply"
+              : editing
+              ? "Update & apply"
+              : "Save & apply"}
           </button>
         </div>
       </div>

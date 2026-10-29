@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Icon } from "../icons";
 import { formatChord, shortcut } from "../shortcuts";
 import { ScopePicker } from "./ScopePicker";
+import { ManageSaved } from "./ManageSaved";
 import {
   describeScope,
   picksOf,
@@ -46,7 +47,10 @@ export function ScopeTree({
 }) {
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const [needle, setNeedle] = useState("");
-  const [picking, setPicking] = useState(false);
+  // The picker opens on the current scope, or on one saved filter to edit it.
+  const [picking, setPicking] = useState<{ editing?: SavedScope } | null>(null);
+  const [managing, setManaging] = useState(false);
+  const [savedOpen, setSavedOpen] = useState(true);
   // How many apps and domains the active pick holds, for the filter button.
   const pickCount = scope.kind === "set" ? picksOf(scope).apps.length + picksOf(scope).hosts.length : 0;
 
@@ -89,24 +93,40 @@ export function ScopeTree({
                 <span className="n">{pinnedCount}</span>
               </div>
             )}
-            {saved.map((sv) => (
-              <div key={sv.id} {...row(sv.scope)} title={describeScope(sv.scope)}>
-                <Icon name="filter" size={14} />
-                <span className="t">{sv.label}</span>
+            {saved.length > 0 && (
+              <div className="tree-row indent" onClick={() => setSavedOpen((v) => !v)}>
+                <span className="twist">
+                  <Icon name={savedOpen ? "chevron-down" : "chevron-right"} size={12} />
+                </span>
+                <Icon name="bookmark" size={14} />
+                <span className="t">Saved</span>
                 <button
                   type="button"
                   className="tree-x"
-                  aria-label={`Delete saved filter ${sv.label}`}
-                  title="Delete"
+                  aria-label="Manage saved filters"
+                  title="Manage saved filters"
                   onClick={(e) => {
                     e.stopPropagation();
-                    setSaved(saved.filter((x) => x.id !== sv.id));
+                    setManaging(true);
                   }}
                 >
-                  <Icon name="x" size={12} />
+                  <Icon name="settings" size={12} />
                 </button>
+                <span className="n">{saved.length}</span>
               </div>
-            ))}
+            )}
+            {savedOpen &&
+              saved.map((sv) => (
+                <div
+                  key={sv.id}
+                  className={`tree-row indent2 ${sameScope(scope, sv.scope) ? "on" : ""}`}
+                  title={describeScope(sv.scope)}
+                  onClick={() => setScope(sv.scope)}
+                >
+                  <Icon name="filter" size={13} />
+                  <span className="t">{sv.label}</span>
+                </div>
+              ))}
           </>
         )}
 
@@ -149,7 +169,7 @@ export function ScopeTree({
           className={`tree-pick ${pickCount ? "on" : ""}`}
           title={pickCount ? `Filtering by ${describeScope(scope)}` : "Filter by several apps and domains"}
           aria-label="Filter by several apps and domains"
-          onClick={() => setPicking(true)}
+          onClick={() => setPicking({})}
         >
           <Icon name="filter" size={13} />
           {pickCount > 0 && <span className="c">{pickCount}</span>}
@@ -167,10 +187,22 @@ export function ScopeTree({
         <ScopePicker
           tree={tree}
           scope={scope}
+          editing={picking.editing}
           saved={saved}
           setSaved={setSaved}
           onApply={setScope}
-          onClose={() => setPicking(false)}
+          onClose={() => setPicking(null)}
+        />
+      )}
+      {managing && (
+        <ManageSaved
+          saved={saved}
+          setSaved={setSaved}
+          onEdit={(sv) => {
+            setManaging(false);
+            setPicking({ editing: sv });
+          }}
+          onClose={() => setManaging(false)}
         />
       )}
     </div>
