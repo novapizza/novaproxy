@@ -6,7 +6,10 @@ import {
   MAX_PATH_DEPTH,
   matchScope,
   sameScope,
+  picksOf,
+  scopeFromJson,
   scopeKey,
+  scopeOf,
   type Scope,
 } from "./scope";
 
@@ -179,5 +182,54 @@ describe("buildScopeTree", () => {
 
   it("an empty capture builds an empty tree rather than throwing", () => {
     expect(buildScopeTree([])).toEqual({ apps: [], domains: [], total: 0 });
+  });
+});
+
+describe("multi-select", () => {
+  const chrome = mkFlow({ process: "Google Chrome", host: "api.github.com" });
+  const chromeYt = mkFlow({ process: "Google Chrome", host: "youtube.com" });
+  const slack = mkFlow({ process: "Slack", host: "api.github.com" });
+  const curl = mkFlow({ process: "curl", host: "api.github.com" });
+
+  it("ORs within apps and within hosts, and ANDs the two groups", () => {
+    const apps: Scope = { kind: "set", apps: ["Google Chrome", "Slack"], hosts: [] };
+    expect([chrome, chromeYt, slack, curl].map((f) => matchScope(f, apps))).toEqual([true, true, true, false]);
+    const both: Scope = { kind: "set", apps: ["Google Chrome", "Slack"], hosts: ["api.github.com"] };
+    expect([chrome, chromeYt, slack, curl].map((f) => matchScope(f, both))).toEqual([true, false, true, false]);
+    const hosts: Scope = { kind: "set", apps: [], hosts: ["api.github.com", "youtube.com"] };
+    expect([chrome, chromeYt, slack, curl].every((f) => matchScope(f, hosts))).toBe(true);
+  });
+
+  it("is a plain row scope at one pick, and All traffic at none", () => {
+    expect(scopeOf(["Slack"], [])).toEqual({ kind: "app", name: "Slack" });
+    expect(scopeOf([], ["api.github.com"])).toEqual({ kind: "host", host: "api.github.com" });
+    expect(scopeOf([], [])).toEqual(ALL_TRAFFIC);
+    expect(scopeOf(["a", "b"], [])).toEqual({ kind: "set", apps: ["a", "b"], hosts: [] });
+  });
+
+  it("opens the picker on what the current scope picks", () => {
+    expect(picksOf({ kind: "app", name: "Slack" })).toEqual({ apps: ["Slack"], hosts: [] });
+    expect(picksOf({ kind: "set", apps: ["a"], hosts: ["h"] })).toEqual({ apps: ["a"], hosts: ["h"] });
+    expect(picksOf({ kind: "path", host: "a.com", prefix: "/v1" })).toEqual({ apps: [], hosts: [] });
+  });
+
+  it("treats the same picks in another order as the same selection", () => {
+    expect(
+      sameScope(
+        { kind: "set", apps: ["a", "b"], hosts: ["h"] },
+        { kind: "set", apps: ["b", "a"], hosts: ["h"] },
+      ),
+    ).toBe(true);
+  });
+
+  it("reads a stored scope defensively", () => {
+    expect(scopeFromJson({ kind: "set", apps: ["a", 3, "a", "b"], hosts: [] })).toEqual({
+      kind: "set",
+      apps: ["a", "b"],
+      hosts: [],
+    });
+    expect(scopeFromJson({ kind: "set", apps: ["a"], hosts: "x" })).toEqual({ kind: "app", name: "a" });
+    expect(scopeFromJson({ kind: "host" })).toBeNull();
+    expect(scopeFromJson("nope")).toBeNull();
   });
 });

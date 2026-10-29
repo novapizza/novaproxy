@@ -1,5 +1,5 @@
 import type { ShowToast } from "../filter";
-import type { Flow } from "../api";
+import { api, type Flow } from "../api";
 import { Icon } from "../icons";
 import { useStore } from "../store";
 import { formatCellBytes } from "../format";
@@ -10,6 +10,8 @@ import { TimingPanel } from "./TimingPanel";
 import { TreeviewPanel } from "./TreeviewPanel";
 import { WsPanel } from "./WsPanel";
 import { parseCookies, parseQuery, rawHttp, summaryOf } from "./parts";
+import { paneText } from "./copy";
+import { bytesMissing } from "./curl";
 import { Splitter } from "../Splitter";
 import { DEFAULT_PREFS, REQUEST_PCT } from "../prefs";
 
@@ -86,6 +88,28 @@ export function Inspector({
   const wsMessages = useStore((s) => s.wsMessages[flow.id]);
   const wsDropped = useStore((s) => s.wsDropped[flow.id] ?? 0);
 
+  /** Copy what the pane's active tab shows, as text. */
+  async function copyTab(side: PaneSide) {
+    const tab = side === "request" ? reqTab : resTab;
+    const name = `${side === "request" ? "Request" : "Response"} ${tab.toLowerCase()}`;
+    let body = side === "request" ? flow.request_body : flow.response_body;
+    // The list keeps no body bytes; fetch them the way the Body tab does.
+    if ((tab === "Body" || tab === "Treeview") && bytesMissing(body)) {
+      try {
+        body = await api.readBody(flow.id, side, body!.media_type, body!.decoded_from);
+      } catch (e) {
+        return showToast(`Couldn't read the body: ${e}`, { kind: "error" });
+      }
+    }
+    const text = paneText(flow, side, tab, body);
+    if (text == null) {
+      const binary = (tab === "Body" || tab === "Treeview") && body && Number(body.size) > 0;
+      return showToast(binary ? "Binary body — nothing to copy as text" : `${name}: nothing to copy`);
+    }
+    await api.copyText(text);
+    showToast(`${name} copied`);
+  }
+
   /**
    * A WebSocket takes the whole strip.
    *
@@ -127,6 +151,7 @@ export function Inspector({
         toggleCollapse={() =>
           setPanes({ ...panes, collapsed: collapsed === "request" ? null : "request" })
         }
+        onCopy={() => void copyTab("request")}
         meta={metaFor(flow, "request")}
         // A collapsed pane keeps only its head, so the divider has nothing to
         // divide — the flex basis is dropped and the other pane takes the room.
@@ -183,6 +208,7 @@ export function Inspector({
         toggleCollapse={() =>
           setPanes({ ...panes, collapsed: collapsed === "response" ? null : "response" })
         }
+        onCopy={() => void copyTab("response")}
         meta={metaFor(flow, "response")}
       >
         {resTab === "Header" && (
@@ -228,6 +254,7 @@ function Pane({
   setTab,
   collapsed,
   toggleCollapse,
+  onCopy,
   meta,
   basis,
   children,
@@ -240,6 +267,8 @@ function Pane({
   setTab: (t: string) => void;
   collapsed: boolean;
   toggleCollapse: () => void;
+  /** Copy the active tab's content. */
+  onCopy: () => void;
   meta: string;
   /** Flex basis from the divider; absent means "share what is left". */
   basis?: string;
@@ -265,6 +294,17 @@ function Pane({
         </span>
         <span className="spacer" />
         {meta && <span className="meta">{meta}</span>}
+        {!collapsed && (
+          <button
+            type="button"
+            className="pane-copy"
+            title={`Copy ${tab.toLowerCase()}`}
+            aria-label={`Copy ${side} ${tab.toLowerCase()}`}
+            onClick={onCopy}
+          >
+            <Icon name="copy" size={13} />
+          </button>
+        )}
         <span
           className="collapse"
           title={collapsed ? "Expand this pane" : "Collapse this pane"}

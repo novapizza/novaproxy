@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, Profiler, useDeferredValue, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { Flow } from "../api";
 import type { IconName } from "../icons";
 import {
@@ -10,7 +10,7 @@ import {
   type SavedFilter,
   type ShowToast,
 } from "../filter";
-import { buildScopeTree, type Scope } from "../scope";
+import { buildScopeTree, type SavedScope, type Scope } from "../scope";
 import { useStore } from "../store";
 import {
   INITIAL_PANES,
@@ -32,6 +32,7 @@ import { DEFAULT_PREFS, INSPECTOR_PCT, TREE_W } from "../prefs";
 import { sortFlows, type Sort } from "./sort";
 import { clampColumnWidth, type ColumnId, type ColumnWidths } from "./columns";
 import { formatChord, shortcut } from "../shortcuts";
+import { onRender } from "../perf";
 
 /**
  * What the keyboard can ask of this section from outside it.
@@ -95,6 +96,9 @@ export const FlowsSection = forwardRef<FlowsHandle, {
   /** Filters the user kept, and the two ways the list changes. */
   saved: SavedFilter[];
   setSaved: (s: SavedFilter[]) => void;
+  /** Selections of apps and hosts kept in the tree (Favorites › Saved). */
+  savedScopes: SavedScope[];
+  setSavedScopes: (s: SavedScope[]) => void;
   /**
    * The three dividers. `set` paints while dragging, `commit` persists once at
    * the end — a drag emits hundreds of moves and would otherwise write hundreds
@@ -168,9 +172,12 @@ export const FlowsSection = forwardRef<FlowsHandle, {
    * excluded from it on exactly the same terms as from the rows — otherwise the
    * app's own MCP calls inflate a count for rows that never appear.
    */
+  // Deferred: the counts are landmarks, not live data, so rebuilding the tree
+  // runs at low priority and yields to input and to the table.
+  const treeFlows = useDeferredValue(flows);
   const tree = useMemo(
-    () => buildScopeTree(filter.includeInternal ? flows : flows.filter((f) => !f.internal)),
-    [flows, filter.includeInternal],
+    () => buildScopeTree(filter.includeInternal ? treeFlows : treeFlows.filter((f) => !f.internal)),
+    [treeFlows, filter.includeInternal],
   );
 
   // `pinned` reaches the predicate as context rather than as part of the filter:
@@ -233,14 +240,18 @@ export const FlowsSection = forwardRef<FlowsHandle, {
     <div className="flows2">
       {!props.treeHidden && (
       <>
+      <Profiler id="tree" onRender={onRender}>
       <ScopeTree
         tree={tree}
         scope={filter.scope}
         setScope={setScope}
         pinnedCount={pinned.size}
+        saved={props.savedScopes}
+        setSaved={props.setSavedScopes}
         filterRef={props.treeFilterRef}
         width={props.treeWidth}
       />
+      </Profiler>
       <Splitter
         orientation="vertical"
         label="Resize the sidebar"
@@ -256,6 +267,7 @@ export const FlowsSection = forwardRef<FlowsHandle, {
       )}
 
       <div className="flows2-main">
+        <Profiler id="filterbar" onRender={onRender}>
         <FilterBar
           filter={filter}
           patch={props.patch}
@@ -274,7 +286,9 @@ export const FlowsSection = forwardRef<FlowsHandle, {
           builderOpen={builderOpen}
           toggleBuilder={() => setBuilderOpen((v) => !v)}
         />
+        </Profiler>
 
+        <Profiler id="table" onRender={onRender}>
         <FlowTable
           flows={rows}
           columns={props.columns}
@@ -305,6 +319,7 @@ export const FlowsSection = forwardRef<FlowsHandle, {
             setMarked(new Set(rows.slice(lo, hi + 1).map((f) => f.id)));
           }}
         />
+        </Profiler>
 
         {/* The summary bar is the inspector's head: the panes below carry tabs
             and bodies only, so the URL is stated once (design.md §4.1). */}
@@ -382,6 +397,7 @@ export const FlowsSection = forwardRef<FlowsHandle, {
           style={{ height: `${props.inspectorPct}%` }}
         >
           {selected ? (
+            <Profiler id="inspector" onRender={onRender}>
             <Inspector
               flow={selected}
               showToast={props.showToast}
@@ -392,6 +408,7 @@ export const FlowsSection = forwardRef<FlowsHandle, {
               setRequestPct={props.setRequestPct}
               commitRequestPct={props.commitRequestPct}
             />
+            </Profiler>
           ) : (
             <div className="detail-empty">
               <div className="big">Select a flow to inspect</div>

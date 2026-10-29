@@ -9,7 +9,6 @@ import {
   type Interception,
   type Header,
   type NetworkConditions,
-  type WsMessage,
   type TlsScope,
   type McpStatus,
   type HelperStatus,
@@ -24,7 +23,9 @@ import {
   updateSummary,
   type UpdateState,
 } from "./update";
-import { useStore } from "./store";
+import { MAX_FLOWS, useStore } from "./store";
+import { FLUSH_MS, StreamQueue, type StreamBatch } from "./streamQueue";
+import { takeRenderTimes } from "./perf";
 import { exportSession, exportHar, importSession } from "./session";
 import { EMPTY_FILTER, toastDuration, type FlowFilter, type ShowToast, type ToastKind } from "./filter";
 import { Brandmark } from "./Brandmark";
@@ -150,6 +151,8 @@ export function App() {
   const [toast, setToastState] = useState("");
   const [toastKind, setToastKind] = useState<ToastKind>("ok");
   const toastTimer = useRef<number | undefined>(undefined);
+  // What the engine streamed since the last flush; a ref so clearing can empty it.
+  const streamQueue = useRef(new StreamQueue(MAX_FLOWS));
 
   const [rules, setRulesState] = useState<Rule[]>([]);
   const [scriptSource, setScriptSource] = useState(DEFAULT_SCRIPT);
@@ -254,6 +257,7 @@ export function App() {
   // the user believes they discarded.
   async function clearAll() {
     clear();
+    streamQueue.current.discardFlows();
     try {
       await api.clearFlows();
     } catch (e) {
@@ -271,37 +275,76 @@ export function App() {
   // Wire the streaming channel + initial status once.
   useEffect(() => {
     /**
-     * Snapshots and frames arrive several times per flow and, under load,
-     * hundreds of times a second. Each one used to be its own store update —
-     * one re-render of the whole list per message, which is what made a busy
-     * capture unusable. Coalescing a frame's worth into a single update caps the
-     * render rate at the display's, however fast traffic is.
+     * The engine sends what changed about ten times a second (see `UiStream`).
+     * Applying each message as it lands would still re-derive the whole list
+     * that often, so messages queue here and reach the store at most every
+     * `FLUSH_MS`, on an animation frame — which also means nothing is applied
+     * while the window is hidden; the queue holds it, bounded, until it is not.
      */
-    let flowQueue: Flow[] = [];
-    let wsQueue: WsMessage[] = [];
+    const queue = streamQueue.current;
+    let timer = 0;
     let frame = 0;
-    // One flush for both channels, snapshots first: the store drops frames of
-    // flows it does not hold, so a socket's first frames must never be applied
-    // ahead of the snapshot that introduces their flow.
+    let last = 0;
+    const perf = newPerfWindow();
     const flush = () => {
       frame = 0;
-      const flows = flowQueue;
-      const ws = wsQueue;
-      flowQueue = [];
-      wsQueue = [];
+      last = performance.now();
+      const { flows, ws } = queue.take();
+      // Snapshots first: the store drops frames of flows it does not hold.
       if (flows.length) useStore.getState().upsertFlows(flows);
       if (ws.length) useStore.getState().addWsMessages(ws);
+      // Until the next task: the store update and the render it schedules.
+      const started = last;
+      setTimeout(() => {
+        const ms = performance.now() - started;
+        perf.flushes += 1;
+        perf.flushMs += ms;
+        perf.flushMaxMs = Math.max(perf.flushMaxMs, ms);
+      }, 0);
     };
     const schedule = () => {
-      if (!frame) frame = requestAnimationFrame(flush);
+      if (timer || frame) return;
+      const wait = Math.max(0, last + FLUSH_MS - performance.now());
+      timer = window.setTimeout(() => {
+        timer = 0;
+        frame = requestAnimationFrame(flush);
+      }, wait);
     };
 
-    const channel = new Channel<Flow>();
-    channel.onmessage = (flow) => {
-      flowQueue.push(flow);
+    const channel = new Channel<StreamBatch>();
+    channel.onmessage = (batch) => {
+      perf.messages += 1;
+      perf.flows += batch.flows.length;
+      perf.frames += batch.ws.length;
+      queue.push(batch);
       schedule();
     };
-    api.subscribeFlows(channel);
+
+    // Event-loop lag: how late a 500 ms tick fires is how long the main thread
+    // was busy with something else — the number behind "the app freezes".
+    let tickAt = performance.now();
+    const lagTimer = window.setInterval(() => {
+      const now = performance.now();
+      perf.lagMaxMs = Math.max(perf.lagMaxMs, now - tickAt - 500);
+      tickAt = now;
+    }, 500);
+    const perfTimer = window.setInterval(() => {
+      const st = useStore.getState();
+      let held = 0;
+      for (const id in st.wsMessages) held += st.wsMessages[id].length;
+      const q = queue.size;
+      api.logUi(
+        "info",
+        "perf",
+        `flows=${st.flows.length} ws_frames=${held} queued=${q.flows}/${q.ws} ` +
+          `messages=${perf.messages} flows_in=${perf.flows} frames_in=${perf.frames} ` +
+          `flushes=${perf.flushes} flush_avg_ms=${perf.flushes ? Math.round(perf.flushMs / perf.flushes) : 0} ` +
+          `flush_max_ms=${Math.round(perf.flushMaxMs)} lag_max_ms=${Math.round(perf.lagMaxMs)} ` +
+          `hidden=${document.hidden} render: ${takeRenderTimes()}`,
+      );
+      Object.assign(perf, newPerfWindow());
+    }, PERF_EVERY_MS);
+    api.subscribeStream(channel);
 
     const bpChannel = new Channel<Interception>();
     bpChannel.onmessage = (i) => {
@@ -309,13 +352,6 @@ export function App() {
       setBpArmed(false); // one-shot: the backend disarmed on this hit
     };
     api.subscribeBreakpoints(bpChannel);
-
-    const wsChannel = new Channel<WsMessage>();
-    wsChannel.onmessage = (m) => {
-      wsQueue.push(m);
-      schedule();
-    };
-    api.subscribeWs(wsChannel);
 
     api.proxyStatus().then((p) => useStore.getState().setProxy(p));
     // These five hydrate the UI from what the backend persisted. A failure used
@@ -338,9 +374,19 @@ export function App() {
     ]).then(() => setStatusProbed(true));
 
     return () => {
+      clearInterval(lagTimer);
+      clearInterval(perfTimer);
+      if (timer) clearTimeout(timer);
       if (frame) cancelAnimationFrame(frame);
     };
   }, []);
+
+  // The list drops what arrives while paused, so the engine need not send it.
+  useEffect(() => {
+    api.setFlowStream(recording).catch((e) =>
+      api.logUi("warn", "command", `could not ${recording ? "resume" : "pause"} the flow stream: ${String(e)}`),
+    );
+  }, [recording]);
 
   // Look for a new version once, at launch. Reports only: a found update waits
   // in Settings until the user clicks install, because replacing the binary ends
@@ -739,6 +785,8 @@ export function App() {
               commitRequestPct={(p) => { setRequestPct(p); setPrefs({ ...prefs, requestPct: p }); }}
               saved={prefs.savedFilters}
               setSaved={(sf) => setPrefs({ ...prefs, savedFilters: sf })}
+              savedScopes={prefs.savedScopes}
+              setSavedScopes={(ss) => setPrefs({ ...prefs, savedScopes: ss })}
               flows={flows}
               filter={filter}
               patch={patchFilter}
@@ -1787,4 +1835,12 @@ function CodeSnippet({ text }: { text: string }) {
       </button>
     </div>
   );
+}
+
+/** How often the renderer writes its perf line, matching the engine's. */
+const PERF_EVERY_MS = 30_000;
+
+/** Counters for one perf line. */
+function newPerfWindow() {
+  return { messages: 0, flows: 0, frames: 0, flushes: 0, flushMs: 0, flushMaxMs: 0, lagMaxMs: 0 };
 }

@@ -8,7 +8,7 @@ use nova_core::breakpoint::Resume;
 use nova_core::{ca::CaMaterial, helper, oscmd, sysproxy, trust, EngineConfig};
 use nova_proto::{
     CaStatus, Flow, Header, HelperStatus, Interception, McpStatus, NetworkConditions, ProxyStatus,
-    Rule, TlsScope, WsMessage,
+    Rule, TlsScope,
 };
 use tauri::ipc::Channel;
 use tauri::State;
@@ -50,16 +50,22 @@ fn started() -> std::time::Instant {
     std::time::Instant::now()
 }
 
-/// Register the frontend channel that receives streamed flow updates.
+/// Register the frontend channel that receives flow snapshots and WebSocket
+/// frames, batched (see [`crate::state::UiStream`]).
 #[tauri::command]
-pub fn subscribe_flows(state: State<'_, Arc<AppState>>, channel: Channel<Flow>) {
-    state.sink.set_channel(channel);
+pub fn subscribe_stream(state: State<'_, Arc<AppState>>, channel: Channel) {
+    state.stream.set_channel(channel, state.flows.clone());
 }
 
-/// Register the frontend channel that receives captured WebSocket frames.
+/// Pause or resume flow snapshots while the UI is not recording. Capture itself
+/// carries on; resuming queues whatever changed on flows the list already holds.
 #[tauri::command]
-pub fn subscribe_ws(state: State<'_, Arc<AppState>>, channel: Channel<WsMessage>) {
-    state.ws_sink.set_channel(channel);
+pub fn set_flow_stream(state: State<'_, Arc<AppState>>, live: bool) {
+    if live {
+        state.stream.resume(&state.flows);
+    } else {
+        state.stream.pause();
+    }
 }
 
 #[tauri::command]
@@ -135,6 +141,7 @@ pub fn clear_flows(state: State<'_, Arc<AppState>>) {
     // question now that clearing also empties what the MCP server serves.
     let had = state.flows.retained();
     state.flows.clear();
+    state.stream.discard_flows();
     tracing::info!(cleared = had, "flows cleared");
     crate::usage!("flows.clear", n = had);
 }
@@ -635,6 +642,7 @@ fn ui_kind(kind: &str) -> &'static str {
         "unhandled-rejection" => "unhandled-rejection",
         "window-error" => "window-error",
         "command" => "command",
+        "perf" => "perf",
         _ => "other",
     }
 }
@@ -760,6 +768,7 @@ fn ui_event_name(name: &str) -> &'static str {
         "http" => "http",
         "https" => "https",
         "ws" => "ws",
+        "xhr" => "xhr",
         "json" => "json",
         "graphql" => "graphql",
         "mcp" => "mcp",
@@ -780,6 +789,7 @@ fn ui_event_name(name: &str) -> &'static str {
         "pinned" => "pinned",
         "app" => "app",
         "host" => "host",
+        "set" => "set",
         "path" => "path",
         // Onboarding.
         "open" => "open",
@@ -814,9 +824,9 @@ mod ui_track_tests {
             "messages", // pane tabs
             "resend", "copy_curl", // flow actions
             "http", "https", "ws", // proto chips
-            "json", "graphql", "mcp", "form", "xml", "document", "media", "other", // type chips
+            "xhr", "json", "graphql", "mcp", "form", "xml", "document", "media", "other", // type chips
             "1xx", "2xx", "3xx", "4xx", "5xx", "err", // status chips
-            "all", "pinned", "app", "host", "path", // scope kinds
+            "all", "pinned", "app", "host", "path", "set", // scope kinds
             "open", "done", "skip", // onboarding
         ] {
             assert_eq!(ui_event_name(name), name, "{name} is not in the vocabulary");
@@ -1078,8 +1088,8 @@ fn ensure_engine(state: &AppState, port: Option<u16>) -> Result<SocketAddr, Stri
         nova_core::start(
             EngineConfig { addr },
             ca,
-            state.sink.clone(),
-            state.ws_sink.clone(),
+            state.stream.clone(),
+            state.stream.clone(),
             state.hooks(),
         )
         .map_err(|e| format!("failed to start proxy: {e}"))?
