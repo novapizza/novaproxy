@@ -1065,9 +1065,14 @@ input, textarea, select { font-family: inherit; }
 
 /* The table is the surface this section exists for, so it gets a floor: five
    rows and a header. Without one, opening the filter conditions on a short
-   window squeezed it to a sliver and the inspector kept its 42%. */
+   window squeezed it to a sliver and the inspector kept its 42%.
+   The basis is 0, not auto: with auto it is the height of every row, and the
+   column's shortfall was shared out by basis, so each captured row took height
+   from the inspector until the divider stopped moving. At 0 the table takes
+   what is left, and the inspector gives way only once the table is down to its
+   floor. */
 .ftable {
-  flex: 1 1 auto; overflow: auto; outline: none;
+  flex: 1 1 0; overflow: auto; outline: none;
   min-height: calc(var(--row-h) * 5 + var(--thead-h));
 }
 
