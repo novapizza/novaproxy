@@ -51,7 +51,6 @@ export function ScopeTree({
   // The picker opens on the current scope, or on one saved filter to edit it.
   const [picking, setPicking] = useState<{ editing?: SavedScope } | null>(null);
   const [managing, setManaging] = useState(false);
-  const [savedOpen, setSavedOpen] = useState(true);
   const [allVia, setAllVia] = useState<"apps" | "domains">("apps");
   // How many apps and domains the active pick holds, for the filter button.
   const pickCount = scope.kind === "set" ? picksOf(scope).apps.length + picksOf(scope).hosts.length : 0;
@@ -83,53 +82,47 @@ export function ScopeTree({
   return (
     <div className="tree" style={{ width }}>
       <div className="tree-body">
-        {/* Favourites appear only once there is something in them: a permanent
-            empty "Pinned" row is a control that does nothing. */}
-        {(pinnedCount > 0 || saved.length > 0) && (
+        {/* Favourites and Saved appear only once there is something in them: a
+            permanent empty section is a heading that does nothing. */}
+        {pinnedCount > 0 && (
           <>
             <div className="tree-eyebrow">Favorites</div>
-            {pinnedCount > 0 && (
-              <div {...row({ kind: "pinned" })}>
-                <Icon name="pin" size={14} />
-                <span className="t">Pinned</span>
-                <span className="n">{pinnedCount}</span>
+            <div {...row({ kind: "pinned" })}>
+              <Icon name="pin" size={14} />
+              <span className="t">Pinned</span>
+              <span className="n">{pinnedCount}</span>
+            </div>
+          </>
+        )}
+
+        {saved.length > 0 && (
+          <>
+            <div className={`tree-eyebrow saved ${pinnedCount > 0 ? "gap" : ""}`}>
+              <Icon name="bookmark" size={13} />
+              <span>Saved</span>
+              <span className="spacer" />
+              <button
+                type="button"
+                className="tree-x"
+                aria-label="Manage saved filters"
+                title="Manage saved filters"
+                onClick={() => setManaging(true)}
+              >
+                <Icon name="settings" size={12} />
+              </button>
+              <span className="n">{saved.length}</span>
+            </div>
+            {saved.map((sv) => (
+              <div
+                key={sv.id}
+                className={`tree-row ${sameScope(scope, sv.scope) ? "on" : ""}`}
+                title={describeScope(sv.scope)}
+                onClick={() => setScope(sv.scope)}
+              >
+                <Icon name="filter" size={14} />
+                <span className="t">{sv.label}</span>
               </div>
-            )}
-            {saved.length > 0 && (
-              <div className="tree-row indent" onClick={() => setSavedOpen((v) => !v)}>
-                <span className="twist">
-                  <Icon name={savedOpen ? "chevron-down" : "chevron-right"} size={12} />
-                </span>
-                <Icon name="bookmark" size={14} />
-                <span className="t">Saved</span>
-                <button
-                  type="button"
-                  className="tree-x"
-                  aria-label="Manage saved filters"
-                  title="Manage saved filters"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setManaging(true);
-                  }}
-                >
-                  <Icon name="settings" size={12} />
-                </button>
-                <span className="n">{saved.length}</span>
-              </div>
-            )}
-            {savedOpen &&
-              saved.map((sv) => (
-                <div
-                  key={sv.id}
-                  className={`tree-row indent2 ${sameScope(scope, sv.scope) ? "on" : ""}`}
-                  title={describeScope(sv.scope)}
-                  onClick={() => setScope(sv.scope)}
-                >
-                  <Icon name="filter" size={13} />
-                  <span className="t">{sv.label}</span>
-                </div>
-              ))}
-            <div className="tree-fav-end" />
+            ))}
           </>
         )}
 

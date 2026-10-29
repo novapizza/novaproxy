@@ -980,8 +980,12 @@ input, textarea, select { font-family: inherit; }
 .tree-head.on { background: var(--card); border-color: rgba(62,181,109,.28); color: var(--accent); }
 .tree-head.on .n { color: var(--accent); }
 .tree-body > .tree-head:first-child { margin-top: 6px; }
-/* Favorites end with a hairline so the group reads apart from the tree below. */
-.tree-fav-end { height: 1px; margin: 12px 8px 0; background: var(--border); }
+/* Saved is a section like Favorites, with its manage gear and count. */
+.tree-eyebrow.saved { min-height: 24px; }
+.tree-eyebrow.saved.gap { margin-top: 18px; }
+.tree-eyebrow.saved .n { font: 400 11px var(--font-mono); color: var(--faint); letter-spacing: 0; }
+.tree-eyebrow.saved .tree-x { visibility: hidden; }
+.tree-eyebrow.saved:hover .tree-x, .tree-eyebrow.saved .tree-x:focus-visible { visibility: visible; }
 .tree-head .n, .tree-row .n { font: 400 11px var(--font-mono); color: var(--faint); flex: none; }
 
 .tree-row {
