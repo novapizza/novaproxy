@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
@@ -23,7 +23,7 @@ use nova_proto::{Flow, Interception, NetworkConditions, Rule, TlsScope, WsMessag
 /// The snapshot of the OS proxy settings taken before NovaProxy changed them.
 /// Named here because the sign-in restore reads it without an `AppState`.
 pub const SYSPROXY_BACKUP_FILE: &str = "sysproxy_backup.json";
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, InvokeResponseBody};
 
 /// Flows queued per message at most. A backlog (a resume, a burst) goes out as
 /// several messages rather than one the webview has to parse in a single go.
@@ -33,6 +33,9 @@ const MAX_FLOWS_PER_MESSAGE: usize = 500;
 /// can usefully show, and each message costs the webview a parse whatever its
 /// size, so coalescing here is most of the win under heavy capture.
 const FLUSH_EVERY: Duration = Duration::from_millis(100);
+
+/// How often the stream writes its perf line.
+const PERF_EVERY: Duration = Duration::from_secs(30);
 
 /// What the UI receives each tick: the latest snapshot of every flow that
 /// changed, then the WebSocket frames. One message for both, so a socket's
@@ -70,7 +73,7 @@ pub struct UiStream {
 
 #[derive(Default)]
 struct StreamState {
-    channel: Option<Channel<StreamBatch>>,
+    channel: Option<Channel>,
     /// Queued snapshots, in the order their flows were first queued.
     flows: Vec<Flow>,
     /// Flow id → its slot in `flows`, so a newer snapshot replaces the queued one.
@@ -79,6 +82,19 @@ struct StreamState {
     /// Highest `seq` emitted so far: where "already existed" ends on a pause.
     last_seq: u64,
     paused: Option<Paused>,
+    /// What went out since the last perf line.
+    sent: Sent,
+}
+
+/// Counters for the periodic perf line: what the stream cost the webview.
+#[derive(Default)]
+struct Sent {
+    messages: u64,
+    flows: u64,
+    frames: u64,
+    bytes: u64,
+    /// Largest number of flows queued at one flush: how far behind a tick ran.
+    peak_flows: usize,
 }
 
 #[derive(Default)]
@@ -114,21 +130,28 @@ fn without_bytes(mut flow: Flow) -> Flow {
 
 impl UiStream {
     /// Bind the UI's channel (again, after a reload) and start the flush loop.
-    pub fn set_channel(self: &Arc<Self>, channel: Channel<StreamBatch>) {
+    pub fn set_channel(self: &Arc<Self>, channel: Channel, store: Arc<FlowStore>) {
         self.bind(channel);
         if !self.flusher.swap(true, Ordering::SeqCst) {
             let me = Arc::clone(self);
             std::thread::Builder::new()
                 .name("ui-stream".into())
-                .spawn(move || loop {
-                    std::thread::sleep(FLUSH_EVERY);
-                    me.flush();
+                .spawn(move || {
+                    let mut last_report = Instant::now();
+                    loop {
+                        std::thread::sleep(FLUSH_EVERY);
+                        me.flush();
+                        if last_report.elapsed() >= PERF_EVERY {
+                            last_report = Instant::now();
+                            me.report(&store);
+                        }
+                    }
                 })
                 .expect("spawn ui-stream thread");
         }
     }
 
-    fn bind(&self, channel: Channel<StreamBatch>) {
+    fn bind(&self, channel: Channel) {
         let mut st = self.state.lock().unwrap();
         st.channel = Some(channel);
         // A reload starts from an empty list: whatever was paused for the
@@ -177,6 +200,7 @@ impl UiStream {
             }
             let Some(channel) = st.channel.clone() else { return };
             st.slot.clear();
+            st.sent.peak_flows = st.sent.peak_flows.max(st.flows.len());
             (std::mem::take(&mut st.flows), std::mem::take(&mut st.ws), channel)
         };
         loop {
@@ -186,12 +210,46 @@ impl UiStream {
                 flows,
                 ws: if last { std::mem::take(&mut ws) } else { Vec::new() },
             };
-            let _ = channel.send(batch);
+            // Serialized here rather than by the channel so the size can be counted.
+            if let Ok(json) = serde_json::to_string(&batch) {
+                let mut st = self.state.lock().unwrap();
+                st.sent.messages += 1;
+                st.sent.flows += batch.flows.len() as u64;
+                st.sent.frames += batch.ws.len() as u64;
+                st.sent.bytes += json.len() as u64;
+                drop(st);
+                let _ = channel.send(InvokeResponseBody::Json(json));
+            }
             if last {
                 break;
             }
             flows = rest;
         }
+    }
+}
+
+impl UiStream {
+    /// One line of what the stream and the store hold, every `PERF_EVERY`: the
+    /// numbers to read when the app is said to slow down over a long capture.
+    fn report(&self, store: &FlowStore) {
+        let (sent, paused, queued) = {
+            let mut st = self.state.lock().unwrap();
+            (std::mem::take(&mut st.sent), st.paused.is_some(), st.flows.len())
+        };
+        tracing::info!(
+            target: "novaproxy_perf",
+            retained = store.retained(),
+            captured = store.total_captured(),
+            body_disk_mb = store.bodies().used_bytes() / (1024 * 1024),
+            messages = sent.messages,
+            flows_sent = sent.flows,
+            frames_sent = sent.frames,
+            sent_kb = sent.bytes / 1024,
+            peak_flows = sent.peak_flows,
+            queued,
+            paused,
+            "stream"
+        );
     }
 }
 
@@ -369,7 +427,6 @@ mod stream_tests {
     use super::*;
     use nova_core::bodystore::BodyStore;
     use nova_proto::{BodyPreview, FlowState, WsDirection, WsOpcode};
-    use tauri::ipc::InvokeResponseBody;
 
     fn flow(id: &str, seq: u64) -> Flow {
         nova_core::flow::new_flow(

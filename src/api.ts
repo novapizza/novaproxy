@@ -204,7 +204,7 @@ export const api = {
  * the usage stream mean something; the Rust side folds anything else to
  * "other".
  */
-export type UiLogKind = "render" | "unhandled-rejection" | "window-error" | "command";
+export type UiLogKind = "render" | "unhandled-rejection" | "window-error" | "command" | "perf";
 
 /**
  * Interface events the usage stream counts. Mirrors `ui_event` in

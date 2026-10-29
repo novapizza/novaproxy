@@ -14,7 +14,7 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 use crate::logging::redact;
-use crate::state::{AppState, StreamBatch};
+use crate::state::AppState;
 
 /// Record the outcome of an operation that changes something outside the app.
 ///
@@ -53,8 +53,8 @@ fn started() -> std::time::Instant {
 /// Register the frontend channel that receives flow snapshots and WebSocket
 /// frames, batched (see [`crate::state::UiStream`]).
 #[tauri::command]
-pub fn subscribe_stream(state: State<'_, Arc<AppState>>, channel: Channel<StreamBatch>) {
-    state.stream.set_channel(channel);
+pub fn subscribe_stream(state: State<'_, Arc<AppState>>, channel: Channel) {
+    state.stream.set_channel(channel, state.flows.clone());
 }
 
 /// Pause or resume flow snapshots while the UI is not recording. Capture itself
@@ -642,6 +642,7 @@ fn ui_kind(kind: &str) -> &'static str {
         "unhandled-rejection" => "unhandled-rejection",
         "window-error" => "window-error",
         "command" => "command",
+        "perf" => "perf",
         _ => "other",
     }
 }

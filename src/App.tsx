@@ -284,6 +284,7 @@ export function App() {
     let timer = 0;
     let frame = 0;
     let last = 0;
+    const perf = newPerfWindow();
     const flush = () => {
       frame = 0;
       last = performance.now();
@@ -291,6 +292,14 @@ export function App() {
       // Snapshots first: the store drops frames of flows it does not hold.
       if (flows.length) useStore.getState().upsertFlows(flows);
       if (ws.length) useStore.getState().addWsMessages(ws);
+      // Until the next task: the store update and the render it schedules.
+      const started = last;
+      setTimeout(() => {
+        const ms = performance.now() - started;
+        perf.flushes += 1;
+        perf.flushMs += ms;
+        perf.flushMaxMs = Math.max(perf.flushMaxMs, ms);
+      }, 0);
     };
     const schedule = () => {
       if (timer || frame) return;
@@ -303,9 +312,37 @@ export function App() {
 
     const channel = new Channel<StreamBatch>();
     channel.onmessage = (batch) => {
+      perf.messages += 1;
+      perf.flows += batch.flows.length;
+      perf.frames += batch.ws.length;
       queue.push(batch);
       schedule();
     };
+
+    // Event-loop lag: how late a 500 ms tick fires is how long the main thread
+    // was busy with something else — the number behind "the app freezes".
+    let tickAt = performance.now();
+    const lagTimer = window.setInterval(() => {
+      const now = performance.now();
+      perf.lagMaxMs = Math.max(perf.lagMaxMs, now - tickAt - 500);
+      tickAt = now;
+    }, 500);
+    const perfTimer = window.setInterval(() => {
+      const st = useStore.getState();
+      let held = 0;
+      for (const id in st.wsMessages) held += st.wsMessages[id].length;
+      const q = queue.size;
+      api.logUi(
+        "info",
+        "perf",
+        `flows=${st.flows.length} ws_frames=${held} queued=${q.flows}/${q.ws} ` +
+          `messages=${perf.messages} flows_in=${perf.flows} frames_in=${perf.frames} ` +
+          `flushes=${perf.flushes} flush_avg_ms=${perf.flushes ? Math.round(perf.flushMs / perf.flushes) : 0} ` +
+          `flush_max_ms=${Math.round(perf.flushMaxMs)} lag_max_ms=${Math.round(perf.lagMaxMs)} ` +
+          `hidden=${document.hidden}`,
+      );
+      Object.assign(perf, newPerfWindow());
+    }, PERF_EVERY_MS);
     api.subscribeStream(channel);
 
     const bpChannel = new Channel<Interception>();
@@ -336,6 +373,8 @@ export function App() {
     ]).then(() => setStatusProbed(true));
 
     return () => {
+      clearInterval(lagTimer);
+      clearInterval(perfTimer);
       if (timer) clearTimeout(timer);
       if (frame) cancelAnimationFrame(frame);
     };
@@ -1795,4 +1834,12 @@ function CodeSnippet({ text }: { text: string }) {
       </button>
     </div>
   );
+}
+
+/** How often the renderer writes its perf line, matching the engine's. */
+const PERF_EVERY_MS = 30_000;
+
+/** Counters for one perf line. */
+function newPerfWindow() {
+  return { messages: 0, flows: 0, frames: 0, flushes: 0, flushMs: 0, flushMaxMs: 0, lagMaxMs: 0 };
 }

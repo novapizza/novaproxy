@@ -58,6 +58,11 @@ export class StreamQueue {
     return out;
   }
 
+  /** Flows and frames waiting for the next flush. */
+  get size() {
+    return { flows: this.flows.size, ws: this.ws.length };
+  }
+
   /** The capture was cleared: what is queued belongs to it. */
   discardFlows() {
     this.flows.clear();
