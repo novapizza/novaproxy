@@ -973,6 +973,15 @@ input, textarea, select { font-family: inherit; }
   color: var(--faint);
 }
 .tree-head { margin-top: 18px; margin-bottom: 6px; }
+/* The heads stand in for the old "All traffic" row: clickable, and lit like a
+   selected row while everything is showing. */
+.tree-head { min-height: 28px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
+.tree-head:hover { background: var(--hover); color: var(--muted); }
+.tree-head.on { background: var(--card); border-color: rgba(62,181,109,.28); color: var(--accent); }
+.tree-head.on .n { color: var(--accent); }
+.tree-body > .tree-head:first-child { margin-top: 6px; }
+/* Favorites end with a hairline so the group reads apart from the tree below. */
+.tree-fav-end { height: 1px; margin: 12px 8px 0; background: var(--border); }
 .tree-head .n, .tree-row .n { font: 400 11px var(--font-mono); color: var(--faint); flex: none; }
 
 .tree-row {

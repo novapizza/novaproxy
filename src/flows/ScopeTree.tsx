@@ -4,6 +4,7 @@ import { formatChord, shortcut } from "../shortcuts";
 import { ScopePicker } from "./ScopePicker";
 import { ManageSaved } from "./ManageSaved";
 import {
+  ALL_TRAFFIC,
   describeScope,
   picksOf,
   sameScope,
@@ -51,6 +52,7 @@ export function ScopeTree({
   const [picking, setPicking] = useState<{ editing?: SavedScope } | null>(null);
   const [managing, setManaging] = useState(false);
   const [savedOpen, setSavedOpen] = useState(true);
+  const [allVia, setAllVia] = useState<"apps" | "domains">("apps");
   // How many apps and domains the active pick holds, for the filter button.
   const pickCount = scope.kind === "set" ? picksOf(scope).apps.length + picksOf(scope).hosts.length : 0;
 
@@ -127,16 +129,22 @@ export function ScopeTree({
                   <span className="t">{sv.label}</span>
                 </div>
               ))}
+            <div className="tree-fav-end" />
           </>
         )}
 
-        <div {...row({ kind: "all" })} style={{ marginTop: 6 }}>
-          <Icon name="layers" size={14} />
-          <span className="t">All traffic</span>
-          <span className="n">{tree.total}</span>
-        </div>
-
-        <TreeHead icon="app-window" label="Apps" count={apps.length} />
+        {/* No "All traffic" row: a section head is the way back to everything.
+            Which head was used is only for which one lights up. */}
+        <TreeHead
+          icon="app-window"
+          label="Apps"
+          count={apps.length}
+          on={scope.kind === "all" && allVia === "apps"}
+          onClick={() => {
+            setAllVia("apps");
+            setScope(ALL_TRAFFIC);
+          }}
+        />
         {apps.map((a) => (
           <AppRow
             key={a.name}
@@ -149,7 +157,16 @@ export function ScopeTree({
         ))}
         {apps.length === 0 && <div className="tree-none">no match</div>}
 
-        <TreeHead icon="globe" label="Domains" count={domains.length} />
+        <TreeHead
+          icon="globe"
+          label="Domains"
+          count={domains.length}
+          on={scope.kind === "all" && allVia === "domains"}
+          onClick={() => {
+            setAllVia("domains");
+            setScope(ALL_TRAFFIC);
+          }}
+        />
         {domains.map((d) => (
           <HostRow
             key={d.host}
@@ -214,9 +231,29 @@ function appLabel(a: AppNode): string {
   return a.name === "" ? "unknown" : a.name;
 }
 
-function TreeHead({ icon, label, count }: { icon: "app-window" | "globe"; label: string; count: number }) {
+/** A section head, which is also the way back to all traffic. */
+function TreeHead({
+  icon,
+  label,
+  count,
+  on,
+  onClick,
+}: {
+  icon: "app-window" | "globe";
+  label: string;
+  count: number;
+  on: boolean;
+  onClick: () => void;
+}) {
   return (
-    <div className="tree-head">
+    <div
+      className={`tree-head ${on ? "on" : ""}`}
+      role="button"
+      tabIndex={0}
+      title="Show all traffic"
+      onClick={onClick}
+      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onClick())}
+    >
       <Icon name={icon} size={13} />
       <span>{label}</span>
       <span className="spacer" />
