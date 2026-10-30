@@ -645,7 +645,7 @@ fn record_ws_frame(shared: &Arc<Shared>, key: &str, direction: WsDirection, msg:
     let route = shared.ws_routes.lock().unwrap().get(key).cloned();
     let Some(route) = route else { return };
 
-    let (opcode, text, base64, size, truncated) = classify_message(msg, shared.body_cap());
+    let (opcode, text, base64, size, truncated) = classify_message(msg, crate::WS_FRAME_CAP);
     let seq = route.seq.fetch_add(1, Ordering::Relaxed);
 
     shared.ws_sink.emit(WsMessage {

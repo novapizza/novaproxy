@@ -90,6 +90,10 @@ impl EngineHooks {
 /// body store, so the Inspector can still show them in full on request.
 pub const DEFAULT_BODY_CAP: usize = bodystore::DEFAULT_INLINE_CAP;
 
+/// Bytes of each WebSocket frame kept. Frames have no spill file to fall back
+/// on, so this stays at the size body previews used to have.
+pub const WS_FRAME_CAP: usize = 512 * 1024;
+
 /// Default retention window: how many flows we keep before evicting the oldest
 /// (together with their spilled bodies).
 pub const DEFAULT_MAX_FLOWS: usize = 10_000;

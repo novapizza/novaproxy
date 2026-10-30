@@ -211,6 +211,10 @@ fn mcp_status_of(state: &AppState) -> McpStatus {
 /// the truncation.
 const MAX_READ_BODY: u64 = 16 * 1024 * 1024;
 
+/// Most of a spilled body an export carries per side: the size previews were
+/// held at before they shrank, so a session file or HAR keeps what it used to.
+const EXPORT_BODY: u64 = 512 * 1024;
+
 /// Fetch a body the UI is not holding: from the on-disk store when it spilled,
 /// otherwise from the retained flow itself.
 ///
@@ -289,7 +293,37 @@ pub fn read_body_from(
 /// own list.
 #[tauri::command]
 pub fn retained_flows(state: State<'_, Arc<AppState>>) -> Vec<Flow> {
-    state.flows.newest_first()
+    retained_flows_from(&state)
+}
+
+/// The body of `retained_flows`, taking `&AppState` so it is reachable from
+/// tests. Bodies that outgrew the in-memory preview are read back from disk.
+pub fn retained_flows_from(state: &AppState) -> Vec<Flow> {
+    let mut flows = state.flows.newest_first();
+    for flow in &mut flows {
+        fill_spilled(state, flow, EXPORT_BODY);
+    }
+    flows
+}
+
+/// Swap each truncated preview whose full body is on disk for that body, read
+/// up to `max_bytes`. A side that cannot be read back keeps its preview.
+fn fill_spilled(state: &AppState, flow: &mut Flow, max_bytes: u64) {
+    use nova_core::flow::Side;
+    for (side, body) in [
+        (Side::Request, &mut flow.request_body),
+        (Side::Response, &mut flow.response_body),
+    ] {
+        let Some(preview) = body.as_ref().filter(|b| b.spilled && b.truncated) else {
+            continue;
+        };
+        let (media, encoding) = (preview.media_type.clone(), preview.decoded_from.clone());
+        if let Ok((bytes, total, truncated)) = state.bodies.read(&flow.id, side, max_bytes) {
+            let mut full = nova_core::flow::build_preview(bytes, total, truncated, media, encoding);
+            full.spilled = true;
+            *body = Some(full);
+        }
+    }
 }
 
 /* ------------------------------- scripts ------------------------------- */
@@ -892,20 +926,19 @@ pub async fn uninstall_helper() -> Result<HelperStatus, String> {
 /// Replay a captured flow by re-issuing it *through* the proxy, so it is
 /// recaptured as a fresh flow (tagged `resent` via the `x-nova-resend` header).
 #[tauri::command]
-pub async fn resend_flow(state: State<'_, Arc<AppState>>, mut flow: Flow) -> Result<(), String> {
-    hydrate_request_body(&state, &mut flow);
+pub async fn resend_flow(state: State<'_, Arc<AppState>>, flow: Flow) -> Result<(), String> {
     replay(&state, flow, false).await
 }
 
-/// Put the request body back on a flow that arrived without one.
+/// Put the whole request body on a flow about to be replayed.
 ///
 /// The UI sends the flow it holds, and it does not hold body previews for flows
-/// it is not showing — replaying one must still send the body that was captured,
-/// so it is taken from the retained flow here.
+/// it is not showing; a retained flow holds only a capped preview, with the rest
+/// on disk. Replaying either must still send the body that was captured.
 pub fn hydrate_request_body(state: &AppState, flow: &mut Flow) {
     let missing = match &flow.request_body {
         None => false, // no body was captured at all: nothing to put back
-        Some(b) => b.text.is_none() && b.base64.is_none() && b.size > 0,
+        Some(b) => (b.text.is_none() && b.base64.is_none() && b.size > 0) || (b.spilled && b.truncated),
     };
     if !missing {
         return;
@@ -922,7 +955,8 @@ pub fn hydrate_request_body(state: &AppState, flow: &mut Flow) {
 /// `internal` marks the replay as NovaProxy's own traffic — set when the MCP
 /// server replays on an agent's behalf, so those flows stay out of unfiltered
 /// listings instead of polluting the capture the agent is reading.
-pub async fn replay(state: &AppState, flow: Flow, internal: bool) -> Result<(), String> {
+pub async fn replay(state: &AppState, mut flow: Flow, internal: bool) -> Result<(), String> {
+    hydrate_request_body(state, &mut flow);
     let addr = ensure_engine(state, None)?;
     let proxy_url = format!("http://{}:{}", addr.ip(), addr.port());
 

@@ -29,8 +29,12 @@ use anyhow::{bail, Context, Result};
 
 use crate::flow::Side;
 
-/// Bytes of each body retained inline (in RAM, and sent to the UI).
-pub const DEFAULT_INLINE_CAP: usize = 512 * 1024;
+/// Bytes of each body retained inline (in RAM, compressed by the flow store).
+///
+/// Small on purpose: almost every API response fits, and anything larger is on
+/// disk in full anyway, so a bigger preview only costs memory for the flows
+/// nobody opens. Was 512 KB, which let 10,000 retained flows reach gigabytes.
+pub const DEFAULT_INLINE_CAP: usize = 64 * 1024;
 /// Largest single body written to disk. Beyond this the body is genuinely
 /// truncated — an inspector is not an archive.
 pub const DEFAULT_PER_BODY_CAP: u64 = 64 * 1024 * 1024;

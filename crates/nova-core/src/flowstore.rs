@@ -8,18 +8,25 @@
 //! Retention lives here too: the window bounds how many flows are kept, and
 //! evicting a flow also deletes its spilled bodies (see [`BodyStore`]) — without
 //! that, disk keeps growing for flows nothing can reach any more.
+//!
+//! Body previews are held compressed. A retained flow is read far less often
+//! than it is kept — the list streams to the UI without bodies, and the bytes
+//! are only wanted when someone opens the flow, exports, or an MCP tool asks —
+//! so the text and base64 of each preview sit here as zstd frames and are
+//! inflated on the way out. Everything that reads the store gets plain flows
+//! back; nothing outside this module sees the packed form.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use nova_proto::Flow;
+use nova_proto::{BodyPreview, Flow};
 
 use crate::bodystore::BodyStore;
 
 /// Bounded, insertion-ordered store of captured flows.
 pub struct FlowStore {
-    flows: Mutex<HashMap<String, Flow>>,
+    flows: Mutex<HashMap<String, Stored>>,
     /// Ids in insertion order, oldest at the front. Drives eviction and gives
     /// callers a stable newest-first read order.
     order: Mutex<VecDeque<String>>,
@@ -27,6 +34,10 @@ pub struct FlowStore {
     bodies: Arc<BodyStore>,
     /// Flows captured this session, including ones since evicted.
     total_captured: AtomicU64,
+    /// Preview bytes held, as stored and as they would be inflated. Changed
+    /// only under the `flows` lock, so the pair moves together.
+    held_bytes: AtomicI64,
+    raw_bytes: AtomicI64,
 }
 
 impl FlowStore {
@@ -37,7 +48,16 @@ impl FlowStore {
             max_flows: max_flows.max(1),
             bodies,
             total_captured: AtomicU64::new(0),
+            held_bytes: AtomicI64::new(0),
+            raw_bytes: AtomicI64::new(0),
         }
+    }
+
+    /// Account for a stored flow arriving (`sign` 1) or leaving (`sign` -1).
+    fn count(&self, stored: &Stored, sign: i64) {
+        let (held, raw) = stored.sizes();
+        self.held_bytes.fetch_add(sign * held as i64, Ordering::Relaxed);
+        self.raw_bytes.fetch_add(sign * raw as i64, Ordering::Relaxed);
     }
 
     /// Bytes of each body retained inline (and therefore streamed to clients).
@@ -57,16 +77,21 @@ impl FlowStore {
             let mut map = self.flows.lock().unwrap();
             let mut order = self.order.lock().unwrap();
             let id = flow.id.clone();
+            let stored = Stored::pack(flow, None);
+            self.count(&stored, 1);
             // Only a first insert extends the order queue; re-inserting an id
             // (never expected, but cheap to be safe about) must not double-count
             // it and shrink the effective window.
-            if map.insert(id.clone(), flow).is_none() {
-                order.push_back(id);
+            match map.insert(id.clone(), stored) {
+                None => order.push_back(id),
+                Some(old) => self.count(&old, -1),
             }
             let mut evicted = Vec::new();
             while order.len() > self.max_flows {
                 let Some(old) = order.pop_front() else { break };
-                map.remove(&old);
+                if let Some(gone) = map.remove(&old) {
+                    self.count(&gone, -1);
+                }
                 evicted.push(old);
             }
             evicted
@@ -78,22 +103,33 @@ impl FlowStore {
 
     /// Apply `f` to a stored flow and return the updated snapshot. `None` when
     /// the flow is unknown (already evicted, or never recorded).
+    ///
+    /// `f` sees the flow with its bodies inflated, like any other reader. A
+    /// preview it leaves alone keeps its existing frame rather than being
+    /// compressed again — most updates touch status and timings, not bodies.
     pub fn update<F: FnOnce(&mut Flow)>(&self, id: &str, f: F) -> Option<Flow> {
         let mut map = self.flows.lock().unwrap();
-        let flow = map.get_mut(id)?;
-        f(flow);
-        Some(flow.clone())
+        let stored = map.get_mut(id)?;
+        let mut flow = stored.unpack();
+        let before = Bodies::copy(&flow);
+        f(&mut flow);
+        let snapshot = flow.clone();
+        self.count(stored, -1);
+        let next = Stored::pack(flow, Some((&*stored, before)));
+        *stored = next;
+        self.count(stored, 1);
+        Some(snapshot)
     }
 
     pub fn get(&self, id: &str) -> Option<Flow> {
-        self.flows.lock().unwrap().get(id).cloned()
+        self.flows.lock().unwrap().get(id).map(Stored::unpack)
     }
 
     /// Retained flows, newest first.
     pub fn newest_first(&self) -> Vec<Flow> {
         let map = self.flows.lock().unwrap();
         let order = self.order.lock().unwrap();
-        order.iter().rev().filter_map(|id| map.get(id).cloned()).collect()
+        order.iter().rev().filter_map(|id| map.get(id).map(Stored::unpack)).collect()
     }
 
     /// Newest-first flows matching `pred`, at most `limit` of them. Evaluated
@@ -107,9 +143,10 @@ impl FlowStore {
             if out.len() >= limit {
                 break;
             }
-            if let Some(flow) = map.get(id) {
-                if pred(flow) {
-                    out.push(flow.clone());
+            if let Some(stored) = map.get(id) {
+                let flow = stored.unpack();
+                if pred(&flow) {
+                    out.push(flow);
                 }
             }
         }
@@ -124,6 +161,8 @@ impl FlowStore {
             let mut map = self.flows.lock().unwrap();
             let mut order = self.order.lock().unwrap();
             order.clear();
+            self.held_bytes.store(0, Ordering::Relaxed);
+            self.raw_bytes.store(0, Ordering::Relaxed);
             map.drain().map(|(id, _)| id).collect::<Vec<_>>()
         };
         for id in &ids {
@@ -141,6 +180,136 @@ impl FlowStore {
 
     pub fn max_flows(&self) -> usize {
         self.max_flows
+    }
+
+    /// Body preview bytes held in memory: `(as stored, inflated)`.
+    pub fn preview_bytes(&self) -> (u64, u64) {
+        let held = self.held_bytes.load(Ordering::Relaxed).max(0) as u64;
+        let raw = self.raw_bytes.load(Ordering::Relaxed).max(0) as u64;
+        (held, raw)
+    }
+}
+
+/* ------------------------------ packed bodies ------------------------------ */
+
+/// Shorter strings are kept as they are: a zstd frame has a fixed overhead,
+/// and inflating it costs more than the bytes it saves.
+const PACK_MIN: usize = 256;
+/// Fastest level. The store compresses on the capture path, and level 1 already
+/// takes JSON and HTML down to a fraction of their size.
+const PACK_LEVEL: i32 = 1;
+
+/// One preview string, compressed when that made it smaller.
+#[derive(Clone)]
+struct Packed {
+    data: Box<[u8]>,
+    zstd: bool,
+    raw_len: usize,
+}
+
+impl Packed {
+    fn new(s: String) -> Self {
+        let raw = s.into_bytes();
+        let raw_len = raw.len();
+        if raw_len >= PACK_MIN {
+            if let Ok(frame) = zstd::bulk::compress(&raw, PACK_LEVEL) {
+                if frame.len() < raw_len {
+                    return Packed { data: frame.into_boxed_slice(), zstd: true, raw_len };
+                }
+            }
+        }
+        Packed { data: raw.into_boxed_slice(), zstd: false, raw_len }
+    }
+
+    fn unpack(&self) -> String {
+        let bytes = if self.zstd {
+            // The frame was made here from `raw_len` bytes, so this cannot fail
+            // short of memory corruption; an empty string is the safe answer.
+            zstd::bulk::decompress(&self.data, self.raw_len).unwrap_or_default()
+        } else {
+            self.data.to_vec()
+        };
+        // The bytes came out of a `String`.
+        String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+    }
+}
+
+/// The text and base64 of one body preview, packed.
+#[derive(Clone, Default)]
+struct PackedBody {
+    text: Option<Packed>,
+    base64: Option<Packed>,
+}
+
+/// A flow as the store holds it: previews stripped of their bytes, which sit
+/// alongside in packed form.
+struct Stored {
+    flow: Flow,
+    request: PackedBody,
+    response: PackedBody,
+}
+
+/// Copies of the four preview strings a flow carries, taken before an update so
+/// that the ones it did not change can keep their frames.
+struct Bodies([Option<String>; 4]);
+
+impl Bodies {
+    fn copy(flow: &Flow) -> Self {
+        let get = |b: &Option<BodyPreview>| {
+            b.as_ref().map(|b| (b.text.clone(), b.base64.clone())).unwrap_or_default()
+        };
+        let (rq_text, rq_b64) = get(&flow.request_body);
+        let (rs_text, rs_b64) = get(&flow.response_body);
+        Bodies([rq_text, rq_b64, rs_text, rs_b64])
+    }
+}
+
+impl Stored {
+    /// Pack `flow`. With `prev` — the stored form it was unpacked from, and its
+    /// strings as they were then — an unchanged string reuses its old frame.
+    fn pack(mut flow: Flow, prev: Option<(&Stored, Bodies)>) -> Self {
+        let (old, before) = match prev {
+            Some((old, before)) => (Some(old), Some(before)),
+            None => (None, None),
+        };
+        let reuse = |now: &Option<String>, then: Option<&Option<String>>, frame: Option<&Option<Packed>>| {
+            match (then, frame) {
+                (Some(then), Some(Some(frame))) if then == now => Some(frame.clone()),
+                _ => None,
+            }
+        };
+        let side = |body: &mut Option<BodyPreview>, at: usize, packed: Option<&PackedBody>| {
+            let Some(body) = body.as_mut() else { return PackedBody::default() };
+            let text = reuse(&body.text, before.as_ref().map(|b| &b.0[at]), packed.map(|p| &p.text))
+                .or_else(|| body.text.clone().map(Packed::new));
+            let base64 = reuse(&body.base64, before.as_ref().map(|b| &b.0[at + 1]), packed.map(|p| &p.base64))
+                .or_else(|| body.base64.clone().map(Packed::new));
+            body.text = None;
+            body.base64 = None;
+            PackedBody { text, base64 }
+        };
+        let request = side(&mut flow.request_body, 0, old.map(|o| &o.request));
+        let response = side(&mut flow.response_body, 2, old.map(|o| &o.response));
+        Stored { flow, request, response }
+    }
+
+    fn unpack(&self) -> Flow {
+        let mut flow = self.flow.clone();
+        for (body, packed) in [(&mut flow.request_body, &self.request), (&mut flow.response_body, &self.response)] {
+            if let Some(body) = body.as_mut() {
+                body.text = packed.text.as_ref().map(Packed::unpack);
+                body.base64 = packed.base64.as_ref().map(Packed::unpack);
+            }
+        }
+        flow
+    }
+
+    /// Preview bytes held, and what they inflate to.
+    fn sizes(&self) -> (usize, usize) {
+        [&self.request.text, &self.request.base64, &self.response.text, &self.response.base64]
+            .into_iter()
+            .flatten()
+            .fold((0, 0), |(held, raw), p| (held + p.data.len(), raw + p.raw_len))
     }
 }
 
@@ -257,6 +426,86 @@ mod tests {
             bodies.read("f0", crate::flow::Side::Response, 1024).is_err(),
             "an evicted flow's spilled body must be deleted"
         );
+    }
+
+    fn with_bodies(id: &str, text: &str, base64: &str) -> Flow {
+        let mut f = flow(id, "a.com");
+        f.request_body = Some(BodyPreview { text: Some(text.into()), ..Default::default() });
+        f.response_body = Some(BodyPreview { base64: Some(base64.into()), ..Default::default() });
+        f
+    }
+
+    #[test]
+    fn bodies_come_back_exactly_as_stored() {
+        let s = store(10);
+        let json = format!("{{\"items\":[{}]}}", vec!["{\"id\":1,\"name\":\"héllo\"}"; 200].join(","));
+        let b64 = "QUJD".repeat(500);
+        s.insert(with_bodies("f0", &json, &b64));
+
+        let got = s.get("f0").unwrap();
+        assert_eq!(got.request_body.unwrap().text.as_deref(), Some(json.as_str()));
+        assert_eq!(got.response_body.unwrap().base64.as_deref(), Some(b64.as_str()));
+        let (held, raw) = s.preview_bytes();
+        assert_eq!(raw as usize, json.len() + b64.len());
+        assert!(held * 5 < raw, "repetitive previews are held compressed: {held} of {raw}");
+    }
+
+    #[test]
+    fn short_and_empty_previews_survive() {
+        let s = store(10);
+        s.insert(with_bodies("f0", "ok", ""));
+        let got = s.get("f0").unwrap();
+        assert_eq!(got.request_body.unwrap().text.as_deref(), Some("ok"));
+        assert_eq!(got.response_body.unwrap().base64.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn update_sees_bodies_and_keeps_or_replaces_them() {
+        let s = store(10);
+        let text = "x".repeat(4096);
+        s.insert(with_bodies("f0", &text, "QUJD"));
+
+        // An update that leaves bodies alone still sees them, and returns them.
+        let snap = s
+            .update("f0", |f| {
+                assert_eq!(f.request_body.as_ref().unwrap().text.as_deref(), Some(text.as_str()));
+                f.status = Some(200);
+            })
+            .unwrap();
+        assert_eq!(snap.request_body.unwrap().text.as_deref(), Some(text.as_str()));
+
+        s.update("f0", |f| f.response_body.as_mut().unwrap().base64 = Some("REVG".into()));
+        let got = s.get("f0").unwrap();
+        assert_eq!(got.status, Some(200));
+        assert_eq!(got.request_body.unwrap().text.as_deref(), Some(text.as_str()));
+        assert_eq!(got.response_body.unwrap().base64.as_deref(), Some("REVG"));
+
+        s.update("f0", |f| f.request_body = None);
+        assert!(s.get("f0").unwrap().request_body.is_none());
+        assert_eq!(s.preview_bytes().1, 4, "only the response preview is left");
+    }
+
+    #[test]
+    fn find_matches_on_body_text() {
+        let s = store(10);
+        s.insert(with_bodies("f0", &format!("{}needle", "a".repeat(1000)), ""));
+        s.insert(with_bodies("f1", "haystack", ""));
+        let hits = s.find(
+            |f| f.request_body.as_ref().and_then(|b| b.text.as_deref()).is_some_and(|t| t.contains("needle")),
+            10,
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "f0");
+    }
+
+    #[test]
+    fn eviction_and_clear_release_preview_bytes() {
+        let s = store(1);
+        s.insert(with_bodies("f0", &"a".repeat(1000), ""));
+        s.insert(with_bodies("f1", "bb", ""));
+        assert_eq!(s.preview_bytes().1, 2, "f0's preview went with it");
+        s.clear();
+        assert_eq!(s.preview_bytes(), (0, 0));
     }
 
     #[test]

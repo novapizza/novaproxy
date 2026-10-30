@@ -34,6 +34,8 @@ tracing = { workspace = true }
 rquickjs = "0.12"
 futures = "0.3"
 flate2 = "1"
+# Body previews are held zstd-compressed in the flow store (see `flowstore`).
+zstd = "0.13"
 brotli = "6"
 base64 = "0.22"
 sha2 = "0.10"
