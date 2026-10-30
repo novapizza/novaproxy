@@ -97,6 +97,30 @@ pub mod macos {
 
     /// Enabled network services, from `networksetup -listallnetworkservices`.
     /// The first line is a header and a leading `*` marks a disabled service.
+    /// `backup` without the services this machine no longer has.
+    ///
+    /// A snapshot can outlive a service: one left behind by an unclean exit is
+    /// reused on the next enable, and a VPN client removes its service when a
+    /// profile is deleted or re-imported. The helper rightly refuses names it
+    /// cannot find, so one vanished VPN used to fail every enable and restore.
+    pub fn without_missing(backup: &Backup, known: &[String]) -> Backup {
+        let mut kept = backup.clone();
+        kept.services.retain(|s| {
+            let present = known.iter().any(|k| k == &s.service);
+            if !present {
+                tracing::warn!(service = %s.service, "skipping a network service that no longer exists");
+            }
+            present
+        });
+        kept
+    }
+
+    /// [`without_missing`] against the services listed right now.
+    pub fn current(backup: &Backup) -> Backup {
+        let known = parse_services(&capture("networksetup", &["-listallnetworkservices"]));
+        without_missing(backup, &known)
+    }
+
     pub fn parse_services(output: &str) -> Vec<String> {
         output
             .lines()
@@ -518,6 +542,7 @@ fn delta(before: (u64, u64)) -> (u64, u64) {
 pub fn enable(host: &str, port: u16, backup: &Backup) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
+        let backup = &macos::current(backup);
         if crate::helper::usable() {
             return crate::helper::enable(host, port, backup);
         }
@@ -548,6 +573,7 @@ pub fn enable(host: &str, port: u16, backup: &Backup) -> Result<()> {
 pub fn disable(backup: &Backup) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
+        let backup = &macos::current(backup);
         if crate::helper::usable() {
             return crate::helper::disable(backup);
         }
@@ -700,6 +726,21 @@ mod tests {
     #[test]
     fn macos_enable_of_an_empty_snapshot_does_nothing() {
         assert!(macos::enable_plan("127.0.0.1", 9090, &Backup::default()).is_empty());
+    }
+
+    #[test]
+    fn macos_drops_services_that_no_longer_exist() {
+        let backup = Backup {
+            services: vec![
+                service("Wi-Fi", false, "", ""),
+                service("35.157.114.18 [u-vpn-haht]", false, "", ""),
+            ],
+            ..Default::default()
+        };
+        let known = vec!["Wi-Fi".to_string(), "Thunderbolt Bridge".to_string()];
+        let kept = macos::without_missing(&backup, &known);
+        let names: Vec<&str> = kept.services.iter().map(|s| s.service.as_str()).collect();
+        assert_eq!(names, vec!["Wi-Fi"]);
     }
 
     fn service(name: &str, enabled: bool, host: &str, port: &str) -> ServiceBackup {
