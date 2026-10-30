@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use nova_proto::{BodyPreview, Flow};
-use novaproxy_lib::commands::{hydrate_request_body, read_body_from};
+use novaproxy_lib::commands::{hydrate_request_body, read_body_from, retained_flows_from};
 use novaproxy_lib::state::AppState;
 
 fn state(tag: &str) -> Arc<AppState> {
@@ -150,4 +150,54 @@ fn hydrating_a_flow_that_captured_no_body_is_a_noop() {
     });
     hydrate_request_body(&st, &mut empty);
     assert_eq!(empty.request_body.as_ref().map(|b| b.size), Some(0));
+}
+
+/// Capture `bytes` as the request body of `id` the way the engine does: a preview
+/// capped at the inline size, the whole body spilled to disk.
+fn spill_request(st: &AppState, id: &str, bytes: &[u8]) -> BodyPreview {
+    let mut cap = nova_core::bodystore::BodyCapture::new(&st.bodies, id, nova_core::flow::Side::Request);
+    cap.push(bytes);
+    let out = cap.finish();
+    assert!(out.spilled && out.truncated, "the body outgrows the preview");
+    let mut preview = nova_core::flow::build_preview(
+        out.inline,
+        out.total,
+        out.truncated,
+        Some("application/json".into()),
+        None,
+    );
+    preview.spilled = true;
+    preview
+}
+
+#[test]
+fn replaying_a_body_larger_than_its_preview_sends_all_of_it() {
+    let st = state("replay-spilled");
+    let big = "y".repeat(nova_core::DEFAULT_BODY_CAP * 2);
+    let mut retained = flow("f1");
+    retained.request_body = Some(spill_request(&st, "f1", big.as_bytes()));
+    st.flows.insert(retained);
+
+    // What the MCP replay sends: the retained flow, preview and all.
+    let mut sent = st.flows.get("f1").unwrap();
+    assert!(sent.request_body.as_ref().unwrap().text.as_ref().unwrap().len() < big.len());
+    hydrate_request_body(&st, &mut sent);
+    assert_eq!(sent.request_body.unwrap().text.as_deref(), Some(big.as_str()));
+}
+
+#[test]
+fn an_export_carries_spilled_bodies_rather_than_their_previews() {
+    let st = state("export-spilled");
+    let big = "z".repeat(nova_core::DEFAULT_BODY_CAP * 3);
+    let mut f = flow("f1");
+    f.request_body = Some(spill_request(&st, "f1", big.as_bytes()));
+    st.flows.insert(f);
+    let mut small = flow("f2");
+    small.request_body = Some(body("tiny"));
+    st.flows.insert(small);
+
+    let out = retained_flows_from(&st);
+    let by_id = |id: &str| out.iter().find(|f| f.id == id).unwrap().request_body.clone().unwrap();
+    assert_eq!(by_id("f1").text.as_deref(), Some(big.as_str()));
+    assert_eq!(by_id("f2").text.as_deref(), Some("tiny"));
 }

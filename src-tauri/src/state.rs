@@ -241,6 +241,8 @@ impl UiStream {
             retained = store.retained(),
             captured = store.total_captured(),
             body_disk_mb = store.bodies().used_bytes() / (1024 * 1024),
+            preview_kb = store.preview_bytes().0 / 1024,
+            preview_raw_kb = store.preview_bytes().1 / 1024,
             messages = sent.messages,
             flows_sent = sent.flows,
             frames_sent = sent.frames,
