@@ -64,6 +64,11 @@ impl CaMaterial {
         thumbprint_sha1_pem(&self.cert_pem).unwrap_or_default()
     }
 
+    /// The certificate's DER bytes.
+    pub fn cert_der(&self) -> Option<Vec<u8>> {
+        pem_to_der(&self.cert_pem)
+    }
+
     pub fn subject(&self) -> String {
         "NovaProxy Root CA".to_string()
     }

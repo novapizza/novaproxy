@@ -490,22 +490,53 @@ impl HttpHandler for NovaHandler {
         _ctx: &HttpContext,
         err: hudsucker::hyper_util::client::legacy::Error,
     ) -> Response<Body> {
+        let reason = crate::upstream::describe(&err);
+        let mut host = None;
         if let Some(id) = self.pending.pop_front() {
-            let started = self
-                .shared
-                .flow(&id)
-                .map(|f| f.started_at)
-                .unwrap_or_else(now_ms);
+            let flow = self.shared.flow(&id);
+            let started = flow.as_ref().map(|f| f.started_at).unwrap_or_else(now_ms);
+            host = flow.map(|f| f.host);
             self.shared.update(&id, |f| {
                 f.state = FlowState::Error;
-                f.error = Some(err.to_string());
+                f.error = Some(reason.clone());
                 f.duration_ms = Some(now_ms() - started);
             });
         }
+        let host = host.unwrap_or_default();
+        if upstream_error_is_news(&host) {
+            tracing::warn!(host = %host, error = %reason, "upstream request failed");
+        }
+        // The page the client sees is often the only place the user looks, so
+        // it says why rather than just that.
         Response::builder()
             .status(502)
-            .body(Body::from("NovaProxy: upstream error"))
+            .header("content-type", "text/plain; charset=utf-8")
+            .body(Body::from(format!("NovaProxy: upstream error: {reason}")))
             .expect("static response")
+    }
+}
+
+/// Whether an upstream failure for `host` should be logged: once per host a
+/// minute. A site that is down fails every request a page makes, and the log
+/// needs the host and the reason, not hundreds of copies of them.
+fn upstream_error_is_news(host: &str) -> bool {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static SEEN: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+    const EVERY: Duration = Duration::from_secs(60);
+    let mut seen = SEEN.lock().unwrap();
+    let seen = seen.get_or_insert_with(HashMap::new);
+    let now = Instant::now();
+    if seen.len() > 1_000 {
+        seen.retain(|_, at| now.duration_since(*at) < EVERY);
+    }
+    match seen.get(host) {
+        Some(at) if now.duration_since(*at) < EVERY => false,
+        _ => {
+            seen.insert(host.to_string(), now);
+            true
+        }
     }
 }
 

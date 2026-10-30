@@ -213,3 +213,27 @@ async fn gzip_response_is_decoded_in_preview() {
     handle.stop();
     let _ = std::fs::remove_dir_all(&ca_dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unreachable_upstream_says_why() {
+    // Bind and drop a listener: its port is free, so connecting is refused.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let (handle, flows, ca_dir) = start_engine(39_105, nova_core::DEFAULT_BODY_CAP, Vec::new(), "refused");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let response =
+        proxy_get(39_105, &format!("http://127.0.0.1:{closed}/x"), &format!("127.0.0.1:{closed}")).await;
+    assert!(response.starts_with("HTTP/1.1 502"), "{response}");
+    let body = body_of(&response);
+    assert!(body.starts_with("NovaProxy: upstream error: "), "{body}");
+
+    let flow = wait_for(&flows, |f| f.state == FlowState::Error).await.expect("no errored flow");
+    let error = flow.error.expect("the failure is recorded");
+    // hyper's own message is only "client error (Connect)"; the cause beneath
+    // it is what makes the failure actionable.
+    assert!(error.len() > "client error (Connect)".len(), "{error}");
+    assert!(body.ends_with(&error), "the page and the flow give the same reason: {body} / {error}");
+
+    handle.stop();
+    let _ = std::fs::remove_dir_all(&ca_dir);
+}

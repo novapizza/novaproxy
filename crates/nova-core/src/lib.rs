@@ -15,6 +15,7 @@ pub mod scripting;
 pub mod timing;
 pub mod tlsscope;
 pub mod trust;
+pub mod upstream;
 
 // OS plumbing lives in its own crate so the privileged helper — which runs as
 // root — links none of the engine. Re-exported so callers still say
@@ -27,7 +28,6 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
 use hudsucker::rustls::crypto::aws_lc_rs;
-use hudsucker::rustls::ClientConfig;
 use hudsucker::Proxy;
 use nova_proto::{NetworkConditions, Rule, TlsScope};
 use tokio::sync::oneshot;
@@ -158,7 +158,7 @@ pub fn start(
     // place DNS / TCP / TLS timings can be measured (see `timing`). The same TLS
     // config is handed to the WebSocket connector, which `with_rustls_connector`
     // would otherwise have configured for us.
-    let tls_config = client_tls_config()?;
+    let tls_config = upstream::client_tls_config(ca)?;
     let connector = timing::instrumented_connector(tls_config.clone(), connects);
 
     let proxy = Proxy::builder()
@@ -186,13 +186,3 @@ pub fn start(
     })
 }
 
-/// TLS configuration for connections we make *upstream* (to origin servers),
-/// trusting the webpki root set — unrelated to the CA we present downstream.
-fn client_tls_config() -> Result<Arc<ClientConfig>> {
-    use hyper_rustls::ConfigBuilderExt;
-    let config = ClientConfig::builder_with_provider(Arc::new(aws_lc_rs::default_provider()))
-        .with_safe_default_protocol_versions()?
-        .with_webpki_roots()
-        .with_no_client_auth();
-    Ok(Arc::new(config))
-}
