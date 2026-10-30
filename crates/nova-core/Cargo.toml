@@ -20,6 +20,10 @@ http-body-util = "0.1"
 # ourselves (rather than `with_rustls_connector`) so DNS/TCP/TLS phases can be
 # measured — see `timing`. Versions match hudsucker's own so Cargo unifies them.
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "webpki-tokio", "tls12", "logging"] }
+# Upstream trust: Mozilla's roots plus the OS store, so machines whose security
+# software re-signs HTTPS still reach origins (see `upstream`).
+webpki-roots = "1"
+rustls-native-certs = "0.8"
 tower-service = "0.3"
 
 tokio = { workspace = true }

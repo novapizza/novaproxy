@@ -2666,6 +2666,7 @@ dependencies = [
  "nova-proto",
  "rcgen",
  "rquickjs",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "sha1",
@@ -2674,6 +2675,7 @@ dependencies = [
  "tokio",
  "tower-service",
  "tracing",
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]
