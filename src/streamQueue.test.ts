@@ -29,6 +29,36 @@ describe("StreamQueue", () => {
     expect(q.take().ws.map((m) => Number(m.seq))).toEqual([2, 3]);
   });
 
+  it("counts the frames it drops against their socket", () => {
+    const q = new StreamQueue(10, 2);
+    q.push({ flows: [], ws: [frame(1), frame(2), frame(3)] });
+    expect(q.take().ws_dropped).toEqual({ a: 1 });
+    expect(q.take().ws_dropped).toBeUndefined();
+  });
+
+  it("keeps the newest frames that fit its byte budget", () => {
+    const sized = (seq: number) => ({ ...frame(seq), text: "x".repeat(10) }) as WsMessage;
+    const q = new StreamQueue(10, 100, 25);
+    q.push({ flows: [], ws: [sized(1), sized(2)] });
+    q.push({ flows: [], ws: [sized(3)] });
+    const out = q.take();
+    expect(out.ws.map((m) => Number(m.seq))).toEqual([2, 3]);
+    expect(out.ws_dropped).toEqual({ a: 1 });
+  });
+
+  it("keeps the newest frame even when it alone is over the byte budget", () => {
+    const q = new StreamQueue(10, 100, 5);
+    q.push({ flows: [], ws: [{ ...frame(1), text: "x".repeat(10) } as WsMessage] });
+    expect(q.take().ws).toHaveLength(1);
+  });
+
+  it("adds the engine's dropped counts to its own", () => {
+    const q = new StreamQueue(10, 1);
+    q.push({ flows: [], ws: [], ws_dropped: { a: 5, b: 2 } });
+    q.push({ flows: [], ws: [frame(1), frame(2)] });
+    expect(q.take().ws_dropped).toEqual({ a: 6, b: 2 });
+  });
+
   it("drops queued flows but not frames on clear", () => {
     const q = new StreamQueue(10);
     q.push({ flows: [flow("a")], ws: [frame(1)] });

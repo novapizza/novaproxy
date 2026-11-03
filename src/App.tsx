@@ -289,10 +289,10 @@ export function App() {
     const flush = () => {
       frame = 0;
       last = performance.now();
-      const { flows, ws } = queue.take();
+      const { flows, ws, ws_dropped } = queue.take();
       // Snapshots first: the store drops frames of flows it does not hold.
       if (flows.length) useStore.getState().upsertFlows(flows);
-      if (ws.length) useStore.getState().addWsMessages(ws);
+      if (ws.length || ws_dropped) useStore.getState().addWsMessages(ws, ws_dropped);
       // Until the next task: the store update and the render it schedules.
       const started = last;
       setTimeout(() => {

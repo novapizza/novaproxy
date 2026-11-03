@@ -28,7 +28,8 @@ interface Store {
   upsertFlows: (batch: Flow[]) => void;
   addWsMessage: (m: WsMessage) => void;
   /** Append a frame's worth of captured frames in one store update. */
-  addWsMessages: (batch: WsMessage[]) => void;
+  /** Append a batch of frames, plus counts of frames dropped before they arrived. */
+  addWsMessages: (batch: WsMessage[], dropped?: Record<string, number>) => void;
   loadFlows: (flows: Flow[]) => void;
   clear: () => void;
   setRecording: (v: boolean) => void;
@@ -53,6 +54,21 @@ export const MAX_FLOWS = 10_000;
  * and the panel says how many.
  */
 export const MAX_WS_FRAMES = 2_000;
+
+/**
+ * Frame payload held across every socket, at most; past it the oldest frames go,
+ * whichever socket they belong to. `MAX_WS_FRAMES` alone let one socket hold
+ * 2,000 frames of up to 64 KB each, and nothing bounded the sockets together.
+ *
+ * Temporary: frames are to move into the engine and be fetched for the socket
+ * actually open, like bodies are, at which point this budget goes.
+ */
+export const MAX_WS_BYTES = 64 * 1024 * 1024;
+
+/** Payload a frame holds, counted in string length. */
+export function frameBytes(m: WsMessage): number {
+  return (m.text?.length ?? 0) + (m.base64?.length ?? 0);
+}
 
 /**
  * A body, minus its bytes.
@@ -203,9 +219,19 @@ export function appendWsMessages(
   wsMessages: Record<string, WsMessage[]>,
   wsDropped: Record<string, number>,
   cap: number,
+  opts: { byteBudget?: number; dropped?: Record<string, number> } = {},
 ): { wsMessages?: Record<string, WsMessage[]>; wsDropped?: Record<string, number> } {
-  if (batch.length === 0) return {};
+  const upstream = opts.dropped ?? {};
+  const hasUpstream = Object.keys(upstream).length > 0;
+  if (batch.length === 0 && !hasUpstream) return {};
   const retained = new Set(flows.map((f) => f.id));
+  let dropped: Record<string, number> | undefined;
+  // Frames the engine or the queue dropped on the way count like ones cut here.
+  for (const id in upstream) {
+    if (!retained.has(id)) continue;
+    dropped = dropped ?? { ...wsDropped };
+    dropped[id] = (dropped[id] ?? 0) + upstream[id];
+  }
   const byFlow = new Map<string, WsMessage[]>();
   for (const m of batch) {
     if (!retained.has(m.flow_id)) continue;
@@ -213,10 +239,9 @@ export function appendWsMessages(
     if (seen) seen.push(m);
     else byFlow.set(m.flow_id, [m]);
   }
-  if (byFlow.size === 0) return {};
+  if (byFlow.size === 0) return dropped ? { wsDropped: dropped } : {};
 
   const next = { ...wsMessages };
-  let dropped: Record<string, number> | undefined;
   for (const [id, add] of byFlow) {
     const prev = next[id];
     const all = prev ? prev.concat(add) : add;
@@ -229,7 +254,42 @@ export function appendWsMessages(
     dropped = dropped ?? { ...wsDropped };
     dropped[id] = (dropped[id] ?? 0) + over;
   }
+  const evicted = evictOverBudget(next, opts.byteBudget ?? Infinity);
+  for (const id in evicted) {
+    dropped = dropped ?? { ...wsDropped };
+    dropped[id] = (dropped[id] ?? 0) + evicted[id];
+  }
   return dropped ? { wsMessages: next, wsDropped: dropped } : { wsMessages: next };
+}
+
+/**
+ * Drop the oldest frames across every socket until their payload fits `budget`,
+ * replacing the arrays in `held` (never mutating them). Returns how many frames
+ * each socket lost.
+ */
+function evictOverBudget(held: Record<string, WsMessage[]>, budget: number): Record<string, number> {
+  const lost: Record<string, number> = {};
+  if (!Number.isFinite(budget)) return lost;
+  let total = 0;
+  for (const id in held) for (const m of held[id]) total += frameBytes(m);
+  if (total <= budget) return lost;
+
+  // Start index per socket, so eviction walks forward instead of shifting arrays.
+  const start: Record<string, number> = {};
+  for (const id in held) start[id] = 0;
+  while (total > budget) {
+    let oldest: string | null = null;
+    for (const id in held) {
+      const m = held[id][start[id]];
+      if (m && (oldest === null || m.at < held[oldest][start[oldest]].at)) oldest = id;
+    }
+    if (oldest === null) break;
+    total -= frameBytes(held[oldest][start[oldest]]);
+    start[oldest] += 1;
+    lost[oldest] = (lost[oldest] ?? 0) + 1;
+  }
+  for (const id in lost) held[id] = held[id].slice(start[id]);
+  return lost;
 }
 
 const emptyProxy: ProxyStatus = {
@@ -264,9 +324,16 @@ export const useStore = create<Store>((set) => ({
     set((s) => applyFlowBatch(batch, s.flows, s.wsMessages, s.wsDropped, s.recording, MAX_FLOWS)),
   // Append captured WS frames to their flow's list (ordered by arrival).
   addWsMessage: (m) =>
-    set((s) => appendWsMessages([m], s.flows, s.wsMessages, s.wsDropped, MAX_WS_FRAMES)),
-  addWsMessages: (batch) =>
-    set((s) => appendWsMessages(batch, s.flows, s.wsMessages, s.wsDropped, MAX_WS_FRAMES)),
+    set((s) =>
+      appendWsMessages([m], s.flows, s.wsMessages, s.wsDropped, MAX_WS_FRAMES, { byteBudget: MAX_WS_BYTES }),
+    ),
+  addWsMessages: (batch, dropped) =>
+    set((s) =>
+      appendWsMessages(batch, s.flows, s.wsMessages, s.wsDropped, MAX_WS_FRAMES, {
+        byteBudget: MAX_WS_BYTES,
+        dropped,
+      }),
+    ),
   // Replace the flow list (used when importing a saved .nova session). Imported
   // flows keep their bodies: nothing else has a copy to fetch them from.
   loadFlows: (flows) => set({ flows, selectedId: null, wsMessages: {}, wsDropped: {} }),
