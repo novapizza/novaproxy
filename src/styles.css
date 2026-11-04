@@ -1301,7 +1301,7 @@ input, textarea, select { font-family: inherit; }
 /* ------------------------------ key/value grid ---------------------------- */
 
 .kv { display: flex; flex-direction: column; }
-.kv-head, .kv-row { display: grid; grid-template-columns: 176px minmax(0, 1fr); gap: 10px; }
+.kv-head, .kv-row { display: grid; grid-template-columns: 176px minmax(0, 1fr) 18px; gap: 10px; }
 .kv-head {
   padding: 0 2px 8px;
   font: 600 10.5px var(--font-ui); letter-spacing: .08em; text-transform: uppercase; color: var(--faint);
@@ -1310,6 +1310,14 @@ input, textarea, select { font-family: inherit; }
 .kv-row { padding: 7px 2px; border-bottom: 1px solid var(--bsoft); }
 .kv-row .k { font: 400 11.5px var(--font-mono); color: var(--muted); word-break: break-all; }
 .kv-row .v { font: 400 11.5px var(--font-mono); color: var(--text); word-break: break-all; }
+/* Shown on hover or focus, so a table of forty headers is not forty icons. */
+.kv-row .kv-copy {
+  align-self: start; display: flex; padding: 2px; border: 0; border-radius: 4px;
+  background: none; color: var(--faint); cursor: pointer; opacity: 0;
+}
+.kv-row:hover .kv-copy, .kv-row .kv-copy:focus-visible, .kv-row .kv-copy.done { opacity: 1; }
+.kv-row .kv-copy:hover { color: var(--text2); background: var(--hover); }
+.kv-row .kv-copy.done { color: var(--accent); }
 .kv-empty { font: 400 12px var(--font-mono); color: var(--faint); padding: 4px 2px; }
 
 /* Raw is reconstructed, and says so rather than implying wire fidelity. */
