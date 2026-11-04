@@ -30,7 +30,12 @@ export type Scope =
    * ever built with two or more picks — one pick is the plain `app`/`host`
    * scope, so the two ways of choosing one row cannot disagree (`scopeOf`).
    */
-  | { kind: "set"; apps: string[]; hosts: string[] };
+  | { kind: "set"; apps: string[]; hosts: string[] }
+  /**
+   * The flows behind one finding on the Insights page. Like a pin, it names
+   * flow ids, so it lives for the session only and is never saved.
+   */
+  | { kind: "insight"; id: string; title: string; flowIds: ReadonlySet<string> };
 
 export const ALL_TRAFFIC: Scope = { kind: "all" };
 
@@ -58,6 +63,8 @@ export function matchScope(f: Flow, scope: Scope, ctx: ScopeContext = {}): boole
         (scope.apps.length === 0 || scope.apps.includes(f.process ?? "")) &&
         (scope.hosts.length === 0 || scope.hosts.includes(f.host))
       );
+    case "insight":
+      return scope.flowIds.has(f.id);
   }
 }
 
@@ -81,6 +88,7 @@ export function scopeKey(scope: Scope): string {
     case "path": return `path:${scope.host}${scope.prefix}`;
     // Sorted, so picking Chrome then Slack is the same selection as the reverse.
     case "set": return `set:${[...scope.apps].sort().join("\u0000")}|${[...scope.hosts].sort().join("\u0000")}`;
+    case "insight": return `insight:${scope.id}`;
   }
 }
 
@@ -121,6 +129,7 @@ export function describeScope(scope: Scope): string {
       return [scope.apps.map((a) => a || "unknown app").join(", "), scope.hosts.join(", ")]
         .filter(Boolean)
         .join(" · ");
+    case "insight": return scope.title;
   }
 }
 

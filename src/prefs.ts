@@ -86,6 +86,12 @@ export interface Prefs {
    * marked done without ever seeing the wizard.
    */
   onboardingDone: boolean;
+  /**
+   * Insights the user muted, by `Insight.id` (rule + app + host + endpoint).
+   * Kept across launches because the id names a pattern, not a flow: the same
+   * chatty endpoint comes back next session with the same id.
+   */
+  mutedInsights: string[];
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -101,6 +107,7 @@ export const DEFAULT_PREFS: Prefs = {
   savedScopes: [],
   autoCheckUpdates: true,
   onboardingDone: false,
+  mutedInsights: [],
 };
 
 const KEY = "novaproxy.prefs";
@@ -182,6 +189,9 @@ export function normalizePrefs(raw: unknown): Prefs {
     // done, so anything missing or corrupt shows the walkthrough rather than
     // silently swallowing it.
     onboardingDone: v.onboardingDone === true,
+    mutedInsights: Array.isArray(v.mutedInsights)
+      ? [...new Set(v.mutedInsights.filter((x): x is string => typeof x === "string"))]
+      : [],
   };
 }
 

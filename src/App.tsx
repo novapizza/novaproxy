@@ -13,7 +13,10 @@ import {
   type McpStatus,
   type HelperStatus,
   type UpdateProgress,
+  type InsightReport,
+  type InsightRule,
 } from "./api";
+import type { Insight } from "./bindings/Insight";
 import {
   INITIAL_UPDATE_STATE,
   afterCheck,
@@ -23,11 +26,23 @@ import {
   updateSummary,
   type UpdateState,
 } from "./update";
-import { MAX_FLOWS, useStore } from "./store";
+import { MAX_FLOWS, useStore, withoutBodies } from "./store";
 import { FLUSH_MS, StreamQueue, type StreamBatch } from "./streamQueue";
 import { takeRenderTimes } from "./perf";
-import { exportSession, exportHar, importSession } from "./session";
-import { EMPTY_FILTER, toastDuration, type FlowFilter, type ShowToast, type ToastKind } from "./filter";
+import { exportSession, exportHar, exportReport, importSession } from "./session";
+import { hostTable, reportMarkdown, summarize } from "./report";
+import { scopeOf } from "./scope";
+import type { StatusClass } from "./classify";
+import {
+  buildPredicate,
+  describeFilter,
+  EMPTY_FILTER,
+  isFiltering,
+  toastDuration,
+  type FlowFilter,
+  type ShowToast,
+  type ToastKind,
+} from "./filter";
 import { Brandmark } from "./Brandmark";
 import { Dropdown, type DropdownItem } from "./Dropdown";
 import { Icon, type IconName } from "./icons";
@@ -42,6 +57,16 @@ import { trustHint, trustLabel } from "./trust";
 import { launchDecision } from "./onboarding";
 import { Coachmark, OnboardingWizard, type CoachTarget } from "./Walkthrough";
 import { loadPrefs, savePrefs, type Prefs } from "./prefs";
+import { InsightsSection } from "./InsightsSection";
+import {
+  badge as insightBadge,
+  filterForInsights,
+  partition as partitionInsights,
+  INSIGHT_POLL_MS,
+  insightScope,
+  insightsInView,
+  toggleMuted,
+} from "./insights";
 
 /* ------------------------------- helpers ------------------------------- */
 
@@ -56,10 +81,11 @@ function formatBytes(n: number | bigint) {
 }
 
 
-type Section = "flows" | "rules" | "break" | "scripts" | "certs";
+type Section = "flows" | "insights" | "rules" | "break" | "scripts" | "certs";
 
 const RAIL: { id: Section; icon: IconName; label: string }[] = [
   { id: "flows", icon: "activity", label: "Flows" },
+  { id: "insights", icon: "lightbulb", label: "Insights" },
   { id: "rules", icon: "git-branch", label: "Rules" },
   { id: "break", icon: "circle-pause", label: "Break" },
   { id: "scripts", icon: "braces", label: "Scripts" },
@@ -69,6 +95,7 @@ const RAIL: { id: Section; icon: IconName; label: string }[] = [
 /** Header caption per section, so the bar always says where you are. */
 const SECTION_TITLE: Record<Section, string> = {
   flows: "Traffic inspector",
+  insights: "Insights",
   rules: "Rules",
   break: "Breakpoints",
   scripts: "Scripts",
@@ -98,7 +125,7 @@ const RULE_KIND_LABEL: Record<RuleKind, string> = {
 /* -------------------------------- App -------------------------------- */
 
 export function App() {
-  const { flows, recording, selectedId, proxy, ca, setRecording, clear, select } = useStore();
+  const { flows, recording, selectedId, proxy, ca, imported, setRecording, clear, select } = useStore();
 
   // Persisted preferences. Read once: they are defaults for this session, not a
   // live binding — flipping "default grouping" must not reshuffle the list under
@@ -170,6 +197,19 @@ export function App() {
   // below three others. Reset when Settings is opened the ordinary way.
   const [revealUpdates, setRevealUpdates] = useState(false);
   const [restoreHidden, setRestoreHidden] = useState(false);
+  /**
+   * The latest anti-pattern report (see `src/insights.ts`). Read from the engine
+   * while recording; from the list itself when it holds an imported session,
+   * which the engine never saw. `insightsNonce` forces a re-read (Refresh).
+   */
+  const [insights, setInsights] = useState<InsightReport | null>(null);
+  const [insightsNonce, setInsightsNonce] = useState(0);
+  const insightGen = useRef<number | undefined>(undefined);
+  const insightList = useRef<Flow[] | null>(null);
+  const mutedInsights = useMemo(() => new Set(prefs.mutedInsights), [prefs.mutedInsights]);
+  /** Whether the page narrows to the flow filter; "Show all" turns it off for the session. */
+  const [insightsFollow, setInsightsFollow] = useState(true);
+  const pinned = useStore((s) => s.pinned);
 
   // First-run walkthrough. `coach` runs after it closes and points at the two
   // controls the wizard just talked about; both anchors have to be refs because
@@ -257,6 +297,11 @@ export function App() {
   // the user believes they discarded.
   async function clearAll() {
     clear();
+    // The report names flows that are about to be gone; a stale badge would
+    // point at an empty table.
+    setInsights(null);
+    insightGen.current = undefined;
+    insightList.current = null;
     streamQueue.current.discardFlows();
     try {
       await api.clearFlows();
@@ -577,6 +622,7 @@ export function App() {
       { id: "har", icon: "file-down", label: "Export as HAR", run: () => void doExportHar() },
       { id: "mcponly", icon: "plug", label: mcpOnly ? "Show all traffic (clear MCP filter)" : "Show only MCP traffic", run: () => { patchFilter({ type: mcpOnly ? new Set() : new Set(["mcp"]) }); goSection("flows"); } },
       { id: "bp", icon: "circle-pause", label: "Arm breakpoint on next request", run: () => { armBreakpoint(true); goSection("break"); showToast("Breakpoint armed"); } },
+      { id: "insights", icon: "lightbulb", label: "Open Insights", run: () => goSection("insights") },
       { id: "rules", icon: "git-branch", label: "Open Rules", run: () => goSection("rules") },
       { id: "scripts", icon: "braces", label: "Open Scripts", run: () => goSection("scripts") },
       { id: "certs", icon: "shield-check", label: "Open Certificate", run: () => goSection("certs") },
@@ -680,6 +726,112 @@ export function App() {
     return () => void un.then((f) => f());
   }, []);
 
+  /**
+   * Keep the insight report current.
+   *
+   * Polled rather than pushed: the engine caches the report until the flow store
+   * changes and answers `null` for "nothing new", so a tick costs one IPC call,
+   * and the poll interval doubles as the debounce that keeps cards from
+   * reshuffling on every capture frame. While paused nothing is re-read — the
+   * list is frozen too, and a report ahead of it would name flows it does not
+   * show — unless Refresh asks.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    async function tick() {
+      if (document.hidden) return;
+      try {
+        if (imported) {
+          const list = useStore.getState().flows;
+          if (list === insightList.current) return;
+          insightList.current = list;
+          const report = await api.analyzeFlows(list.map(withoutBodies));
+          if (!cancelled) setInsights(report);
+        } else {
+          const report = await api.getInsights(insightGen.current);
+          if (report && !cancelled) {
+            insightGen.current = report.generation;
+            setInsights(report);
+          }
+        }
+      } catch (e) {
+        // The next tick retries; a toast every three seconds would be worse
+        // than a report that is a few seconds old.
+        api.logUi("warn", "command", `insights: ${e}`);
+      }
+    }
+    if (recording || imported || insightsNonce > 0) void tick();
+    // An imported list keeps being watched even while paused, so opening a
+    // second session is picked up; the identity check makes an idle tick free.
+    if (!recording && !imported) return () => { cancelled = true; };
+    const timer = window.setInterval(() => void tick(), INSIGHT_POLL_MS);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [recording, imported, insightsNonce]);
+
+  /**
+   * The findings the current flow filter leaves in view. Recomputed when the
+   * report or the filter changes, not per capture frame: the report itself only
+   * moves every few seconds, and that is when new flows can join a finding.
+   */
+  const insightFilter = useMemo(() => filterForInsights(filter), [filter]);
+  const filterSet = insightFilter.enabled && isFiltering(insightFilter);
+  const followingFilter = insightsFollow && filterSet;
+  const viewed = useMemo(
+    () =>
+      followingFilter
+        ? insightsInView(insights, useStore.getState().flows, buildPredicate(insightFilter, { pinned }))
+        : { report: insights, inView: new Map<string, number>(), hidden: 0 },
+    [insights, insightFilter, pinned, followingFilter],
+  );
+  // The badge counts what the page would show, so the two never disagree.
+  const railBadge = insightBadge(viewed.report, mutedInsights);
+
+  /**
+   * The flows the traffic report describes: what the findings follow — the
+   * filter, or everything when the page shows all — and never NovaProxy's own
+   * traffic unless the filter asks for it. Only computed while the page is
+   * open; the list changes every capture frame and nothing else reads this.
+   */
+  const reportFlows = useMemo(() => {
+    if (section !== "insights") return [];
+    const f = followingFilter ? insightFilter : { ...EMPTY_FILTER, includeInternal: filter.includeInternal };
+    return flows.filter(buildPredicate(f, { pinned }));
+  }, [section, flows, followingFilter, insightFilter, filter.includeInternal, pinned]);
+  const reportSummary = useMemo(() => summarize(reportFlows), [reportFlows]);
+  const reportHosts = useMemo(() => hostTable(reportFlows), [reportFlows]);
+
+  async function doExportReport() {
+    const { shown, muted } = partitionInsights(viewed.report, mutedInsights);
+    const markdown = reportMarkdown({
+      scope: followingFilter ? describeFilter(insightFilter) : "all traffic",
+      generatedAt: new Date(),
+      summary: reportSummary,
+      insights: shown,
+      mutedCount: muted.length,
+      hosts: reportHosts,
+    });
+    try {
+      if (await exportReport(markdown)) showToast("Report exported");
+    } catch (e) { showToast(String(e), { kind: "error" }); }
+  }
+  const openFlowFromReport = (f: Flow) => { select(f.id); goSection("flows"); };
+  const statusFromReport = (c: StatusClass) => { patchFilter({ status: new Set([c]), enabled: true }); goSection("flows"); };
+  const hostFromReport = (app: string, host: string) => {
+    patchFilter({ scope: scopeOf([app], [host]), enabled: true });
+    goSection("flows");
+  };
+
+  const showInsightFlows = (i: Insight) => {
+    patchFilter({ scope: insightScope(i), enabled: true });
+    goSection("flows");
+    api.trackUi("ui.insight.show", i.rule as InsightRule);
+  };
+  const toggleInsightMute = (i: Insight) => {
+    const wasMuted = mutedInsights.has(i.id);
+    setPrefs({ ...prefs, mutedInsights: toggleMuted(prefs.mutedInsights, i.id) });
+    api.trackUi(wasMuted ? "ui.insight.unmute" : "ui.insight.mute", i.rule as InsightRule);
+  };
+
   const hostCount = useMemo(() => new Set(flows.map((f) => f.host)).size, [flows]);
 
   /**
@@ -710,6 +862,11 @@ export function App() {
             >
               <span className="icon"><Icon name={r.icon} size={19} /></span>
               <span className="label">{r.label}</span>
+              {r.id === "insights" && railBadge && (
+                <span className={`rail-badge ${railBadge.severity.toLowerCase()}`}>
+                  {railBadge.count > 99 ? "99+" : railBadge.count}
+                </span>
+              )}
             </div>
           ))}
           <div className="spacer" />
@@ -803,6 +960,31 @@ export function App() {
               searchRef={searchRef}
               treeFilterRef={treeFilterRef}
               tableRef={flowListRef}
+            />
+          )}
+          {section === "insights" && (
+            <InsightsSection
+              report={viewed.report}
+              summary={reportSummary}
+              hosts={reportHosts}
+              onExport={() => void doExportReport()}
+              onSelectFlow={openFlowFromReport}
+              onStatus={statusFromReport}
+              onHost={hostFromReport}
+              inView={viewed.inView}
+              filterNote={followingFilter ? { label: describeFilter(insightFilter), hidden: viewed.hidden } : null}
+              canFollow={!insightsFollow && filterSet}
+              onFollow={setInsightsFollow}
+              recording={recording}
+              imported={imported}
+              muted={mutedInsights}
+              onToggleMute={toggleInsightMute}
+              onShowFlows={showInsightFlows}
+              onRefresh={() => {
+                // A Refresh after an import re-reads the list even if it did not change.
+                insightList.current = null;
+                setInsightsNonce((n) => n + 1);
+              }}
             />
           )}
           {section === "rules" && <RulesSection rules={rules} saveRules={saveRules} />}

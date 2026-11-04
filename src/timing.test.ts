@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Flow } from "./api";
 import type { Timings } from "./bindings/Timings";
-import { formatDuration, formatMs, timingBreakdown } from "./timing";
+import { formatDuration, formatMs, serverWaitMs, slowWaitMs, timingBreakdown } from "./timing";
 
 const noTimings: Timings = {
   dns_ms: null,
@@ -133,5 +133,26 @@ describe("formatDuration", () => {
   it("never leaks a raw float — the case that overran the median card", () => {
     expect(formatDuration(248.46826171875)).toBe("248");
     expect(formatDuration(99.99999)).toBe("100.0");
+  });
+});
+
+describe("server wait and the turtle", () => {
+  it("is TTFB minus connection setup, as the waterfall's Waiting phase", () => {
+    const f = mkFlow({ dns_ms: 20, connect_ms: 30, tls_ms: 50, ttfb_ms: 700 });
+    expect(serverWaitMs(f)).toBe(600);
+    expect(timingBreakdown(f).phases.find((p) => p.key === "wait")?.ms).toBe(600);
+  });
+
+  it("marks waits over 500 ms only", () => {
+    expect(slowWaitMs(mkFlow({ ttfb_ms: 501 }))).toBe(501);
+    expect(slowWaitMs(mkFlow({ ttfb_ms: 500 }))).toBeNull();
+    // A slow handshake is not a slow server.
+    expect(slowWaitMs(mkFlow({ connect_ms: 900, ttfb_ms: 1000 }))).toBeNull();
+  });
+
+  it("does not blame the server for time spent at a breakpoint or never measured", () => {
+    const edits = { rule: false, script: false, breakpoint: true };
+    expect(serverWaitMs(mkFlow({ ttfb_ms: 9000 }, { edits }))).toBeNull();
+    expect(serverWaitMs(mkFlow({}))).toBeNull();
   });
 });

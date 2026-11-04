@@ -72,6 +72,33 @@ export function timingBreakdown(flow: Flow): TimingBreakdown {
 }
 
 /**
+ * Server wait above which a row gets the turtle — Firefox's threshold
+ * (`devtools.netmonitor.audits.slow`), so the mark means what people already
+ * read it as.
+ */
+export const SLOW_WAIT_MS = 500;
+
+/**
+ * How long the server took to start answering: the `Waiting (server)` phase of
+ * the waterfall, so the turtle and the Timing panel quote the same number.
+ *
+ * `null` when it cannot be blamed on the server — not measured, or the flow sat
+ * at a breakpoint, where the wait is the person editing it.
+ */
+export function serverWaitMs(flow: Flow): number | null {
+  const t = flow.timings;
+  if (t?.ttfb_ms == null || flow.edits?.breakpoint) return null;
+  const setup = (t.dns_ms ?? 0) + (t.connect_ms ?? 0) + (t.tls_ms ?? 0);
+  return Math.max(t.ttfb_ms - setup, 0);
+}
+
+/** The server wait, when it is slow enough to mark. */
+export function slowWaitMs(flow: Flow): number | null {
+  const wait = serverWaitMs(flow);
+  return wait != null && wait > SLOW_WAIT_MS ? wait : null;
+}
+
+/**
  * Millisecond value with no unit, for the places that print the unit
  * themselves. Durations arrive as f64 from the engine, so every one of them has
  * to pass through here — printed raw, a median of 248.46826171875 overruns the

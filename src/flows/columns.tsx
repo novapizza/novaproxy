@@ -5,7 +5,7 @@ import { useStore } from "../store";
 import { Icon } from "../icons";
 import { methodClass, statusClass, statusText } from "../badges";
 import { formatCellBytes, formatClock } from "../format";
-import { formatMs } from "../timing";
+import { formatMs, SLOW_WAIT_MS, slowWaitMs } from "../timing";
 import { mcpLabel } from "../filter";
 
 /**
@@ -119,7 +119,7 @@ export const COLUMNS: Record<ColumnId, Column> = {
     label: "Duration",
     track: "78px",
     align: "right",
-    cell: (f) => (f.duration_ms != null ? formatMs(f.duration_ms) : "–"),
+    cell: (f) => <DurationCell flow={f} />,
   },
   request: {
     id: "request",
@@ -307,4 +307,26 @@ export function minTableWidth(ids: readonly ColumnId[], widths: ColumnWidths = {
     const px = /(\d+)px/.exec(t.includes("minmax") ? t.slice(t.indexOf("minmax")) : t);
     return sum + (px ? Number(px[1]) : 0);
   }, 0);
+}
+
+/**
+ * Duration, with Firefox's turtle when the server itself was slow to answer.
+ *
+ * Judged on the server wait rather than the total: a large download or a slow
+ * TLS handshake is a different problem, and the turtle has always meant "the
+ * backend took its time".
+ */
+function DurationCell({ flow }: { flow: Flow }) {
+  const slow = slowWaitMs(flow);
+  const total = flow.duration_ms != null ? formatMs(flow.duration_ms) : "–";
+  if (slow == null) return <>{total}</>;
+  return (
+    <span
+      className="slow-wait"
+      title={`Slow server: waited ${formatMs(slow)} for the first byte (over ${SLOW_WAIT_MS} ms)`}
+    >
+      <Icon name="turtle" size={13} />
+      {total}
+    </span>
+  );
 }
