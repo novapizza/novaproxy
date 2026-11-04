@@ -1341,6 +1341,16 @@ input, textarea, select { font-family: inherit; }
 .jval.number { color: var(--c-indigo); }
 .jval.boolean { color: var(--c-violet); }
 .jval.null { color: var(--faint); }
+/* Per-node copy: value and path, shown on hover or focus at the row's end. */
+.jcopy { flex: none; margin-left: auto; display: flex; gap: 2px; opacity: 0; }
+.jrow:hover > .jcopy, .jcopy:focus-within, .jcopy:has(.done) { opacity: 1; }
+.jcopy button {
+  display: flex; align-items: center; padding: 1px 4px; border: 0; border-radius: 4px;
+  background: none; color: var(--faint); cursor: pointer;
+  font: 400 10.5px var(--font-mono);
+}
+.jcopy button:hover { color: var(--text2); background: var(--hover); }
+.jcopy button.done { color: var(--accent); }
 
 
 /* --------------------------- shortcuts dialog ----------------------------- */
