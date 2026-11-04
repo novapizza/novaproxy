@@ -4,6 +4,7 @@ import {
   appendWsMessages,
   MAX_FLOWS,
   MAX_WS_FRAMES,
+  frameBytes,
   prependWithinCap,
   useStore,
   withoutBodies,
@@ -289,6 +290,43 @@ describe("appendWsMessages", () => {
   it("leaves the dropped map alone while every socket is under the cap", () => {
     const out = appendWsMessages([frame("a", 1)], held("a"), {}, {}, MAX_WS_FRAMES);
     expect(out.wsDropped).toBeUndefined();
+  });
+
+  describe("byte budget across sockets", () => {
+    const sized = (flow_id: string, seq: number, at: number, len = 10) =>
+      ({ flow_id, seq, at, text: "x".repeat(len) }) as never;
+
+    it("drops the oldest frames whichever socket holds them", () => {
+      const prev = { a: [sized("a", 1, 1), sized("a", 2, 4)], b: [sized("b", 1, 2)] };
+      const { wsMessages, wsDropped } = appendWsMessages(
+        [sized("b", 2, 5)],
+        held("a", "b"),
+        prev,
+        {},
+        MAX_WS_FRAMES,
+        { byteBudget: 25 },
+      );
+      expect(wsMessages!.a).toEqual([sized("a", 2, 4)]);
+      expect(wsMessages!.b).toEqual([sized("b", 2, 5)]);
+      expect(wsDropped).toEqual({ a: 1, b: 1 });
+      expect(prev.a).toHaveLength(2); // input untouched
+    });
+
+    it("leaves frames alone while they fit", () => {
+      const out = appendWsMessages([sized("a", 1, 1)], held("a"), {}, {}, MAX_WS_FRAMES, { byteBudget: 10 });
+      expect(out.wsMessages!.a).toHaveLength(1);
+      expect(out.wsDropped).toBeUndefined();
+    });
+
+    it("counts text and base64 payload", () => {
+      expect(frameBytes({ text: "abc", base64: "YWJj" } as never)).toBe(7);
+      expect(frameBytes({} as never)).toBe(0);
+    });
+  });
+
+  it("adds frames dropped upstream to the socket's count", () => {
+    const out = appendWsMessages([], held("a"), {}, { a: 2 }, MAX_WS_FRAMES, { dropped: { a: 3, gone: 9 } });
+    expect(out).toEqual({ wsDropped: { a: 5 } });
   });
 
   it("forgets the dropped count of an evicted flow", () => {

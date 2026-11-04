@@ -1,7 +1,7 @@
 //! App-wide state: the CA material, the running engine handle, and the sink that
 //! bridges engine flow updates onto the frontend IPC channel.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -37,6 +37,18 @@ const FLUSH_EVERY: Duration = Duration::from_millis(100);
 /// How often the stream writes its perf line.
 const PERF_EVERY: Duration = Duration::from_secs(30);
 
+/// Frame payload sent per tick, at most. A busy socket otherwise turned every
+/// tick into one message as large as everything it sent in 100 ms, parsed in
+/// one go on the webview's main thread. What does not fit waits for the next
+/// tick, in order.
+const MAX_WS_BYTES_PER_TICK: usize = 2 * 1024 * 1024;
+
+/// Frame payload waiting to go out, at most. Past it the oldest frames are
+/// dropped and counted, and the UI shows the count against their socket: a
+/// socket faster than `MAX_WS_BYTES_PER_TICK` drains would otherwise grow this
+/// queue without bound.
+const MAX_QUEUED_WS_BYTES: usize = 16 * 1024 * 1024;
+
 /// What the UI receives each tick: the latest snapshot of every flow that
 /// changed, then the WebSocket frames. One message for both, so a socket's
 /// frames can never overtake the snapshot that introduces its flow.
@@ -44,6 +56,10 @@ const PERF_EVERY: Duration = Duration::from_secs(30);
 pub struct StreamBatch {
     pub flows: Vec<Flow>,
     pub ws: Vec<WsMessage>,
+    /// Frames dropped before they could be sent, per flow id. Left out when
+    /// nothing was dropped, which is nearly always.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub ws_dropped: HashMap<String, u64>,
 }
 
 /// The engine's flow and WebSocket sink: coalesces updates and streams them to
@@ -78,7 +94,11 @@ struct StreamState {
     flows: Vec<Flow>,
     /// Flow id → its slot in `flows`, so a newer snapshot replaces the queued one.
     slot: HashMap<String, usize>,
-    ws: Vec<WsMessage>,
+    ws: VecDeque<WsMessage>,
+    /// Payload bytes of the frames in `ws`.
+    ws_bytes: usize,
+    /// Frames dropped from `ws` since the last flush, per flow id.
+    ws_dropped: HashMap<String, u64>,
     /// Highest `seq` emitted so far: where "already existed" ends on a pause.
     last_seq: u64,
     paused: Option<Paused>,
@@ -92,6 +112,8 @@ struct Sent {
     messages: u64,
     flows: u64,
     frames: u64,
+    /// Frames dropped because the queue was over `MAX_QUEUED_WS_BYTES`.
+    frames_dropped: u64,
     bytes: u64,
     /// Largest number of flows queued at one flush: how far behind a tick ran.
     peak_flows: usize,
@@ -107,6 +129,37 @@ struct Paused {
 }
 
 impl StreamState {
+    /// Queue a frame, dropping the oldest once the queue is over its budget.
+    /// The newest frame always stays, whatever its size.
+    fn queue_frame(&mut self, msg: WsMessage) {
+        self.ws_bytes += frame_bytes(&msg);
+        self.ws.push_back(msg);
+        while self.ws_bytes > MAX_QUEUED_WS_BYTES && self.ws.len() > 1 {
+            let old = self.ws.pop_front().expect("more than one frame queued");
+            self.ws_bytes -= frame_bytes(&old);
+            *self.ws_dropped.entry(old.flow_id).or_default() += 1;
+            self.sent.frames_dropped += 1;
+        }
+    }
+
+    /// Take frames from the front of the queue until `budget` bytes of payload
+    /// are taken. At least one frame is taken, so a frame larger than the budget
+    /// still goes out.
+    fn take_frames(&mut self, budget: usize) -> Vec<WsMessage> {
+        let mut out = Vec::new();
+        let mut taken = 0;
+        while let Some(next) = self.ws.front() {
+            let size = frame_bytes(next);
+            if !out.is_empty() && taken + size > budget {
+                break;
+            }
+            taken += size;
+            out.push(self.ws.pop_front().expect("front exists"));
+        }
+        self.ws_bytes -= taken;
+        out
+    }
+
     fn queue(&mut self, flow: Flow) {
         match self.slot.get(&flow.id) {
             Some(&i) => self.flows[i] = flow,
@@ -116,6 +169,11 @@ impl StreamState {
             }
         }
     }
+}
+
+/// Payload bytes a frame carries to the webview.
+fn frame_bytes(msg: &WsMessage) -> usize {
+    msg.text.as_ref().map_or(0, String::len) + msg.base64.as_ref().map_or(0, String::len)
 }
 
 /// A snapshot without its body bytes; size, media type and the truncated and
@@ -193,15 +251,16 @@ impl UiStream {
     }
 
     fn flush(&self) {
-        let (mut flows, mut ws, channel) = {
+        let (mut flows, mut ws, mut ws_dropped, channel) = {
             let mut st = self.state.lock().unwrap();
-            if st.flows.is_empty() && st.ws.is_empty() {
+            if st.flows.is_empty() && st.ws.is_empty() && st.ws_dropped.is_empty() {
                 return;
             }
             let Some(channel) = st.channel.clone() else { return };
             st.slot.clear();
             st.sent.peak_flows = st.sent.peak_flows.max(st.flows.len());
-            (std::mem::take(&mut st.flows), std::mem::take(&mut st.ws), channel)
+            let ws = st.take_frames(MAX_WS_BYTES_PER_TICK);
+            (std::mem::take(&mut st.flows), ws, std::mem::take(&mut st.ws_dropped), channel)
         };
         loop {
             let rest = flows.split_off(flows.len().min(MAX_FLOWS_PER_MESSAGE));
@@ -209,6 +268,7 @@ impl UiStream {
             let batch = StreamBatch {
                 flows,
                 ws: if last { std::mem::take(&mut ws) } else { Vec::new() },
+                ws_dropped: if last { std::mem::take(&mut ws_dropped) } else { HashMap::new() },
             };
             // Serialized here rather than by the channel so the size can be counted.
             if let Ok(json) = serde_json::to_string(&batch) {
@@ -232,9 +292,10 @@ impl UiStream {
     /// One line of what the stream and the store hold, every `PERF_EVERY`: the
     /// numbers to read when the app is said to slow down over a long capture.
     fn report(&self, store: &FlowStore) {
-        let (sent, paused, queued) = {
+        let (sent, paused, queued, ws_queued_kb) = {
             let mut st = self.state.lock().unwrap();
-            (std::mem::take(&mut st.sent), st.paused.is_some(), st.flows.len())
+            let ws_queued_kb = st.ws_bytes / 1024;
+            (std::mem::take(&mut st.sent), st.paused.is_some(), st.flows.len(), ws_queued_kb)
         };
         tracing::info!(
             target: "novaproxy_perf",
@@ -246,6 +307,8 @@ impl UiStream {
             messages = sent.messages,
             flows_sent = sent.flows,
             frames_sent = sent.frames,
+            frames_dropped = sent.frames_dropped,
+            ws_queued_kb,
             sent_kb = sent.bytes / 1024,
             peak_flows = sent.peak_flows,
             queued,
@@ -277,7 +340,7 @@ impl WsSink for UiStream {
     fn emit(&self, msg: WsMessage) {
         let mut st = self.state.lock().unwrap();
         if st.channel.is_some() {
-            st.ws.push(msg);
+            st.queue_frame(msg);
         }
     }
 }
@@ -472,6 +535,20 @@ mod stream_tests {
         }
     }
 
+    /// A text frame of `len` bytes, numbered so tests can tell which survived.
+    fn sized_frame(flow_id: &str, seq: u64, len: usize) -> WsMessage {
+        WsMessage {
+            seq,
+            size: len as u64,
+            text: Some("x".repeat(len)),
+            ..frame(flow_id)
+        }
+    }
+
+    fn seqs(msg: &serde_json::Value) -> Vec<u64> {
+        msg["ws"].as_array().unwrap().iter().map(|m| m["seq"].as_u64().unwrap()).collect()
+    }
+
     /// A stream bound to a channel that records every message it is sent.
     fn bound() -> (UiStream, Arc<Mutex<Vec<serde_json::Value>>>) {
         let sent = Arc::new(Mutex::new(Vec::new()));
@@ -575,6 +652,63 @@ mod stream_tests {
         WsSink::emit(&stream, frame("a"));
         stream.flush();
         assert_eq!(sent.lock().unwrap()[0]["ws"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_tick_sends_at_most_its_frame_budget_and_the_rest_follows_in_order() {
+        let (stream, sent) = bound();
+        let size = MAX_WS_BYTES_PER_TICK / 2;
+        for seq in 0..5 {
+            WsSink::emit(&stream, sized_frame("a", seq, size));
+        }
+        stream.flush();
+        stream.flush();
+        stream.flush();
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.len(), 3);
+        assert_eq!(seqs(&sent[0]), [0, 1]);
+        assert_eq!(seqs(&sent[1]), [2, 3]);
+        assert_eq!(seqs(&sent[2]), [4]);
+        assert_eq!(stream.state.lock().unwrap().ws_bytes, 0);
+    }
+
+    #[test]
+    fn a_frame_larger_than_the_tick_budget_still_goes_out() {
+        let (stream, sent) = bound();
+        WsSink::emit(&stream, sized_frame("a", 0, MAX_WS_BYTES_PER_TICK + 1));
+        stream.flush();
+        assert_eq!(seqs(&sent.lock().unwrap()[0]), [0]);
+    }
+
+    #[test]
+    fn past_its_byte_budget_the_queue_drops_the_oldest_frames_and_says_so() {
+        let (stream, sent) = bound();
+        let size = MAX_QUEUED_WS_BYTES / 4;
+        WsSink::emit(&stream, sized_frame("a", 0, size));
+        WsSink::emit(&stream, sized_frame("b", 0, size));
+        for seq in 1..5 {
+            WsSink::emit(&stream, sized_frame("a", seq, size));
+        }
+        {
+            let st = stream.state.lock().unwrap();
+            assert!(st.ws_bytes <= MAX_QUEUED_WS_BYTES);
+            assert_eq!(st.ws.len(), 4);
+            assert_eq!(st.sent.frames_dropped, 2);
+        }
+        stream.flush();
+        let sent = sent.lock().unwrap();
+        // a/0 and b/0 went; each frame is past the tick budget, so one per tick.
+        assert_eq!(seqs(&sent[0]), [1]);
+        assert_eq!(sent[0]["ws_dropped"]["a"], 1);
+        assert_eq!(sent[0]["ws_dropped"]["b"], 1);
+    }
+
+    #[test]
+    fn a_batch_names_no_drops_when_there_were_none() {
+        let (stream, sent) = bound();
+        WsSink::emit(&stream, frame("a"));
+        stream.flush();
+        assert!(sent.lock().unwrap()[0].get("ws_dropped").is_none());
     }
 
     #[test]

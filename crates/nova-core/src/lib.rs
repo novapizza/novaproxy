@@ -91,8 +91,11 @@ impl EngineHooks {
 pub const DEFAULT_BODY_CAP: usize = bodystore::DEFAULT_INLINE_CAP;
 
 /// Bytes of each WebSocket frame kept. Frames have no spill file to fall back
-/// on, so this stays at the size body previews used to have.
-pub const WS_FRAME_CAP: usize = 512 * 1024;
+/// on and every kept byte is streamed to the webview, so this matches the body
+/// preview cap rather than the 512 KB previews used to have: at 512 KB a socket
+/// sending ~100 KB frames filled the webview in minutes. `size` still reports
+/// the real length and `truncated` says when the payload was cut.
+pub const WS_FRAME_CAP: usize = 64 * 1024;
 
 /// Default retention window: how many flows we keep before evicting the oldest
 /// (together with their spilled bodies).
