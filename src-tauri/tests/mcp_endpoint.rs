@@ -205,6 +205,7 @@ async fn mcp_endpoint_serves_captured_traffic() {
         "set_rule",
         "delete_rule",
         "proxy_status",
+        "get_insights",
     ] {
         assert!(names.contains(&expected.to_string()), "missing tool {expected}: {names:?}");
     }
@@ -338,6 +339,27 @@ async fn mcp_endpoint_serves_captured_traffic() {
         err.contains("target"),
         "a rule that could not act must not be silently accepted: {err}"
     );
+
+    /* ------------------------------ insights ------------------------------- */
+
+    let out = client.tool("get_insights", json!({})).await;
+    assert_eq!(out["insights"].as_array().map(Vec::len), Some(0), "the seed is clean: {out}");
+    let before = state.insights().generation;
+
+    let mut leaky = flow("t0", "api.example.com", "/cb?access_token=abcdefgh1234");
+    leaky.state = nova_proto::FlowState::Completed;
+    leaky.status = Some(200);
+    leaky.process = Some("Google Chrome".into());
+    state.flows.insert(leaky);
+    assert_ne!(state.insights().generation, before, "a new flow invalidates the cached report");
+
+    let out = client.tool("get_insights", json!({"min_severity": "high"})).await;
+    let found = &out["insights"][0];
+    assert_eq!(found["rule"], "token-in-url", "{out}");
+    assert_eq!(found["severity"], "high");
+    assert_eq!(found["example_flow_ids"], json!(["t0"]));
+    let out = client.tool("get_insights", json!({"app": "slack"})).await;
+    assert_eq!(out["insights"].as_array().map(Vec::len), Some(0), "filtered by app");
 
     handle.stop();
     let _ = std::fs::remove_dir_all(&dir);

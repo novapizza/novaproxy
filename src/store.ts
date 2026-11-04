@@ -22,6 +22,11 @@ interface Store {
    */
   pinned: ReadonlySet<string>;
   comments: Readonly<Record<string, string>>;
+  /**
+   * The list holds an imported session rather than what the engine retains,
+   * so anything derived from the engine's copy (insights) must use the list.
+   */
+  imported: boolean;
 
   upsertFlow: (f: Flow) => void;
   /** Apply a frame's worth of snapshots in one store update. */
@@ -315,6 +320,7 @@ export const useStore = create<Store>((set) => ({
   wsDropped: {},
   pinned: new Set(),
   comments: {},
+  imported: false,
 
   // Snapshots arrive multiple times per flow (started → response → completed).
   // Replace in place if we've seen the id; otherwise prepend (newest first).
@@ -336,7 +342,7 @@ export const useStore = create<Store>((set) => ({
     ),
   // Replace the flow list (used when importing a saved .nova session). Imported
   // flows keep their bodies: nothing else has a copy to fetch them from.
-  loadFlows: (flows) => set({ flows, selectedId: null, wsMessages: {}, wsDropped: {} }),
+  loadFlows: (flows) => set({ flows, selectedId: null, wsMessages: {}, wsDropped: {}, imported: true }),
   // Annotations go with the flows they annotate: a pin on a flow that no longer
   // exists is a count in the sidebar pointing at nothing.
   clear: () =>
@@ -347,6 +353,7 @@ export const useStore = create<Store>((set) => ({
       wsDropped: {},
       pinned: new Set(),
       comments: {},
+      imported: false,
     }),
   setRecording: (v) => set({ recording: v }),
   select: (id) => set({ selectedId: id }),

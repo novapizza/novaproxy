@@ -265,6 +265,47 @@ pub struct StatusOut {
     pub ca_trusted: bool,
 }
 
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct InsightParams {
+    /// Only insights about this app/process (substring, case-insensitive).
+    pub app: Option<String>,
+    /// Only insights about this host (substring, case-insensitive).
+    pub host: Option<String>,
+    /// Lowest severity to include: "info" (default), "warning" or "high".
+    pub min_severity: Option<String>,
+}
+
+/// One anti-pattern, as returned to an agent. Mirrors [`nova_proto::Insight`]
+/// with the flow list cut short: the ids are a starting point for `get_flow`.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct InsightOut {
+    pub id: String,
+    pub rule: String,
+    /// "info", "warning" or "high".
+    pub severity: String,
+    pub title: String,
+    pub detail: String,
+    pub advice: String,
+    pub app: Option<String>,
+    pub host: String,
+    /// How many flows show the problem.
+    pub flow_count: u32,
+    /// The newest of them, at most 20; pass one to get_flow for the evidence.
+    pub example_flow_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct InsightsOut {
+    /// Flows the checks looked at (in-flight, tunneled, WebSocket and internal
+    /// flows are left out).
+    pub flows_analyzed: u32,
+    /// Most severe first.
+    pub insights: Vec<InsightOut>,
+}
+
+/// Example flow ids per insight returned to an agent.
+const INSIGHT_EXAMPLES: usize = 20;
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct ActionOut {
     pub ok: bool,
@@ -479,6 +520,23 @@ request header). Reusing an id replaces that rule.")]
         }))
     }
 
+    /// Anti-patterns found in the captured traffic.
+    #[tool(description = "Anti-patterns NovaProxy detected in the captured traffic, most severe first: request bursts / N+1 loops, polling, retry storms, rate limiting, high error rates, uncompressed or oversized responses, uncacheable static assets, redirect chains and loops, slow server responses, CORS preflight overhead, credentials in URLs or over plain HTTP, and cookies missing Secure/HttpOnly, heavy or legacy-format images, short cache lifetimes on fingerprinted \
+assets, mixed content, HTML pages missing security headers, missing assets (404), empty 200 \
+responses, slow DNS/TCP/TLS setup, and CDN cache misses. Each comes with numbers, advice and example flow ids for get_flow. Filters: app, host, min_severity (info | warning | high).")]
+    pub fn get_insights(&self, Parameters(params): Parameters<InsightParams>) -> Json<InsightsOut> {
+        let report = self.state.insights();
+        Json(InsightsOut {
+            flows_analyzed: report.analyzed,
+            insights: report
+                .insights
+                .into_iter()
+                .filter(|i| matches_insight(i, &params))
+                .map(insight_out)
+                .collect(),
+        })
+    }
+
     /// Proxy and capture status.
     #[tool(description = "Proxy state: whether it is running and where, whether the system \
 proxy points at it, how many flows were captured and how many are still retained.")]
@@ -525,6 +583,8 @@ then get_body when a body is truncated.\n\n\
 To debug an MCP server, pass mcp_only=true: only JSON-RPC-over-HTTP/SSE exchanges are \
 returned, labelled with their method and tool. MCP over stdio never reaches the network and \
 therefore cannot be captured.\n\n\
+To find what is wrong with an app's traffic without reading every flow, call get_insights first: it lists detected anti-patterns with example flow ids.
+
 Your own calls to this endpoint are marked internal and excluded unless you pass \
 include_internal=true. Bodies are capped in every response; ask for more with get_body.",
             )
@@ -604,7 +664,45 @@ pub fn matches_query(flow: &Flow, needle_lowercase: &str) -> bool {
         .any(|b| b.text.as_deref().map(hit).unwrap_or(false))
 }
 
+fn severity_rank(s: &str) -> Option<nova_proto::InsightSeverity> {
+    use nova_proto::InsightSeverity::*;
+    match s.trim().to_ascii_lowercase().as_str() {
+        "info" => Some(Info),
+        "warning" | "warn" => Some(Warning),
+        "high" | "error" | "critical" => Some(High),
+        _ => None,
+    }
+}
+
+/// Does an insight pass the agent's filters? An unknown `min_severity` filters
+/// nothing rather than everything.
+pub fn matches_insight(i: &nova_proto::Insight, p: &InsightParams) -> bool {
+    let has = |hay: &str, needle: &Option<String>| {
+        needle.as_ref().is_none_or(|n| hay.to_lowercase().contains(&n.to_lowercase()))
+    };
+    let min = p.min_severity.as_deref().and_then(severity_rank);
+    min.is_none_or(|m| i.severity >= m)
+        && has(i.app.as_deref().unwrap_or(""), &p.app)
+        && has(&i.host, &p.host)
+}
+
 /* -------------------------------- projection -------------------------------- */
+
+fn insight_out(i: nova_proto::Insight) -> InsightOut {
+    let skip = i.flow_ids.len().saturating_sub(INSIGHT_EXAMPLES);
+    InsightOut {
+        severity: format!("{:?}", i.severity).to_lowercase(),
+        example_flow_ids: i.flow_ids.into_iter().skip(skip).collect(),
+        id: i.id,
+        rule: i.rule,
+        title: i.title,
+        detail: i.detail,
+        advice: i.advice,
+        app: i.app,
+        host: i.host,
+        flow_count: i.count,
+    }
+}
 
 fn summarize(flow: &Flow) -> FlowSummary {
     FlowSummary {
@@ -1020,6 +1118,48 @@ mod tests {
         assert_eq!(clamp_limit(Some(0)), 1, "zero would return nothing at all");
         assert_eq!(clamp_limit(Some(10_000)), MAX_LIMIT);
         assert_eq!(clamp_limit(Some(7)), 7);
+    }
+
+    fn insight(app: Option<&str>, host: &str, severity: nova_proto::InsightSeverity) -> nova_proto::Insight {
+        nova_proto::Insight {
+            id: "r:k".into(),
+            rule: "r".into(),
+            severity,
+            title: String::new(),
+            detail: String::new(),
+            advice: String::new(),
+            app: app.map(Into::into),
+            host: host.into(),
+            flow_ids: (0..30).map(|i| format!("f{i}")).collect(),
+            count: 30,
+            last_seen: 0.0,
+        }
+    }
+
+    #[test]
+    fn insight_filters_match_app_host_and_minimum_severity() {
+        use nova_proto::InsightSeverity::*;
+        let i = insight(Some("Google Chrome"), "api.github.com", Warning);
+        let p = |app: Option<&str>, host: Option<&str>, min: Option<&str>| InsightParams {
+            app: app.map(Into::into),
+            host: host.map(Into::into),
+            min_severity: min.map(Into::into),
+        };
+        assert!(matches_insight(&i, &p(None, None, None)));
+        assert!(matches_insight(&i, &p(Some("chrome"), Some("GITHUB"), Some("warning"))));
+        assert!(!matches_insight(&i, &p(None, None, Some("high"))));
+        assert!(!matches_insight(&i, &p(Some("slack"), None, None)));
+        assert!(matches_insight(&i, &p(None, None, Some("bogus"))), "an unknown level filters nothing");
+        assert!(!matches_insight(&insight(None, "x", Info), &p(Some("chrome"), None, None)));
+    }
+
+    #[test]
+    fn insights_for_agents_keep_only_the_newest_examples() {
+        let out = insight_out(insight(None, "x", nova_proto::InsightSeverity::High));
+        assert_eq!(out.severity, "high");
+        assert_eq!(out.flow_count, 30);
+        assert_eq!(out.example_flow_ids.len(), INSIGHT_EXAMPLES);
+        assert_eq!(out.example_flow_ids.last().map(String::as_str), Some("f29"));
     }
 
     #[test]

@@ -111,3 +111,15 @@ export async function exportHar(flows: Flow[]): Promise<boolean> {
   await api.writeFile(path, JSON.stringify(har, jsonReplacer, 2));
   return true;
 }
+
+/** Save the Insights report as Markdown. Returns true if saved. */
+export async function exportReport(markdown: string): Promise<boolean> {
+  const path = await save({
+    title: "Export Insights report",
+    defaultPath: "novaproxy-report.md",
+    filters: [{ name: "Markdown", extensions: ["md"] }],
+  });
+  if (!path) return false;
+  await api.writeFile(path, markdown);
+  return true;
+}

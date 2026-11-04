@@ -34,6 +34,9 @@ pub struct FlowStore {
     bodies: Arc<BodyStore>,
     /// Flows captured this session, including ones since evicted.
     total_captured: AtomicU64,
+    /// Bumped by every insert, update and clear, so a reader that derives
+    /// something from the whole store (insights) can tell it is still current.
+    generation: AtomicU64,
     /// Preview bytes held, as stored and as they would be inflated. Changed
     /// only under the `flows` lock, so the pair moves together.
     held_bytes: AtomicI64,
@@ -48,6 +51,7 @@ impl FlowStore {
             max_flows: max_flows.max(1),
             bodies,
             total_captured: AtomicU64::new(0),
+            generation: AtomicU64::new(0),
             held_bytes: AtomicI64::new(0),
             raw_bytes: AtomicI64::new(0),
         }
@@ -73,6 +77,7 @@ impl FlowStore {
     /// bodies) once the retention window is full.
     pub fn insert(&self, flow: Flow) {
         self.total_captured.fetch_add(1, Ordering::Relaxed);
+        self.generation.fetch_add(1, Ordering::Relaxed);
         let evicted = {
             let mut map = self.flows.lock().unwrap();
             let mut order = self.order.lock().unwrap();
@@ -110,6 +115,7 @@ impl FlowStore {
     pub fn update<F: FnOnce(&mut Flow)>(&self, id: &str, f: F) -> Option<Flow> {
         let mut map = self.flows.lock().unwrap();
         let stored = map.get_mut(id)?;
+        self.generation.fetch_add(1, Ordering::Relaxed);
         let mut flow = stored.unpack();
         let before = Bodies::copy(&flow);
         f(&mut flow);
@@ -153,6 +159,17 @@ impl FlowStore {
         out
     }
 
+    /// Retained flows, oldest first, **without body bytes**: previews keep
+    /// their size, media type and flags, but `text`/`base64` are `None`.
+    ///
+    /// For readers that judge traffic by its shape rather than its payload.
+    /// Nothing is inflated, so this costs a clone of the metadata only.
+    pub fn shells(&self) -> Vec<Flow> {
+        let map = self.flows.lock().unwrap();
+        let order = self.order.lock().unwrap();
+        order.iter().filter_map(|id| map.get(id).map(|s| s.flow.clone())).collect()
+    }
+
     /// Drop every retained flow and its spilled bodies (the UI's Clear action).
     /// The session capture counter is left alone — it counts what happened, not
     /// what is still held.
@@ -161,6 +178,7 @@ impl FlowStore {
             let mut map = self.flows.lock().unwrap();
             let mut order = self.order.lock().unwrap();
             order.clear();
+            self.generation.fetch_add(1, Ordering::Relaxed);
             self.held_bytes.store(0, Ordering::Relaxed);
             self.raw_bytes.store(0, Ordering::Relaxed);
             map.drain().map(|(id, _)| id).collect::<Vec<_>>()
@@ -168,6 +186,11 @@ impl FlowStore {
         for id in &ids {
             self.bodies.remove_flow(id);
         }
+    }
+
+    /// Changes whenever any retained flow does (see the field).
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
     }
 
     pub fn retained(&self) -> usize {
@@ -506,6 +529,32 @@ mod tests {
         assert_eq!(s.preview_bytes().1, 2, "f0's preview went with it");
         s.clear();
         assert_eq!(s.preview_bytes(), (0, 0));
+    }
+
+    #[test]
+    fn shells_are_oldest_first_and_carry_no_body_bytes() {
+        let s = store(10);
+        s.insert(with_bodies("f0", &"a".repeat(1000), "QUJD"));
+        s.insert(flow("f1", "b.com"));
+        let shells = s.shells();
+        let ids: Vec<&str> = shells.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, vec!["f0", "f1"]);
+        let body = shells[0].request_body.as_ref().expect("the preview's metadata stays");
+        assert!(body.text.is_none() && body.base64.is_none());
+    }
+
+    #[test]
+    fn generation_moves_on_every_change() {
+        let s = store(10);
+        let g0 = s.generation();
+        s.insert(flow("f0", "a.com"));
+        let g1 = s.generation();
+        s.update("f0", |f| f.status = Some(200));
+        let g2 = s.generation();
+        s.update("ghost", |f| f.status = Some(500));
+        assert_eq!(s.generation(), g2, "an update that found nothing changed nothing");
+        s.clear();
+        assert!(g0 < g1 && g1 < g2 && g2 < s.generation());
     }
 
     #[test]

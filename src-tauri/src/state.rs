@@ -18,7 +18,7 @@ use nova_core::timing::ConnectLog;
 use nova_core::{ca::CaMaterial, EngineHandle, FlowSink, WsSink};
 
 use crate::mcp::McpHandle;
-use nova_proto::{Flow, Interception, NetworkConditions, Rule, TlsScope, WsMessage};
+use nova_proto::{Flow, InsightReport, Interception, NetworkConditions, Rule, TlsScope, WsMessage};
 
 /// The snapshot of the OS proxy settings taken before NovaProxy changed them.
 /// Named here because the sign-in restore reads it without an `AppState`.
@@ -406,6 +406,10 @@ pub struct AppState {
     /// read one from. Cached both ways: extracting an icon shells out to `sips`,
     /// and a row that mentions a CLI tool must not pay for that on every repaint.
     pub app_icons: Mutex<HashMap<String, Option<String>>>,
+    /// The last insight report and what it was computed from (store
+    /// generation, added latency). The UI asks every few seconds and MCP on
+    /// demand; between changes to the store, both get this copy.
+    insights: Mutex<Option<((u64, u32), InsightReport)>>,
 }
 
 impl AppState {
@@ -438,7 +442,27 @@ impl AppState {
             mcp_port: Arc::new(AtomicU16::new(0)),
             pending_restore: AtomicBool::new(false),
             app_icons: Mutex::new(HashMap::new()),
+            insights: Mutex::new(None),
         }
+    }
+
+    /// Insights over every retained flow, recomputed only when the store (or
+    /// the latency NovaProxy adds) changed since the last call.
+    pub fn insights(&self) -> InsightReport {
+        let net = *self.net.read().unwrap();
+        let latency = if net.enabled { net.latency_ms } else { 0 };
+        let key = (self.flows.generation(), latency);
+        let mut cache = self.insights.lock().unwrap();
+        if let Some((k, report)) = cache.as_ref() {
+            if *k == key {
+                return report.clone();
+            }
+        }
+        let opts = nova_core::insights::Options { added_latency_ms: latency as f64 };
+        let mut report = nova_core::insights::analyze(&self.flows.shells(), &opts);
+        report.generation = key.0 as f64;
+        *cache = Some((key, report.clone()));
+        report
     }
 
     /// The engine hooks assembled from this app state.

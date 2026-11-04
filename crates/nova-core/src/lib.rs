@@ -7,6 +7,7 @@ pub mod breakpoint;
 pub mod ca;
 pub mod flow;
 pub mod flowstore;
+pub mod insights;
 pub mod intercept;
 pub mod mcp;
 pub mod procinfo;

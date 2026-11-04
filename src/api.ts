@@ -17,6 +17,7 @@ import type { HelperStatus } from "./bindings/HelperStatus";
 import type { StreamBatch } from "./streamQueue";
 import type { UpdateStatus } from "./bindings/UpdateStatus";
 import type { UpdateProgress } from "./bindings/UpdateProgress";
+import type { InsightReport } from "./bindings/InsightReport";
 
 /** Thin typed wrappers over the Tauri command surface. */
 export const api = {
@@ -49,6 +50,14 @@ export const api = {
    * The list keeps no body bytes, so exports read them from here.
    */
   retainedFlows: () => invoke<Flow[]>("retained_flows"),
+
+  /**
+   * Anti-patterns in what the engine retains. Pass the `generation` of the last
+   * report to get `null` back when nothing changed since.
+   */
+  getInsights: (known?: number) => invoke<InsightReport | null>("get_insights", { known: known ?? null }),
+  /** The same checks over flows only the list holds (an imported session). */
+  analyzeFlows: (flows: Flow[]) => invoke<InsightReport>("analyze_flows", { flows }),
 
   /** State of the MCP endpoint that exposes captured traffic to AI tooling. */
   mcpStatus: () => invoke<McpStatus>("mcp_status"),
@@ -220,7 +229,11 @@ export type UiEvent =
   | "ui.flow.chip"
   /** Which kind of row in the scope tree was selected. */
   | "ui.flow.scope"
-  | "ui.onboarding";
+  | "ui.onboarding"
+  /** An insight's flows opened, or the insight muted / unmuted; carries the rule. */
+  | "ui.insight.show"
+  | "ui.insight.mute"
+  | "ui.insight.unmute";
 
 /** Values those events may carry. Mirrors `ui_event_name` in `commands.rs`. */
 export type UiEventName =
@@ -229,9 +242,10 @@ export type UiEventName =
   | FlowAction
   | FlowChipName
   | ScopeKind
+  | InsightRule
   | OnboardingStep;
 
-type Section = "flows" | "rules" | "break" | "scripts" | "certs";
+type Section = "flows" | "rules" | "break" | "scripts" | "certs" | "insights";
 /**
  * Panels in the two inspector panes. `ui.detail_tab` keeps its old name even
  * though its values all changed with the dual-pane rebuild: renaming the event
@@ -272,7 +286,32 @@ type FlowChipName =
   | "5xx"
   | "err";
 /** Kinds of scope row, not the host or app itself — those are user data. */
-type ScopeKind = "all" | "pinned" | "app" | "host" | "path" | "set";
+type ScopeKind = "all" | "pinned" | "app" | "host" | "path" | "set" | "insight";
+/** `Insight.rule` values. Mirrors `nova_core::insights` and `ui_event_name`. */
+export type InsightRule =
+  | "burst"
+  | "polling"
+  | "retry-storm"
+  | "rate-limited"
+  | "error-rate"
+  | "uncompressed"
+  | "large-payload"
+  | "static-uncacheable"
+  | "redirect-chain"
+  | "redirect-loop"
+  | "slow-endpoint"
+  | "cors-preflight"
+  | "token-in-url"
+  | "insecure-cookie"
+  | "plaintext-credentials"
+  | "image-unoptimized"
+  | "short-cache"
+  | "mixed-content"
+  | "missing-security-headers"
+  | "broken-asset"
+  | "empty-response"
+  | "slow-connect"
+  | "cdn-miss";
 type OnboardingStep = "open" | "done" | "skip";
 
 export { Channel };
@@ -293,4 +332,5 @@ export type {
   HelperStatus,
   UpdateStatus,
   UpdateProgress,
+  InsightReport,
 };

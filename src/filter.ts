@@ -215,7 +215,9 @@ export function filterToJson(f: FlowFilter): FilterJson {
     proto: [...f.proto],
     type: [...f.type],
     status: [...f.status],
-    scope: f.scope,
+    // An insight's flows die with the session, as a pin's do; keeping the scope
+    // would save a filter that matches nothing next launch.
+    scope: f.scope.kind === "insight" ? ALL_TRAFFIC : f.scope,
     query: f.query.trim(),
     clauses: f.clauses.filter(clauseActive),
     includeInternal: f.includeInternal,
@@ -306,6 +308,7 @@ export function suggestFilterName(f: FlowFilter): string {
   if (f.scope.kind === "host") parts.push(f.scope.host);
   if (f.scope.kind === "path") parts.push(f.scope.prefix);
   if (f.scope.kind === "pinned") parts.push("pinned");
+  if (f.scope.kind === "insight") parts.push(f.scope.title);
   if (f.scope.kind === "set") parts.push(describeScope(f.scope));
   const pick = <T extends string>(set: ReadonlySet<T>, defs: readonly { id: T; label: string }[]) =>
     defs.filter((d) => set.has(d.id)).map((d) => d.label);
