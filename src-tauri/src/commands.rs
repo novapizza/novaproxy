@@ -7,8 +7,8 @@ use std::sync::Arc;
 use nova_core::breakpoint::Resume;
 use nova_core::{ca::CaMaterial, helper, oscmd, sysproxy, trust, EngineConfig};
 use nova_proto::{
-    CaStatus, Flow, Header, HelperStatus, Interception, McpStatus, NetworkConditions, ProxyStatus,
-    Rule, TlsScope,
+    CaStatus, Flow, Header, HelperStatus, InsightReport, Interception, McpStatus, NetworkConditions,
+    ProxyStatus, Rule, TlsScope,
 };
 use tauri::ipc::Channel;
 use tauri::State;
@@ -144,6 +144,37 @@ pub fn clear_flows(state: State<'_, Arc<AppState>>) {
     state.stream.discard_flows();
     tracing::info!(cleared = had, "flows cleared");
     crate::usage!("flows.clear", n = had);
+}
+
+/* ------------------------------- insights ------------------------------- */
+
+/// Anti-patterns in everything the engine retains.
+///
+/// The UI calls this every few seconds; passing back the `generation` it last
+/// saw turns a call with nothing new into `None` rather than the same report
+/// again.
+///
+/// Async, and analysed on a blocking thread: a synchronous command runs on the
+/// main thread, and a full window of flows takes long enough to stall the UI.
+#[tauri::command]
+pub async fn get_insights(state: State<'_, Arc<AppState>>, known: Option<f64>) -> Result<Option<InsightReport>, String> {
+    let state = state.inner().clone();
+    let report = tauri::async_runtime::spawn_blocking(move || state.insights())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok((known != Some(report.generation)).then_some(report))
+}
+
+/// Anti-patterns in flows the engine does not hold — an imported session,
+/// which exists only in the UI. Sent without bodies; the checks never read them.
+///
+/// Today's Network Conditions say nothing about how a saved session was
+/// recorded, so no added latency is assumed.
+#[tauri::command]
+pub async fn analyze_flows(flows: Vec<Flow>) -> Result<InsightReport, String> {
+    tauri::async_runtime::spawn_blocking(move || nova_core::insights::analyze(&flows, &Default::default()))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /* --------------------------------- MCP --------------------------------- */
@@ -767,6 +798,9 @@ fn ui_event(ev: &str) -> &'static str {
         "ui.flow.chip" => "ui.flow.chip",
         "ui.flow.scope" => "ui.flow.scope",
         "ui.onboarding" => "ui.onboarding",
+        "ui.insight.show" => "ui.insight.show",
+        "ui.insight.mute" => "ui.insight.mute",
+        "ui.insight.unmute" => "ui.insight.unmute",
         _ => "ui.other",
     }
 }
@@ -785,6 +819,7 @@ fn ui_event_name(name: &str) -> &'static str {
         "break" => "break",
         "scripts" => "scripts",
         "certs" => "certs",
+        "insights" => "insights",
         // Panels in the two inspector panes.
         "header" => "header",
         "query" => "query",
@@ -825,6 +860,32 @@ fn ui_event_name(name: &str) -> &'static str {
         "host" => "host",
         "set" => "set",
         "path" => "path",
+        "insight" => "insight",
+        // Insight rules (`nova_core::insights`), so the counts say which checks
+        // people act on and which they mute as noise.
+        "burst" => "burst",
+        "polling" => "polling",
+        "retry-storm" => "retry-storm",
+        "rate-limited" => "rate-limited",
+        "error-rate" => "error-rate",
+        "uncompressed" => "uncompressed",
+        "large-payload" => "large-payload",
+        "static-uncacheable" => "static-uncacheable",
+        "redirect-chain" => "redirect-chain",
+        "redirect-loop" => "redirect-loop",
+        "slow-endpoint" => "slow-endpoint",
+        "cors-preflight" => "cors-preflight",
+        "token-in-url" => "token-in-url",
+        "insecure-cookie" => "insecure-cookie",
+        "plaintext-credentials" => "plaintext-credentials",
+        "image-unoptimized" => "image-unoptimized",
+        "short-cache" => "short-cache",
+        "mixed-content" => "mixed-content",
+        "missing-security-headers" => "missing-security-headers",
+        "broken-asset" => "broken-asset",
+        "empty-response" => "empty-response",
+        "slow-connect" => "slow-connect",
+        "cdn-miss" => "cdn-miss",
         // Onboarding.
         "open" => "open",
         "done" => "done",
@@ -845,6 +906,8 @@ mod ui_track_tests {
         assert_eq!(ui_event_name("flows"), "flows");
         assert_eq!(ui_event_name("resend"), "resend");
         assert_eq!(ui_event_name("other"), "other");
+        assert_eq!(ui_event("ui.insight.mute"), "ui.insight.mute");
+        assert_eq!(ui_event_name("token-in-url"), "token-in-url");
     }
 
     #[test]

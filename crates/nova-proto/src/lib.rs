@@ -437,3 +437,57 @@ pub struct UpdateProgress {
     /// The bytes are in; installing (and then restarting) is next.
     pub done: bool,
 }
+
+/// How much an [`Insight`] deserves attention.
+///
+/// Three levels, not four: these are heuristics read off captured traffic, and
+/// a scale that tops out at "critical" for "this endpoint polls" trains people
+/// to ignore the panel. `High` is kept for what leaks secrets or breaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub enum InsightSeverity {
+    Info,
+    Warning,
+    High,
+}
+
+/// One anti-pattern found in the captured traffic, with the flows behind it.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub struct Insight {
+    /// Stable across recomputes: the rule plus what it grouped by. The UI keys
+    /// rows and mutes on it, so a refresh must not reshuffle or un-mute.
+    pub id: String,
+    /// Which check found it, e.g. `burst` or `token-in-url`.
+    pub rule: String,
+    pub severity: InsightSeverity,
+    /// One line, e.g. `GET /api/users/:id repeated 12× in 2 s`.
+    pub title: String,
+    /// What was seen, in numbers.
+    pub detail: String,
+    /// What to do about it.
+    pub advice: String,
+    /// Originating app, when the flows behind it share one.
+    pub app: Option<String>,
+    pub host: String,
+    /// Flows behind it, oldest first, capped; `count` is the full number.
+    pub flow_ids: Vec<String>,
+    pub count: u32,
+    /// Start of the newest flow behind it, epoch milliseconds.
+    pub last_seen: f64,
+}
+
+/// Every insight for one state of the capture.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub struct InsightReport {
+    /// Most severe first, then most flows.
+    pub insights: Vec<Insight>,
+    /// Flows the checks looked at, after leaving out ones that cannot be judged
+    /// (in flight, tunneled, WebSocket, NovaProxy's own).
+    pub analyzed: u32,
+    /// Changes whenever the flow store does; a caller that passes it back gets
+    /// nothing when there is nothing new. A float only because a `u64` reaches
+    /// TypeScript as a `bigint`, which is awkward to hand back.
+    pub generation: f64,
+}

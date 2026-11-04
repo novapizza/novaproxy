@@ -363,6 +363,8 @@ pub fn run() {
             commands::read_body,
             commands::retained_flows,
             commands::clear_flows,
+            commands::get_insights,
+            commands::analyze_flows,
             commands::mcp_status,
             commands::set_mcp_enabled,
             commands::subscribe_breakpoints,
