@@ -5,6 +5,7 @@
 pub mod bodystore;
 pub mod breakpoint;
 pub mod ca;
+pub mod fdlimit;
 pub mod flow;
 pub mod flowstore;
 pub mod insights;
@@ -29,6 +30,9 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
 use hudsucker::rustls::crypto::aws_lc_rs;
+use hudsucker::hyper_util::client::legacy::Client;
+use hudsucker::hyper_util::rt::{TokioExecutor, TokioTimer};
+use hudsucker::hyper_util::server::conn::auto::Builder as ServerBuilder;
 use hudsucker::Proxy;
 use nova_proto::{NetworkConditions, Rule, TlsScope};
 use tokio::sync::oneshot;
@@ -142,6 +146,13 @@ impl Drop for EngineHandle {
     }
 }
 
+/// How long a connection may sit idle, to the client or to an origin, before
+/// the proxy closes it.
+const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Idle connections kept per origin for reuse; more are closed once released.
+const MAX_IDLE_PER_HOST: usize = 4;
+
 /// Start the proxy on `config.addr`, signing leaf certs with `ca` and streaming
 /// flows to `sink`. Returns immediately; the proxy runs as a tokio task.
 pub fn start(
@@ -169,10 +180,34 @@ pub fn start(
     let tls_config = upstream::client_tls_config(ca)?;
     let connector = timing::instrumented_connector(tls_config.clone(), connects);
 
+    // Idle connections are closed on both sides rather than held until the
+    // peer gives up: each one is a file descriptor, and with the system proxy
+    // on every app on the machine keeps its own (see `fdlimit`). hudsucker's
+    // defaults set no timer, so neither the upstream pool nor the client
+    // keep-alive ever expires. The header-case settings repeat its defaults.
+    let mut client = Client::builder(TokioExecutor::new());
+    client
+        .http1_title_case_headers(true)
+        .http1_preserve_header_case(true)
+        .pool_timer(TokioTimer::new())
+        .pool_idle_timeout(IDLE_TIMEOUT)
+        .pool_max_idle_per_host(MAX_IDLE_PER_HOST);
+    let mut server = ServerBuilder::new(TokioExecutor::new());
+    server
+        .http1()
+        .title_case_headers(true)
+        .preserve_header_case(true)
+        .timer(TokioTimer::new())
+        // Also runs while a kept-alive connection waits for its next request,
+        // which is what closes an idle one.
+        .header_read_timeout(IDLE_TIMEOUT);
+
     let proxy = Proxy::builder()
         .with_addr(config.addr)
         .with_ca(authority)
         .with_http_connector(connector)
+        .with_client(client)
+        .with_server(server)
         .with_websocket_connector(hudsucker::tokio_tungstenite::Connector::Rustls(tls_config))
         .with_http_handler(handler)
         .with_websocket_handler(ws_handler)

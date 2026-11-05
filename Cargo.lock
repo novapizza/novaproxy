@@ -2660,6 +2660,7 @@ dependencies = [
  "http-body-util",
  "hudsucker",
  "hyper-rustls",
+ "libc",
  "libproc",
  "netstat2",
  "nova-os",
