@@ -10,7 +10,7 @@ import { bytesMissing } from "./curl";
  * flows can never show one flow's body under another's headers while the next
  * fetch is in flight.
  */
-function useBodyBytes(
+export function useBodyBytes(
   flowId: string,
   side: "request" | "response",
   body: Flow["request_body"],
