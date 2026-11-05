@@ -56,3 +56,7 @@ libproc = "0.14"
 [target.'cfg(windows)'.dependencies]
 netstat2 = "0.11"
 
+# The open-file limit (see `fdlimit`).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"
+

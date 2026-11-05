@@ -313,6 +313,7 @@ impl UiStream {
             peak_flows = sent.peak_flows,
             queued,
             paused,
+            fds_open = nova_core::fdlimit::open_count(),
             "stream"
         );
     }

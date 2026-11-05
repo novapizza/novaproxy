@@ -490,7 +490,11 @@ impl HttpHandler for NovaHandler {
         _ctx: &HttpContext,
         err: hudsucker::hyper_util::client::legacy::Error,
     ) -> Response<Body> {
-        let reason = crate::upstream::describe(&err);
+        let mut reason = crate::upstream::describe(&err);
+        // Out of descriptors, the lookup fails first and reads as a DNS error.
+        if crate::fdlimit::exhausted() {
+            reason = crate::fdlimit::exhausted_reason(&reason);
+        }
         let mut host = None;
         if let Some(id) = self.pending.pop_front() {
             let flow = self.shared.flow(&id);

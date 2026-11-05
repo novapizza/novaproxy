@@ -190,6 +190,13 @@ pub fn run() {
     }
     logging::install_panic_hook();
 
+    // Before the engine opens any socket: launchd's default of 256 is too few
+    // for a system-wide proxy (see `fdlimit`).
+    match nova_core::fdlimit::raise(nova_core::fdlimit::WANTED) {
+        Ok(limit) => tracing::info!(limit, "open file limit"),
+        Err(e) => tracing::warn!("cannot raise the open file limit: {e}"),
+    }
+
     #[cfg(windows)]
     {
         if let Some(what) = migrated {
