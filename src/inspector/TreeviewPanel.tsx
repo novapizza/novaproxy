@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { api, type Flow } from "../api";
+import { formatCellBytes } from "../format";
 import { Icon } from "../icons";
+import { bodyToText, useBodyBytes } from "./BodyPanel";
 import { childPath, nodeValueText } from "./jsonCopy";
 
 /** How long a copy button shows the check after copying. */
@@ -12,6 +14,27 @@ type Copied = { path: string; what: "value" | "path" } | null;
 interface CopyProps {
   copied: Copied;
   onCopy: (path: string, what: "value" | "path", text: string) => void;
+}
+
+/**
+ * The response Treeview of a flow, with the body's bytes fetched first.
+ *
+ * The flow list keeps no body bytes, so the flow's own preview has only
+ * metadata. The Body tab already fetched them; this does the same, or every
+ * captured flow read "no body to expand" and only imported sessions had a tree.
+ */
+export function ResponseTreeview({
+  flowId, body, showToast,
+}: {
+  flowId: string;
+  body: Flow["response_body"];
+  showToast?: (t: string) => void;
+}) {
+  const { shown, fetched, loading } = useBodyBytes(flowId, "response", body, showToast);
+  if (loading && !fetched && shown) {
+    return <div className="kv-empty">Loading body ({formatCellBytes(shown.size)})…</div>;
+  }
+  return <TreeviewPanel text={bodyToText(shown)} />;
 }
 
 /**

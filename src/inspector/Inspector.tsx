@@ -5,9 +5,9 @@ import { useStore } from "../store";
 import { formatCellBytes } from "../format";
 import { headerValue } from "../classify";
 import { KeyValueTable } from "./KeyValueTable";
-import { BodyPanel, bodyToText } from "./BodyPanel";
+import { BodyPanel } from "./BodyPanel";
 import { TimingPanel } from "./TimingPanel";
-import { TreeviewPanel } from "./TreeviewPanel";
+import { ResponseTreeview } from "./TreeviewPanel";
 import { WsPanel } from "./WsPanel";
 import { parseCookies, parseQuery, rawHttp, summaryOf } from "./parts";
 import { paneText } from "./copy";
@@ -227,7 +227,9 @@ export function Inspector({
           />
         )}
         {resTab === "Raw" && <RawView flow={flow} side="response" />}
-        {resTab === "Treeview" && <TreeviewPanel text={bodyToText(flow.response_body)} />}
+        {resTab === "Treeview" && (
+          <ResponseTreeview flowId={flow.id} body={flow.response_body} showToast={showToast} />
+        )}
         {resTab === "Timing" && <TimingPanel flow={flow} />}
         {resTab === "Summary" && (
           <KeyValueTable rows={summaryOf(flow, "response")} empty="nothing captured" />
