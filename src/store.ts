@@ -6,6 +6,12 @@ interface Store {
   recording: boolean;
   selectedId: string | null;
   proxy: ProxyStatus;
+  /**
+   * A system-proxy change is in flight: the switch shows a spinner and ignores
+   * clicks. Turning it on or off takes about a second on macOS, and a switch
+   * that does nothing for that second gets clicked again.
+   */
+  proxyBusy: boolean;
   ca: CaStatus | null;
   /** Captured WebSocket frames, keyed by the upgrade flow's id. */
   wsMessages: Record<string, WsMessage[]>;
@@ -40,6 +46,7 @@ interface Store {
   setRecording: (v: boolean) => void;
   select: (id: string | null) => void;
   setProxy: (p: ProxyStatus) => void;
+  setProxyBusy: (v: boolean) => void;
   setCa: (c: CaStatus | null) => void;
   togglePin: (id: string) => void;
   /** An empty note removes the comment rather than storing a blank. */
@@ -315,6 +322,7 @@ export const useStore = create<Store>((set) => ({
   recording: false,
   selectedId: null,
   proxy: emptyProxy,
+  proxyBusy: false,
   ca: null,
   wsMessages: {},
   wsDropped: {},
@@ -358,6 +366,7 @@ export const useStore = create<Store>((set) => ({
   setRecording: (v) => set({ recording: v }),
   select: (id) => set({ selectedId: id }),
   setProxy: (p) => set({ proxy: p }),
+  setProxyBusy: (v) => set({ proxyBusy: v }),
   setCa: (c) => set({ ca: c }),
   togglePin: (id) =>
     set((s) => {

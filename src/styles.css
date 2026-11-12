@@ -1798,3 +1798,22 @@ input, textarea, select { font-family: inherit; }
 .ins-about dt { font: 600 10.5px/1.9 var(--font-ui); letter-spacing: .05em; text-transform: uppercase; color: var(--faint); }
 .ins-about dd { margin: 0; }
 .ins-about dd.impact { font-weight: 500; color: var(--c-red-deep); }
+
+/* system proxy: busy state, quit dialog */
+@keyframes novaspin { to { transform: rotate(360deg); } }
+.spinner {
+  display: inline-block; width: 11px; height: 11px; border-radius: 50%;
+  border: 2px solid rgba(27,26,61,.18); border-top-color: var(--accent);
+  animation: novaspin .7s linear infinite;
+}
+.spinner.lg { width: 22px; height: 22px; border-width: 3px; flex: none; }
+.proxy-toggle.busy { cursor: progress; color: var(--muted); }
+.switch.busy { opacity: .75; cursor: progress; }
+.switch .knob .spinner { position: absolute; top: 3px; left: 3px; }
+.pref-row .k.wide { flex: 1; width: auto; }
+.pref-fixed { margin-left: auto; font: 500 12px var(--font-ui); color: var(--muted); }
+.quit-scrim { z-index: 60; }
+.quit-modal { width: 420px; }
+.quit-row { display: flex; gap: 14px; align-items: flex-start; }
+.quit-row h2 { font: 600 14px var(--font-ui); color: var(--text); margin-bottom: 6px; }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2s; } }

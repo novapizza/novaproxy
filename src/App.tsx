@@ -27,6 +27,7 @@ import {
   type UpdateState,
 } from "./update";
 import { MAX_FLOWS, useStore, withoutBodies } from "./store";
+import { switchSystemProxy } from "./systemProxy";
 import { FLUSH_MS, StreamQueue, type StreamBatch } from "./streamQueue";
 import { takeRenderTimes } from "./perf";
 import { exportSession, exportHar, exportReport, importSession } from "./session";
@@ -44,7 +45,6 @@ import {
   type ToastKind,
 } from "./filter";
 import { Brandmark } from "./Brandmark";
-import { Dropdown, type DropdownItem } from "./Dropdown";
 import { Icon, type IconName } from "./icons";
 import { formatRate, SPARK_WINDOW_MS, throughputRate, throughputSeries } from "./stats";
 import { methodClass } from "./badges";
@@ -125,7 +125,8 @@ const RULE_KIND_LABEL: Record<RuleKind, string> = {
 /* -------------------------------- App -------------------------------- */
 
 export function App() {
-  const { flows, recording, selectedId, proxy, ca, imported, setRecording, clear, select } = useStore();
+  const { flows, recording, selectedId, proxy, proxyBusy, ca, imported, setRecording, clear, select } = useStore();
+  const [quitting, setQuitting] = useState(false);
 
   // Persisted preferences. Read once: they are defaults for this session, not a
   // live binding — flipping "default grouping" must not reshuffle the list under
@@ -511,8 +512,8 @@ export function App() {
       try {
         const now = await api.proxyStatus();
         if (cancelled || now.system_proxy) return;
-        useStore.getState().setProxy(await api.setSystemProxy(true));
-        showToast("System proxy enabled (launch default)");
+        const next = await switchSystemProxy(true, { followRecording: prefs.recordingFollowsProxy });
+        if (next) showToast("System proxy enabled (launch default)");
       } catch (e) {
         if (!cancelled) showToast(String(e), { kind: "error" });
       }
@@ -549,10 +550,30 @@ export function App() {
     return () => clearInterval(t);
   }, [proxy.running]);
 
+  // The quit dialog. Shown by the backend's word only: it holds the exit
+  // until the OS proxy is back, then quits by itself.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void api
+      .onQuitProgress(() => setQuitting(true))
+      .then((off) => (cancelled ? off() : (unlisten = off)))
+      .catch(() => {
+        // No dialog then; the quit still waits for the restore and exits.
+      });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   async function toggleProxy() {
     try {
-      const next = await api.setSystemProxy(!proxy.system_proxy);
-      useStore.getState().setProxy(next);
+      const next = await switchSystemProxy(!proxy.system_proxy, {
+        followRecording: prefs.recordingFollowsProxy,
+      });
+      // Null: a change was already running and this click was dropped.
+      if (!next) return;
       showToast(next.system_proxy ? "System proxy enabled" : "System proxy disabled");
     } catch (e) {
       showToast(String(e), { kind: "error" });
@@ -881,7 +902,9 @@ export function App() {
           <div className="toolbar">
             <div className="hd-name">
               <div className="hd-title">{SECTION_TITLE[section]}</div>
-              <div className="hd-sub">default workspace · {proxy.host}:{proxy.port}</div>
+              <div className="hd-sub">
+                default workspace · {proxy.running ? `${proxy.host}:${proxy.port}` : "not running"}
+              </div>
             </div>
             <div className="tool-sep" />
             <div
@@ -902,9 +925,20 @@ export function App() {
               <span>Commands</span>
               <span className="kbd">{formatChord(shortcut("palette").chord).join("")}</span>
             </div>
-            <div className="proxy-toggle" onClick={() => void toggleProxy()}>
-              <span>System proxy</span>
-              <span className={`switch sm ${proxy.system_proxy ? "on" : ""}`}><span className="knob" /></span>
+            <div
+              className={`proxy-toggle ${proxyBusy ? "busy" : ""}`}
+              role="switch"
+              aria-checked={proxy.system_proxy}
+              aria-busy={proxyBusy}
+              title={proxyBusy ? "Changing the system proxy…" : undefined}
+              onClick={() => void toggleProxy()}
+            >
+              <span>
+                {proxyBusy ? (proxy.system_proxy ? "Turning off…" : "Turning on…") : "System proxy"}
+              </span>
+              <span className={`switch sm ${proxy.system_proxy ? "on" : ""} ${proxyBusy ? "busy" : ""}`}>
+                <span className="knob">{proxyBusy && <span className="spinner" />}</span>
+              </span>
             </div>
           </div>
 
@@ -1065,6 +1099,24 @@ export function App() {
 
       {/* keyboard shortcuts */}
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
+      {quitting && (
+        <div className="scrim modal-scrim quit-scrim">
+          <div className="modal quit-modal" role="alertdialog" aria-busy="true" aria-labelledby="quit-title">
+            <div className="modal-body">
+              <div className="quit-row">
+                <span className="spinner lg" />
+                <div>
+                  <h2 id="quit-title">Turning off the system proxy…</h2>
+                  <p>
+                    Putting your network settings back the way they were. NovaProxy quits as soon
+                    as that is done — usually about a second.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* settings modal */}
       {settingsOpen && (
@@ -1678,11 +1730,6 @@ export NODE_EXTRA_CA_CERTS="${ca?.cert_path ?? "<ca.pem path>"}"`}
  * The defaults a session starts from, plus the one piece of machinery that
  * decides whether changing the system proxy costs a password.
  */
-const LAUNCH_ITEMS: DropdownItem[] = [
-  { value: "none", label: "None — leave the OS alone", icon: "circle" },
-  { value: "system", label: "System proxy — capture everything", icon: "power" },
-];
-
 function GeneralTab({
   prefs, setPrefs, helper, setHelper, update, setUpdate,
   onCheckUpdates, revealUpdates, showToast,
@@ -1717,21 +1764,54 @@ function GeneralTab({
 
       <h3>System proxy</h3>
       <div className="pref-row">
-        <span className="k">At launch</span>
-        <Dropdown
-          label="System proxy at launch"
-          value={prefs.systemProxyAtLaunch}
-          items={LAUNCH_ITEMS}
-          onChange={(v) => setPrefs({ ...prefs, systemProxyAtLaunch: v as Prefs["systemProxyAtLaunch"] })}
-        />
+        <span className="k wide">Turn on when NovaProxy opens</span>
+        <span
+          className={`switch sm ${prefs.systemProxyAtLaunch === "system" ? "on" : ""}`}
+          role="switch"
+          aria-checked={prefs.systemProxyAtLaunch === "system"}
+          onClick={() =>
+            setPrefs({
+              ...prefs,
+              systemProxyAtLaunch: prefs.systemProxyAtLaunch === "system" ? "none" : "system",
+            })
+          }
+        >
+          <span className="knob" />
+        </span>
       </div>
       <p>
-        <b>None</b> is the default: pointing the OS at NovaProxy rewrites a setting the whole
-        machine depends on for working internet, so it should be a deliberate act.
+        Off by default: pointing the OS at NovaProxy rewrites a setting the whole machine depends
+        on for working internet, so it should be a deliberate act.
         {helper?.supported && !helper.running && (
-          <> Choosing <b>System proxy</b> without the helper below means macOS asks for your
-          password on every launch.</>
+          <> Turned on without the helper below, macOS asks for your password on every launch.</>
         )}
+      </p>
+      <div className="pref-row">
+        <span className="k wide">Turn off when NovaProxy quits</span>
+        <span className="pref-fixed">Always</span>
+      </div>
+      <p>
+        Quitting puts your network settings back before the app closes, so nothing is left
+        pointing at a proxy that is no longer running.
+        {helper?.supported && !helper.running && (
+          <> Without the helper this needs your password, so it is offered at the next launch
+          instead.</>
+        )}
+      </p>
+      <div className="pref-row">
+        <span className="k wide">Record while the system proxy is on</span>
+        <span
+          className={`switch sm ${prefs.recordingFollowsProxy ? "on" : ""}`}
+          role="switch"
+          aria-checked={prefs.recordingFollowsProxy}
+          onClick={() => setPrefs({ ...prefs, recordingFollowsProxy: !prefs.recordingFollowsProxy })}
+        >
+          <span className="knob" />
+        </span>
+      </div>
+      <p>
+        Turning the system proxy on starts recording and turning it off pauses it. Turn this off to
+        start and pause recording yourself with the <b>Record</b> button.
       </p>
 
       {helper?.supported && <HelperCard helper={helper} setHelper={setHelper} showToast={showToast} />}

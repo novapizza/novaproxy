@@ -31,6 +31,13 @@ export type LaunchProxyMode = "none" | "system";
 export interface Prefs {
   systemProxyAtLaunch: LaunchProxyMode;
   /**
+   * Turning the system proxy on starts recording, and turning it off pauses
+   * it. On by default: the switch is how people start a capture, and a proxy
+   * that is on while the list stays paused reads as "NovaProxy sees nothing".
+   * The Record button still works on its own either way.
+   */
+  recordingFollowsProxy: boolean;
+  /**
    * Which table columns are shown, in display order. Eleven exist and seven fit
    * a small window, so this is a real choice rather than a cosmetic one — see
    * `src/flows/columns.tsx`.
@@ -96,6 +103,7 @@ export interface Prefs {
 
 export const DEFAULT_PREFS: Prefs = {
   systemProxyAtLaunch: "none",
+  recordingFollowsProxy: true,
   columns: [...DEFAULT_COLUMNS],
   columnWidths: {},
   autoSelect: false,
@@ -169,6 +177,9 @@ export function normalizePrefs(raw: unknown): Prefs {
   const v = (raw ?? {}) as Partial<Record<keyof Prefs, unknown>>;
   return {
     systemProxyAtLaunch: v.systemProxyAtLaunch === "system" ? "system" : "none",
+    // Only an explicit `false` opts out: a blob from before this setting
+    // existed gets the default.
+    recordingFollowsProxy: v.recordingFollowsProxy !== false,
     // A pref blob written by a build that had the list view carries
     // `flowGrouping` and `flowListWidth` and no `columns`; both are dropped and
     // the default column set stands in. Nothing to migrate *from* — grouping is
