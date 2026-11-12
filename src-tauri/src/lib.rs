@@ -8,6 +8,7 @@ pub mod logbundle;
 pub mod logging;
 pub mod mcp;
 pub mod menu;
+pub mod quit;
 pub mod state;
 pub mod update;
 
@@ -111,9 +112,14 @@ pub fn release_system_proxy(state: &AppState, why: &str) {
     if !state.sysproxy_backup_path().exists() || !nova_core::sysproxy::restore_is_silent() {
         return;
     }
-    match restore_from_backup(state) {
-        Ok(()) => tracing::info!(why, "restored the system proxy"),
-        Err(e) => tracing::error!(why, "could not restore the system proxy: {e}"),
+    let t = std::time::Instant::now();
+    let before = nova_core::oscmd::exec_stats();
+    let result = restore_from_backup(state);
+    let ms = t.elapsed().as_millis() as u64;
+    let spawns = nova_core::oscmd::exec_stats().0.saturating_sub(before.0);
+    match result {
+        Ok(()) => tracing::info!(why, ms, spawns, "restored the system proxy"),
+        Err(e) => tracing::error!(why, ms, spawns, "could not restore the system proxy: {e}"),
     }
 }
 
@@ -153,7 +159,11 @@ fn restore_from_backup(state: &AppState) -> anyhow::Result<()> {
         return Ok(());
     }
     let text = std::fs::read_to_string(state.sysproxy_backup_path())?;
-    let backup: nova_core::sysproxy::Backup = serde_json::from_str(&text)?;
+    let mut backup: nova_core::sysproxy::Backup = serde_json::from_str(&text)?;
+    // With no engine running yet (crash recovery at launch), assume the default
+    // port: the one a poisoned snapshot from an earlier session would name.
+    let own_port = state.engine.lock().unwrap().as_ref().map_or(9090, |h| h.addr.port());
+    backup = backup.without_own(own_port);
     nova_core::sysproxy::disable(&backup)?;
     let _ = std::fs::remove_file(state.sysproxy_backup_path());
     state
@@ -176,7 +186,17 @@ pub fn helper_status_now() -> nova_proto::HelperStatus {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// When this process started, for the start-up phase lines: a launch users call
+/// slow has to say which phase the time went to.
+static BOOT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Milliseconds since [`run`] began.
+pub fn since_boot_ms() -> u64 {
+    BOOT.get().map_or(0, |t| t.elapsed().as_millis() as u64)
+}
+
 pub fn run() {
+    BOOT.get_or_init(std::time::Instant::now);
     // Before logging: on Windows the logs live in the data dir being moved.
     #[cfg(windows)]
     let migrated = migrate_data_dir();
@@ -253,6 +273,8 @@ pub fn run() {
         .setup(|app| {
             use tauri::Manager;
             let st: Arc<AppState> = (*app.state::<Arc<AppState>>()).clone();
+            let setup_started = std::time::Instant::now();
+            let setup_at_ms = since_boot_ms();
 
             // The whole menu is ours, default included — see `menu`. Best
             // effort: a failure here costs the menu bar, never the launch.
@@ -260,11 +282,14 @@ pub fn run() {
                 tracing::warn!("could not install the menu: {e}");
             }
             app.on_menu_event(|app, event| menu::on_event(app, event.id().as_ref()));
+            let menu_ms = setup_started.elapsed().as_millis() as u64;
 
+            let ca_started = std::time::Instant::now();
             match CaMaterial::load_or_create(&st.data_dir) {
                 Ok(ca) => {
                     tracing::info!(
                         path = %logging::redact_path(&ca.cert_path),
+                        ms = ca_started.elapsed().as_millis() as u64,
                         "root CA ready"
                     );
                     *st.ca.lock().unwrap() = Some(ca);
@@ -349,6 +374,15 @@ pub fn run() {
                         .store(true, std::sync::atomic::Ordering::Relaxed);
                 }
             }
+            // `at_ms` is how long the process ran before setup began (plugins,
+            // state, crash report); `ms` is setup itself.
+            tracing::info!(
+                phase = "setup",
+                at_ms = setup_at_ms,
+                ms = setup_started.elapsed().as_millis() as u64,
+                menu_ms,
+                "start-up phase done"
+            );
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -396,13 +430,43 @@ pub fn run() {
         .build(context)
         .expect("error while building NovaProxy")
         .run(|app, event| {
+            match &event {
+                tauri::RunEvent::Ready => {
+                    tracing::info!(phase = "ready", at_ms = since_boot_ms(), "start-up phase done");
+                }
+                tauri::RunEvent::ExitRequested { code, api, .. } => {
+                    tracing::info!(at_ms = since_boot_ms(), "exit requested");
+                    // An update restart has already restored (see `update`).
+                    if *code != Some(tauri::RESTART_EXIT_CODE) && !quit::may_exit(app) {
+                        api.prevent_exit();
+                    }
+                }
+                // Closing the window quits: hold it open so the quit dialog
+                // has somewhere to show.
+                tauri::RunEvent::WindowEvent {
+                    event: tauri::WindowEvent::CloseRequested { api, .. },
+                    ..
+                } => {
+                    if !quit::may_exit(app) {
+                        api.prevent_close();
+                    }
+                }
+                _ => {}
+            }
+            // The safety net behind `quit`: a no-op when it already restored.
             // Every orderly way out — the last window closed, Quit, Ctrl+C in
             // dev — passes through here. Leaving the system proxy pointed at a
             // port that is about to close is what made quitting NovaProxy
             // look like it broke the internet.
             if let tauri::RunEvent::Exit = event {
+                // Some exits skip `ExitRequested` (macOS: Dock › Quit, log-out),
+                // so this line is the only sign they passed through here.
+                tracing::info!(at_ms = since_boot_ms(), "exit");
                 use tauri::Manager;
                 let st: Arc<AppState> = (*app.state::<Arc<AppState>>()).clone();
+                // A toggle in flight finishes first, as in `quit`. Main thread,
+                // outside the async runtime, so blocking here is allowed.
+                let _guard = st.sysproxy_lock.blocking_lock();
                 release_system_proxy(&st, "quit");
             }
         });

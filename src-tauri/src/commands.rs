@@ -70,6 +70,12 @@ pub fn set_flow_stream(state: State<'_, Arc<AppState>>, live: bool) {
 
 #[tauri::command]
 pub fn proxy_status(state: State<'_, Arc<AppState>>) -> ProxyStatus {
+    // The UI asks for this as soon as it has loaded, so the first call marks
+    // the end of start-up as the user sees it: the webview is up and running.
+    static FIRST: std::sync::Once = std::sync::Once::new();
+    FIRST.call_once(|| {
+        tracing::info!(phase = "ui", at_ms = crate::since_boot_ms(), "start-up phase done");
+    });
     make_status(&state)
 }
 
@@ -534,6 +540,20 @@ pub async fn set_system_proxy(
     state: State<'_, Arc<AppState>>,
     enable: bool,
 ) -> Result<ProxyStatus, String> {
+    // One change at a time; see `AppState::sysproxy_lock`. How long a toggle
+    // queued behind another is logged, so "the switch was slow" can tell
+    // waiting from working.
+    let waited = started();
+    let _guard = state.sysproxy_lock.lock().await;
+    let wait_ms = waited.elapsed().as_millis() as u64;
+    if wait_ms > 0 {
+        tracing::info!(op = "sysproxy.toggle", enable, wait_ms, "waited for a toggle in progress");
+    }
+    // The second of two identical requests has nothing left to do.
+    if *state.system_proxy.lock().unwrap() == enable && (enable || read_backup(&state)?.is_none()) {
+        tracing::info!(op = "sysproxy.toggle", enable, "already in that state; nothing to do");
+        return Ok(make_status(&state));
+    }
     let total = started();
     let spawns_before = oscmd::exec_stats();
     let mut cost = ToggleCost::default();
@@ -546,8 +566,9 @@ pub async fn set_system_proxy(
         // NovaProxy touched it, left behind by an unclean exit. Snapshotting
         // again would record "proxied to NovaProxy" as the state to return to,
         // so the user could never get their settings back — keep the old one.
-        let backup = match read_backup(&state) {
-            Some(existing) => existing,
+        let existing = record("sysproxy.read_backup", started(), read_backup(&state))?;
+        let backup = match existing {
+            Some(existing) => existing.without_own(addr.port()),
             None => {
                 // The expensive step, and until now the only one with no line
                 // at all: on macOS it reads two settings per network service,
@@ -559,7 +580,8 @@ pub async fn set_system_proxy(
                     tauri::async_runtime::spawn_blocking(sysproxy::snapshot)
                         .await
                         .map_err(|e| e.to_string()),
-                )?;
+                )?
+                .without_own(addr.port());
                 cost.snapshot_ms = t.elapsed().as_millis() as u64;
                 // Persist the snapshot BEFORE mutating, so a crash mid-session is
                 // recoverable on next launch. Worth a line of its own: if this
@@ -604,8 +626,14 @@ pub async fn set_system_proxy(
         // Whatever was outstanding is now this session's business to undo.
         state.pending_restore.store(false, Ordering::Relaxed);
     } else {
-        let backup = read_backup(&state);
-        if let Some(backup) = backup {
+        // Unreadable is not absent: fail here with the backup left on disk, so a
+        // retry (or the next launch) can still put the user's settings back.
+        let backup = record("sysproxy.read_backup", started(), read_backup(&state))?;
+        let own_port = state.engine.lock().unwrap().as_ref().map(|h| h.addr.port());
+        if let Some(backup) = backup.map(|b| match own_port {
+            Some(port) => b.without_own(port),
+            None => b,
+        }) {
             cost.services = backup.services.len();
             cost.via_helper = helper::usable();
             let t = started();
@@ -623,8 +651,13 @@ pub async fn set_system_proxy(
         let _ = std::fs::remove_file(state.sysproxy_backup_path());
         *state.system_proxy.lock().unwrap() = false;
         state.pending_restore.store(false, Ordering::Relaxed);
-        if let Some(handle) = state.engine.lock().unwrap().take() {
+        // Timed into `engine_ms` (starting on enable, stopping here): a disable
+        // users call slow is either the restore (`apply_ms`) or this.
+        let handle = state.engine.lock().unwrap().take();
+        if let Some(handle) = handle {
+            let t = started();
             handle.stop();
+            cost.engine_ms = t.elapsed().as_millis() as u64;
         }
     }
     cost.report(enable, total, spawns_before);
@@ -1195,9 +1228,23 @@ fn ensure_engine(state: &AppState, port: Option<u16>) -> Result<SocketAddr, Stri
     Ok(addr)
 }
 
-fn read_backup(state: &AppState) -> Option<sysproxy::Backup> {
-    let text = std::fs::read_to_string(state.sysproxy_backup_path()).ok()?;
-    serde_json::from_str(&text).ok()
+/// The persisted snapshot: `Ok(None)` only when there is no file.
+///
+/// Any other failure is an error, never "no backup". 0.7.0 treated them alike:
+/// with every descriptor in use, opening the file failed, disable took that as
+/// "nothing to restore", deleted the real backup and left the machine pointed
+/// at a stopped NovaProxy — and the next enable snapshotted that as the
+/// setting to return to.
+fn read_backup(state: &AppState) -> Result<Option<sysproxy::Backup>, String> {
+    let path = state.sysproxy_backup_path();
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read the saved proxy settings: {e}")),
+    };
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|e| format!("the saved proxy settings are unreadable: {e}"))
 }
 
 fn make_status(state: &AppState) -> ProxyStatus {

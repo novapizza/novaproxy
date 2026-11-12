@@ -376,6 +376,11 @@ pub struct AppState {
     pub rules: Arc<RwLock<Vec<Rule>>>,
     /// Whether we currently own the OS system-proxy setting.
     pub system_proxy: Mutex<bool>,
+    /// Held for the whole of a system-proxy change. Two toggles at once (a
+    /// double click, launch auto-enable racing the switch) used to snapshot and
+    /// apply in parallel; and a quit that lands mid-toggle waits on this before
+    /// restoring, so it never restores under a half-applied enable.
+    pub sysproxy_lock: tokio::sync::Mutex<()>,
     /// Breakpoint engine + its channel sink (kept so we can bind a channel).
     pub bp_sink: Arc<BreakpointChannelSink>,
     pub breakpoints: Arc<Breakpoints>,
@@ -431,6 +436,7 @@ impl AppState {
             stream: Arc::new(UiStream::default()),
             rules: Arc::new(RwLock::new(Vec::new())),
             system_proxy: Mutex::new(false),
+            sysproxy_lock: tokio::sync::Mutex::new(()),
             bp_sink,
             breakpoints,
             scripts: ScriptEngine::new(),

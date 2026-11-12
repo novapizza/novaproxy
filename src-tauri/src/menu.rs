@@ -72,6 +72,10 @@ const CHECK_UPDATES: &str = "app.check-updates";
 /// Menu id of the keyboard-shortcuts item. Matched in [`on_event`].
 const SHORTCUTS: &str = "help.shortcuts";
 
+/// Ours rather than the predefined Quit, which ends the process from the
+/// platform side; see `quit` for why the app has to go first.
+const QUIT: &str = "app.quit";
+
 /// Event the update item emits to the frontend, which owns the Updates card and
 /// therefore every sentence a check can end in.
 pub const CHECK_UPDATES_EVENT: &str = "menu://check-updates";
@@ -129,7 +133,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let services = PredefinedMenuItem::services(app, None)?;
     let hide = PredefinedMenuItem::hide(app, None)?;
     let hide_others = PredefinedMenuItem::hide_others(app, None)?;
-    let quit = PredefinedMenuItem::quit(app, None)?;
+    let quit = MenuItem::with_id(app, QUIT, format!("Quit {}", pkg.name), true, Some("CmdOrCtrl+Q"))?;
     let close_window = PredefinedMenuItem::close_window(app, None)?;
     let undo = PredefinedMenuItem::undo(app, None)?;
     let redo = PredefinedMenuItem::redo(app, None)?;
@@ -273,6 +277,7 @@ enum Action {
     ShowLogs,
     CheckUpdates,
     Shortcuts,
+    Quit,
 }
 
 fn action_for(id: &str) -> Option<Action> {
@@ -280,7 +285,8 @@ fn action_for(id: &str) -> Option<Action> {
         SHOW_LOGS => Some(Action::ShowLogs),
         CHECK_UPDATES => Some(Action::CheckUpdates),
         SHORTCUTS => Some(Action::Shortcuts),
-        // Every predefined item — About, Quit, the clipboard — is handled by the
+        QUIT => Some(Action::Quit),
+        // Every predefined item — About, the clipboard — is handled by the
         // platform, so anything unrecognised here is not a failure.
         _ => None,
     }
@@ -298,6 +304,7 @@ pub fn on_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
         }
         Some(Action::CheckUpdates) => check_updates(app),
         Some(Action::Shortcuts) => show_shortcuts(app),
+        Some(Action::Quit) => crate::quit::request(app),
         None => {}
     }
 }

@@ -90,6 +90,75 @@ pub struct Backup {
     pub gnome: Option<GnomeBackup>,
 }
 
+/// Whether `host:port` is NovaProxy's own listener on this machine.
+fn is_own(host: &str, port: &str, own_port: u16) -> bool {
+    let host = host.trim().trim_start_matches('[').trim_end_matches(']');
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+    loopback && port.trim().parse::<u16>().ok() == Some(own_port)
+}
+
+/// Whether a WinINet proxy server string (`host:port`, or per-protocol
+/// `http=host:port;https=host:port`) names only NovaProxy's own listener.
+fn server_is_own(server: &str, own_port: u16) -> bool {
+    let mut parts = server.split(';').map(str::trim).filter(|p| !p.is_empty()).peekable();
+    parts.peek().is_some()
+        && parts.all(|p| {
+            let addr = p.split_once('=').map_or(p, |(_, a)| a);
+            addr.rsplit_once(':').is_some_and(|(h, port)| is_own(h, port, own_port))
+        })
+}
+
+impl Backup {
+    /// This snapshot with every proxy that points at NovaProxy itself turned off.
+    ///
+    /// A snapshot is "the machine before NovaProxy touched it". One taken while
+    /// the machine is still pointed at us — the backup was lost after an enable,
+    /// so the next enable snapshots our own setting — would make every later
+    /// restore put the machine back on a port nothing listens on once the
+    /// engine stops: no internet, and nothing in the app to get it back. Nobody
+    /// wants "proxied to a dead NovaProxy" as their real setting, so it is
+    /// recorded as no proxy instead.
+    pub fn without_own(&self, own_port: u16) -> Backup {
+        let mut out = self.clone();
+        for s in &mut out.services {
+            if s.web_enabled && is_own(&s.web_host, &s.web_port, own_port) {
+                tracing::warn!("snapshot pointed a web proxy at NovaProxy itself; restoring it as off");
+                s.web_enabled = false;
+            }
+            if s.secure_enabled && is_own(&s.secure_host, &s.secure_port, own_port) {
+                tracing::warn!("snapshot pointed a secure web proxy at NovaProxy itself; restoring it as off");
+                s.secure_enabled = false;
+            }
+        }
+        if let Some(w) = &mut out.windows {
+            for c in &mut w.connections {
+                if c.flags & windows::PROXY != 0
+                    && c.server.as_deref().is_some_and(|s| server_is_own(s, own_port))
+                {
+                    tracing::warn!("snapshot pointed a connection at NovaProxy itself; restoring it as direct");
+                    c.flags = (c.flags & !windows::PROXY) | windows::DIRECT;
+                }
+            }
+            if w.proxy_enable == Some(1)
+                && w.proxy_server.as_deref().is_some_and(|s| server_is_own(s, own_port))
+            {
+                w.proxy_enable = Some(0);
+            }
+        }
+        if let Some(g) = &mut out.gnome {
+            if g.mode == "manual"
+                && is_own(&g.http_host, &g.http_port, own_port)
+                && (g.https_host.is_empty() || is_own(&g.https_host, &g.https_port, own_port))
+            {
+                tracing::warn!("snapshot pointed GNOME at NovaProxy itself; restoring it as none");
+                g.mode = "none".into();
+            }
+        }
+        out
+    }
+}
+
 /* --------------------------------- macOS --------------------------------- */
 
 pub mod macos {
@@ -753,6 +822,84 @@ mod tests {
             secure_host: host.to_string(),
             secure_port: port.to_string(),
         }
+    }
+
+    /* ----------------------- snapshots of ourselves ----------------------- */
+
+    #[test]
+    fn a_snapshot_of_our_own_proxy_restores_to_off() {
+        let backup = Backup {
+            services: vec![
+                service("Wi-Fi", true, "127.0.0.1", "9090"),
+                service("USB LAN", true, "localhost", " 9090 "),
+                service("Thunderbolt", true, "::1", "9090"),
+            ],
+            ..Default::default()
+        };
+        let clean = backup.without_own(9090);
+        for s in &clean.services {
+            assert!(!s.web_enabled && !s.secure_enabled, "{s:?}");
+        }
+        let lines = shell_of(&macos::disable_plan(&clean));
+        assert!(lines.iter().all(|l| l.ends_with(" off")), "{lines:?}");
+    }
+
+    #[test]
+    fn a_users_own_proxy_survives_the_cleanup() {
+        let backup = Backup {
+            services: vec![
+                service("Wi-Fi", true, "proxy.corp", "9090"),
+                service("USB LAN", true, "127.0.0.1", "8080"),
+                service("VPN", false, "127.0.0.1", "9090"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(backup.without_own(9090), backup);
+    }
+
+    #[test]
+    fn only_the_half_that_points_at_us_is_turned_off() {
+        let mut s = service("Wi-Fi", true, "127.0.0.1", "9090");
+        s.secure_host = "proxy.corp".into();
+        s.secure_port = "3128".into();
+        let clean = Backup { services: vec![s], ..Default::default() }.without_own(9090);
+        assert!(!clean.services[0].web_enabled);
+        assert!(clean.services[0].secure_enabled);
+    }
+
+    #[test]
+    fn a_windows_snapshot_of_our_own_proxy_restores_to_direct() {
+        let ours = windows::ConnectionSettings {
+            flags: windows::DIRECT | windows::PROXY,
+            server: Some("http=127.0.0.1:9090;https=127.0.0.1:9090".into()),
+            ..Default::default()
+        };
+        let corp = windows::ConnectionSettings {
+            name: Some("VPN".into()),
+            flags: windows::PROXY,
+            server: Some("proxy.corp:9090".into()),
+            ..Default::default()
+        };
+        let backup = Backup {
+            windows: Some(WindowsBackup { connections: vec![ours, corp.clone()], ..Default::default() }),
+            ..Default::default()
+        };
+        let w = backup.without_own(9090).windows.unwrap();
+        assert_eq!(w.connections[0].flags, windows::DIRECT);
+        assert_eq!(w.connections[1], corp);
+    }
+
+    #[test]
+    fn a_gnome_snapshot_of_our_own_proxy_restores_to_none() {
+        let g = GnomeBackup {
+            mode: "manual".into(),
+            http_host: "127.0.0.1".into(),
+            http_port: "9090".into(),
+            https_host: "127.0.0.1".into(),
+            https_port: "9090".into(),
+        };
+        let backup = Backup { gnome: Some(g), ..Default::default() };
+        assert_eq!(backup.without_own(9090).gnome.unwrap().mode, "none");
     }
 
     /* ------------------------------- Windows ------------------------------- */

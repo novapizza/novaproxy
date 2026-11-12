@@ -16,6 +16,7 @@ import { useEffect, useLayoutEffect, useState } from "react";
 import { api, type CaStatus, type HelperStatus, type ProxyStatus } from "./api";
 import { Icon } from "./icons";
 import { useStore } from "./store";
+import { switchSystemProxy } from "./systemProxy";
 import {
   allComplete,
   firstIncompleteStep,
@@ -89,8 +90,8 @@ export function OnboardingWizard({
           break;
         }
         case "proxy": {
-          useStore.getState().setProxy(await api.setSystemProxy(true));
-          showToast("System proxy enabled");
+          // Recording is the next step of its own, so it is not tied in here.
+          if (await switchSystemProxy(true, { followRecording: false })) showToast("System proxy enabled");
           break;
         }
         case "capture": {
