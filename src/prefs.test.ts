@@ -28,6 +28,7 @@ describe("prefs", () => {
     // user needs for working internet, so it must be opt-in.
     expect(DEFAULT_PREFS.systemProxyAtLaunch).toBe("none");
     expect(DEFAULT_PREFS.autoSelect).toBe(false);
+    expect(DEFAULT_PREFS.recordingFollowsProxy).toBe(true);
     expect(DEFAULT_PREFS.columns).toEqual(DEFAULT_COLUMNS);
   });
 
@@ -126,5 +127,11 @@ describe("divider sizes", () => {
     savePrefs({ ...DEFAULT_PREFS, treeWidth: 320, inspectorPct: 55, requestPct: 35 }, store);
     const back = loadPrefs(store);
     expect([back.treeWidth, back.inspectorPct, back.requestPct]).toEqual([320, 55, 35]);
+  });
+
+  it("links recording to the proxy unless the user turned that off", () => {
+    expect(normalizePrefs({}).recordingFollowsProxy).toBe(true);
+    expect(normalizePrefs({ recordingFollowsProxy: "yes" }).recordingFollowsProxy).toBe(true);
+    expect(normalizePrefs({ recordingFollowsProxy: false }).recordingFollowsProxy).toBe(false);
   });
 });

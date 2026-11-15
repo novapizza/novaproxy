@@ -52,7 +52,7 @@ jobs:
       matrix:
         include:
           - name: macOS (Apple silicon)
-            os: macos-14
+            os: macos-15
             target: aarch64-apple-darwin
             bundles: app,dmg
           - name: Windows (x64)
