@@ -185,6 +185,11 @@ fn bundle_app_name(path: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+#[cfg(not(any(target_os = "macos", windows)))]
+fn snapshot() -> HashMap<u16, ProcInfo> {
+    HashMap::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{port_of, ProcResolver};
@@ -253,9 +258,4 @@ mod windows_tests {
         assert!(!info.name.starts_with("pid "), "resolved a name: {}", info.name);
         assert!(info.bundle.is_some_and(|p| p.to_ascii_lowercase().ends_with(".exe")));
     }
-}
-
-#[cfg(not(any(target_os = "macos", windows)))]
-fn snapshot() -> HashMap<u16, ProcInfo> {
-    HashMap::new()
 }
