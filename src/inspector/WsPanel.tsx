@@ -1,8 +1,8 @@
-import { useState } from "react";
-import type { WsMessage } from "../api";
+import { useEffect, useState } from "react";
+import { api, type WsMessage } from "../api";
 import { Icon } from "../icons";
 import { formatAgo, formatCellBytes } from "../format";
-import { MAX_WS_FRAMES } from "../store";
+import { useStore } from "../store";
 
 /**
  * Frames rendered at once. A busy socket fills its retention window in seconds,
@@ -11,8 +11,59 @@ import { MAX_WS_FRAMES } from "../store";
  */
 const WS_PAGE = 400;
 
-export function WsPanel({ messages, dropped }: { messages: WsMessage[] | undefined; dropped: number }) {
+/** What one row shows: text as is, binary by size, a close by its reason. */
+function rowText(m: WsMessage): string {
+  if (m.text != null) return m.text;
+  if (m.opcode === "Binary") return `[binary ${formatCellBytes(m.size)}]`;
+  if (m.opcode === "Close") return "(closed)";
+  return "";
+}
+
+/**
+ * A socket's frames. The list streams in as previews — 200 characters of text,
+ * no binary payload — and the engine keeps the rest: opening the socket loads
+ * every frame it still holds (including ones captured while recording was
+ * paused), and expanding a cut-short frame fetches its whole payload.
+ */
+export function WsPanel({
+  flowId,
+  messages,
+  dropped,
+}: {
+  flowId: string;
+  messages: WsMessage[] | undefined;
+  dropped: number;
+}) {
   const [showAll, setShowAll] = useState(false);
+  const [open, setOpen] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let live = true;
+    api
+      .wsFrames(flowId)
+      .then((r) => live && useStore.getState().backfillWs(flowId, r.frames, r.dropped))
+      // An imported session has no engine copy; the list is all there is.
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [flowId]);
+
+  async function expand(m: WsMessage) {
+    const key = String(m.seq);
+    if (key in open) {
+      const { [key]: _, ...rest } = open;
+      setOpen(rest);
+      return;
+    }
+    try {
+      const full = await api.wsFrame(flowId, Number(m.seq));
+      setOpen((o) => ({ ...o, [key]: full.text ?? full.base64 ?? "" }));
+    } catch (e) {
+      setOpen((o) => ({ ...o, [key]: String(e) }));
+    }
+  }
+
   if (!messages || messages.length === 0) {
     return <pre className="code res">— no WebSocket frames captured yet —</pre>;
   }
@@ -25,8 +76,8 @@ export function WsPanel({ messages, dropped }: { messages: WsMessage[] | undefin
         <div className="ws-note">
           {dropped > 0 && (
             <span>
-              {dropped.toLocaleString()} earlier frame{dropped === 1 ? "" : "s"} dropped at the{" "}
-              {MAX_WS_FRAMES.toLocaleString()}-frame cap.
+              {dropped.toLocaleString()} earlier frame{dropped === 1 ? " was" : "s were"} dropped to stay
+              within memory limits.
             </span>
           )}
           {earlier > 0 && (
@@ -39,23 +90,24 @@ export function WsPanel({ messages, dropped }: { messages: WsMessage[] | undefin
       <div className="ws-log">
       {visible.map((m) => {
         const sent = m.direction === "Sent";
-        const label = m.opcode.toLowerCase();
-        const payload =
-          m.text != null
-            ? m.text
-            : m.base64 != null
-            ? `[binary ${formatCellBytes(m.size)}]`
-            : m.opcode === "Close"
-            ? "(closed)"
-            : "";
+        const key = String(m.seq);
+        const full = open[key];
         return (
-          <div className={`ws-frame ${sent ? "sent" : "recv"}`} key={m.flow_id + "-" + String(m.seq)}>
+          <div
+            className={`ws-frame ${sent ? "sent" : "recv"} ${m.truncated ? "expandable" : ""}`}
+            key={m.flow_id + "-" + key}
+            onClick={m.truncated ? () => void expand(m) : undefined}
+            title={m.truncated ? (full != null ? "Collapse" : "Show the whole frame") : undefined}
+          >
             <span className={`ws-dir ${sent ? "sent" : "recv"}`}>
               <Icon name={sent ? "arrow-up" : "arrow-down"} size={11} />
               {sent ? "sent" : "recv"}
             </span>
-            <span className="ws-op">{label}</span>
-            <span className="ws-payload">{payload}{m.truncated ? " …(truncated)" : ""}</span>
+            <span className="ws-op">{m.opcode.toLowerCase()}</span>
+            <span className="ws-payload">
+              {full ?? rowText(m)}
+              {full == null && m.truncated ? " …" : ""}
+            </span>
             <span className="ws-meta">{formatCellBytes(m.size)} · {formatAgo(m.at)}</span>
           </div>
         );

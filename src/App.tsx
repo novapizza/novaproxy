@@ -30,7 +30,7 @@ import { MAX_FLOWS, useStore, withoutBodies } from "./store";
 import { switchSystemProxy } from "./systemProxy";
 import { FLUSH_MS, StreamQueue, type StreamBatch } from "./streamQueue";
 import { takeRenderTimes } from "./perf";
-import { exportSession, exportHar, exportReport, importSession } from "./session";
+import { exportSession, exportHar, exportReport, importSession, type ExportSet } from "./session";
 import { hostTable, reportMarkdown, summarize } from "./report";
 import { scopeOf } from "./scope";
 import type { StatusClass } from "./classify";
@@ -245,32 +245,31 @@ export function App() {
    * the engine's retained copies and falls back to the list for anything the
    * engine does not have — flows imported from a session file exist only here.
    */
-  async function flowsForExport(): Promise<Flow[]> {
-    const listed = useStore.getState().flows;
-    try {
-      const retained = new Map((await api.retainedFlows()).map((f) => [f.id, f]));
-      return listed.map((f) => retained.get(f.id) ?? f);
-    } catch (e) {
-      // The export still has every flow, just not the bodies the list dropped —
-      // said out loud, because a silently body-less export looks complete.
-      showToast(`Couldn't read bodies from the engine — exporting without them (${e})`, { kind: "error" });
-      return listed;
-    }
+  /**
+   * What an export writes. The backend reads each flow (bodies included) from
+   * the engine as it writes it; an imported session never reached the engine,
+   * so its flows travel along whole — the list keeps those with their bodies.
+   */
+  function exportSet(only?: ReadonlySet<string>): ExportSet {
+    const { flows, imported } = useStore.getState();
+    const listed = only ? flows.filter((f) => only.has(f.id)) : flows;
+    return { ids: listed.map((f) => f.id), extra: imported ? listed : [] };
   }
   async function doExportSession() {
     try {
-      if (await exportSession(await flowsForExport())) showToast("Session saved");
+      const n = await exportSession(exportSet());
+      if (n != null) showToast(`Session saved (${n} flows)`);
     } catch (e) { showToast(String(e), { kind: "error" }); }
   }
   async function doExportHar() {
     try {
-      const all = await flowsForExport();
       // Marked rows narrow the export; nothing marked exports the capture, which
       // is what the command did before there was a way to mark anything.
-      const wanted = markedIds.length > 0 ? new Set(markedIds) : null;
-      const flows = wanted ? all.filter((f) => wanted.has(f.id)) : all;
-      if (await exportHar(flows)) {
-        showToast(wanted ? `HAR exported (${flows.length} marked flows)` : "HAR exported");
+      const wanted = markedIds.length > 0 ? new Set(markedIds) : undefined;
+      const n = await exportHar(exportSet(wanted), prefs.redactHar);
+      if (n != null) {
+        const what = wanted ? `${n} marked flows` : `${n} flows`;
+        showToast(`HAR exported (${what}${prefs.redactHar ? ", credentials hidden" : ""})`);
       }
     } catch (e) { showToast(String(e), { kind: "error" }); }
   }
@@ -410,6 +409,7 @@ export function App() {
     api.getRules().then(setRulesState).catch(hydrate("rules"));
     api.getScript().then((s) => { if (s.trim()) setScriptSource(s); }).catch(hydrate("script"));
     api.getNetworkConditions().then(setNet).catch(hydrate("network conditions"));
+    api.setKeepOnTcp(prefs.keepOnTcp).catch(hydrate("HTTP/3 setting"));
     api.mcpStatus().then(setMcp).catch(hydrate("MCP status"));
     // These two together decide the walkthrough, so they are awaited as a pair
     // — a rejection still counts as settled, since a CA that cannot be read is
@@ -634,7 +634,7 @@ export function App() {
   const commands: { id: string; icon: IconName; label: string; kbd?: string; run: () => void }[] = useMemo(
     () => [
       { id: "rec", icon: recording ? "circle-pause" : "circle-dot", label: recording ? "Pause capture" : "Resume capture", run: () => setRecording(!recording) },
-      { id: "clear", icon: "eraser", label: "Clear all flows", run: () => clear() },
+      { id: "clear", icon: "eraser", label: "Clear all flows", run: () => void clearAll() },
       { id: "proxy", icon: "power", label: proxy.system_proxy ? "Disable system proxy" : "Enable system proxy", run: () => void toggleProxy() },
       { id: "resend", icon: "repeat", label: "Resend selected flow", run: () => void resendSelected() },
       { id: "curl", icon: "copy", label: "Copy selected as cURL", kbd: "↵", run: () => void copyCurl() },
@@ -1655,6 +1655,29 @@ function SettingsModal({
           )}
 
           {tab === "network" && (<>
+            <h3>HTTP/3 (QUIC)</h3>
+            <div className="field-group">
+              <div
+                className={`switch ${prefs.keepOnTcp ? "on" : ""}`}
+                onClick={() => {
+                  const on = !prefs.keepOnTcp;
+                  setPrefs({ ...prefs, keepOnTcp: on });
+                  api.setKeepOnTcp(on).catch((e) => showToast(String(e), { kind: "error" }));
+                }}
+              >
+                <span className="knob" />
+              </div>
+              <span style={{ color: "var(--text2)" }}>Keep apps on TCP</span>
+            </div>
+            <p>
+              HTTP/3 runs over UDP (QUIC), which a proxy never sees. Browsers don&apos;t use it through
+              a proxy, but servers advertise it in the <code>Alt-Svc</code> header, and an app that
+              learns a host speaks HTTP/3 can later connect to it directly — and vanish from the
+              capture. With this on, NovaProxy removes those advertisements on the way back; the
+              Inspector still shows the header as the server sent it. Apps that ignore the system
+              proxy altogether are not affected either way.
+            </p>
+
             <h3>Network conditions</h3>
             <div className="field-group">
               <div
@@ -1760,6 +1783,22 @@ function GeneralTab({
         Keep the newest row selected as it arrives — the same <b>Auto Select</b> toggle the status
         bar carries, remembered across launches. Off by default: a selection that moves while you
         are reading a body is worse than one click.
+      </p>
+
+      <h3>Exports</h3>
+      <div className="pref-row">
+        <span className="k">Hide credentials in HAR</span>
+        <span
+          className={`switch sm ${prefs.redactHar ? "on" : ""}`}
+          onClick={() => setPrefs({ ...prefs, redactHar: !prefs.redactHar })}
+        >
+          <span className="knob" />
+        </span>
+      </div>
+      <p>
+        HAR files get attached to tickets, which is how tokens leak. With this on, authorization
+        headers, cookies, API keys and password or token fields read <code>[redacted]</code>.
+        Saved sessions keep everything, so replays still work when you reopen them.
       </p>
 
       <h3>System proxy</h3>
@@ -2051,18 +2090,25 @@ function McpCard({
   const port = mcp?.port ?? 9091;
   const url = mcp?.url ?? `http://127.0.0.1:${port}/`;
 
-  async function toggle() {
+  const redact = mcp?.redact ?? true;
+
+  async function run(action: () => Promise<McpStatus>, done: (m: McpStatus) => string) {
     setBusy(true);
     try {
-      const next = await api.setMcpEnabled(!running, port);
+      const next = await action();
       setMcp(next);
-      showToast(next.running ? `MCP server listening on ${next.url}` : "MCP server stopped");
+      showToast(done(next));
     } catch (e) {
       showToast(String(e), { kind: "error" });
     } finally {
       setBusy(false);
     }
   }
+  const toggle = () =>
+    run(() => api.setMcpEnabled(!running, port), (m) => (m.running ? `MCP server listening on ${m.url}` : "MCP server stopped"));
+  const rotate = () => run(() => api.rotateMcpToken(), () => "New MCP token issued — update your clients");
+  const toggleRedact = () =>
+    run(() => api.setMcpRedact(!redact), (m) => (m.redact ? "Credentials hidden from MCP clients" : "MCP clients now see credentials"));
 
   return (
     <>
@@ -2076,12 +2122,35 @@ function McpCard({
       </div>
       <p>
         Lets Claude and other MCP clients read the traffic you have captured — list and search
-        flows, inspect bodies, replay requests, set rules. Loopback only, and its own calls are
-        marked so they stay out of your flow list.
+        flows, inspect bodies, replay requests, set rules. Loopback only, a client needs the access
+        token below, and its own calls are marked so they stay out of your flow list.
       </p>
-      {running && <CodeSnippet text={`claude mcp add --transport http novaproxy ${url}`} />}
+      {running && mcp?.token && (
+        <>
+          <CodeSnippet text={mcpAddCommand(url, mcp.token)} />
+          <div className="field-group">
+            <button className="btn-neutral" disabled={busy} onClick={() => void rotate()}>New token</button>
+            <span style={{ color: "var(--muted)" }}>Clients set up with the old token stop working.</span>
+          </div>
+        </>
+      )}
+      <div className="field-group">
+        <div className={`switch ${redact ? "on" : ""}`} onClick={() => !busy && void toggleRedact()}>
+          <span className="knob" />
+        </div>
+        <span style={{ color: "var(--text2)" }}>Hide credentials from AI clients</span>
+      </div>
+      <p>
+        Authorization headers, cookies, API keys and password or token fields read{" "}
+        <code>[redacted]</code> in what the client sees. Replays still send the real values.
+      </p>
     </>
   );
+}
+
+/** The one command that wires Claude Code to the endpoint, token included. */
+export function mcpAddCommand(url: string, token: string): string {
+  return `claude mcp add --transport http novaproxy ${url} --header "Authorization: Bearer ${token}"`;
 }
 
 function CodeSnippet({ text }: { text: string }) {

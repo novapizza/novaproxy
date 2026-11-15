@@ -56,19 +56,14 @@ pub fn detect_request(media_type: Option<&str>, body: &str) -> Option<McpInfo> {
         serde_json::Value::Array(items) => items.iter().collect::<Vec<_>>(),
         other => vec![other],
     };
-    messages
-        .into_iter()
-        .find_map(|m| from_message(m, McpTransport::Http))
+    messages.into_iter().find_map(|m| from_message(m, McpTransport::Http))
 }
 
 /// Look for MCP messages in an SSE response body (`text/event-stream`), whose
 /// `data:` frames each carry one JSON-RPC message. Used to catch server→client
 /// traffic on a stream the client opened with `GET`.
 pub fn detect_sse(media_type: Option<&str>, body: &str) -> Option<McpInfo> {
-    if !media_type
-        .map(|m| m.to_ascii_lowercase().contains("text/event-stream"))
-        .unwrap_or(false)
-    {
+    if !media_type.map(|m| m.to_ascii_lowercase().contains("text/event-stream")).unwrap_or(false) {
         return None;
     }
     for line in body.lines() {
@@ -144,9 +139,7 @@ pub fn is_internal_endpoint(host: &str, port: Option<u16>, internal_port: u16) -
         return false;
     }
     let (name, embedded_port) = match host.rsplit_once(':') {
-        Some((h, p)) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => {
-            (h, p.parse::<u16>().ok())
-        }
+        Some((h, p)) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => (h, p.parse::<u16>().ok()),
         _ => (host, None),
     };
     let name = name.trim_matches(|c| c == '[' || c == ']').to_ascii_lowercase();
@@ -231,11 +224,7 @@ mod tests {
     #[test]
     fn json_content_type_variants_are_accepted() {
         let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
-        for ct in [
-            "application/json",
-            "application/json; charset=utf-8",
-            "application/vnd.api+json",
-        ] {
+        for ct in ["application/json", "application/json; charset=utf-8", "application/vnd.api+json"] {
             assert!(detect_request(Some(ct), body).is_some(), "{ct} should be inspected");
         }
     }
@@ -315,11 +304,9 @@ mod tests {
     fn tool_name_is_only_taken_from_tool_and_prompt_calls() {
         // `resources/read` has params.uri, not params.name; a `name` on some other
         // method must not be mislabelled as a tool.
-        let info = detect_request(
-            JSON,
-            r#"{"jsonrpc":"2.0","id":1,"method":"logging/setLevel","params":{"name":"debug"}}"#,
-        )
-        .unwrap();
+        let info =
+            detect_request(JSON, r#"{"jsonrpc":"2.0","id":1,"method":"logging/setLevel","params":{"name":"debug"}}"#)
+                .unwrap();
         assert!(info.tool.is_none());
         assert_eq!(summary(&info), "logging/setLevel");
     }

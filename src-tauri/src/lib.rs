@@ -2,8 +2,10 @@
 //! engine to the frontend through commands + a flow-streaming channel.
 
 // Public so the integration tests can drive the MCP endpoint directly.
+pub mod analysis;
 pub mod commands;
 pub mod crash;
+pub mod export;
 pub mod logbundle;
 pub mod logging;
 pub mod mcp;
@@ -38,18 +40,14 @@ pub fn data_dir() -> PathBuf {
     }
     #[cfg(not(windows))]
     {
-        dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("NovaProxy")
+        dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("NovaProxy")
     }
 }
 
 /// `%LOCALAPPDATA%\<identifier from tauri.conf.json>`.
 #[cfg(windows)]
 pub fn windows_app_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("dev.novaproxy.app")
+    dirs::data_local_dir().unwrap_or_else(|| PathBuf::from(".")).join("dev.novaproxy.app")
 }
 
 /// Move a pre-0.7 Roaming AppData directory to Local AppData, once.
@@ -100,7 +98,9 @@ fn migrate_dir(old: &std::path::Path, new: &std::path::Path, logs: &std::path::P
         let _ = std::fs::remove_dir_all(old);
         Some("copied the data directory from Roaming to Local AppData".into())
     } else {
-        Some(format!("copied the data directory to Local AppData with {failed} file(s) failing; the Roaming copy is kept"))
+        Some(format!(
+            "copied the data directory to Local AppData with {failed} file(s) failing; the Roaming copy is kept"
+        ))
     }
 }
 
@@ -153,9 +153,7 @@ fn restore_at_sign_in() {
 fn restore_from_backup(state: &AppState) -> anyhow::Result<()> {
     if !state.sysproxy_backup_path().exists() {
         // Someone got there first (a second window, or a toggle). Nothing owed.
-        state
-            .pending_restore
-            .store(false, std::sync::atomic::Ordering::Relaxed);
+        state.pending_restore.store(false, std::sync::atomic::Ordering::Relaxed);
         return Ok(());
     }
     let text = std::fs::read_to_string(state.sysproxy_backup_path())?;
@@ -166,9 +164,7 @@ fn restore_from_backup(state: &AppState) -> anyhow::Result<()> {
     backup = backup.without_own(own_port);
     nova_core::sysproxy::disable(&backup)?;
     let _ = std::fs::remove_file(state.sysproxy_backup_path());
-    state
-        .pending_restore
-        .store(false, std::sync::atomic::Ordering::Relaxed);
+    state.pending_restore.store(false, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
@@ -241,11 +237,7 @@ pub fn run() {
         logs = %_log_guard.as_ref().map(|g| logging::redact_path(g.dir())).unwrap_or_else(|| "<stdout only>".into()),
         "NovaProxy starting"
     );
-    usage!(
-        "app.start",
-        ver = env!("CARGO_PKG_VERSION"),
-        os = std::env::consts::OS
-    );
+    usage!("app.start", ver = env!("CARGO_PKG_VERSION"), os = std::env::consts::OS);
 
     // Shared as an `Arc` because the MCP server holds the same state the commands
     // do — one flow store, one rule set, one engine handle.
@@ -259,9 +251,8 @@ pub fn run() {
     let context = tauri::generate_context!();
     let updater_configured = context.config().plugins.0.contains_key("updater");
 
-    let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_clipboard_manager::init());
+    let mut builder =
+        tauri::Builder::default().plugin(tauri_plugin_dialog::init()).plugin(tauri_plugin_clipboard_manager::init());
     if updater_configured {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
@@ -326,15 +317,14 @@ pub fn run() {
             // Restore the MCP endpoint if it was enabled when the app last ran.
             if let Ok(text) = std::fs::read_to_string(st.mcp_path()) {
                 if let Ok(saved) = serde_json::from_str::<nova_proto::McpStatus>(&text) {
+                    st.mcp_redact.store(saved.redact, std::sync::atomic::Ordering::Relaxed);
                     if saved.running {
                         let app_state = st.clone();
                         let port = saved.port;
                         tauri::async_runtime::spawn(async move {
                             match crate::mcp::start(app_state.clone(), port).await {
                                 Ok(handle) => {
-                                    app_state
-                                        .mcp_port
-                                        .store(handle.addr.port(), std::sync::atomic::Ordering::Relaxed);
+                                    app_state.mcp_port.store(handle.addr.port(), std::sync::atomic::Ordering::Relaxed);
                                     *app_state.mcp.lock().unwrap() = Some(handle);
                                 }
                                 Err(e) => tracing::error!("could not restore MCP endpoint: {e}"),
@@ -361,17 +351,12 @@ pub fn run() {
                         tracing::warn!("restoring system proxy after unclean exit");
                         if let Err(e) = restore_from_backup(&app_state) {
                             tracing::error!("could not restore system proxy: {e}");
-                            app_state
-                                .pending_restore
-                                .store(true, std::sync::atomic::Ordering::Relaxed);
+                            app_state.pending_restore.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                     });
                 } else {
-                    tracing::warn!(
-                        "system proxy settings from the last session are still pending a restore"
-                    );
-                    st.pending_restore
-                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                    tracing::warn!("system proxy settings from the last session are still pending a restore");
+                    st.pending_restore.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
             }
             // `at_ms` is how long the process ran before setup began (plugins,
@@ -402,12 +387,17 @@ pub fn run() {
             commands::write_file,
             commands::read_file,
             commands::read_body,
-            commands::retained_flows,
+            export::export_flows,
             commands::clear_flows,
             commands::get_insights,
             commands::analyze_flows,
             commands::mcp_status,
             commands::set_mcp_enabled,
+            commands::set_mcp_redact,
+            commands::set_keep_on_tcp,
+            commands::ws_frames,
+            commands::ws_frame,
+            commands::rotate_mcp_token,
             commands::subscribe_breakpoints,
             commands::set_breakpoint,
             commands::resume_breakpoint,
@@ -443,13 +433,10 @@ pub fn run() {
                 }
                 // Closing the window quits: hold it open so the quit dialog
                 // has somewhere to show.
-                tauri::RunEvent::WindowEvent {
-                    event: tauri::WindowEvent::CloseRequested { api, .. },
-                    ..
-                } => {
-                    if !quit::may_exit(app) {
-                        api.prevent_close();
-                    }
+                tauri::RunEvent::WindowEvent { event: tauri::WindowEvent::CloseRequested { api, .. }, .. }
+                    if !quit::may_exit(app) =>
+                {
+                    api.prevent_close();
                 }
                 _ => {}
             }

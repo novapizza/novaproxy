@@ -7,8 +7,8 @@ use std::sync::Arc;
 use nova_core::breakpoint::Resume;
 use nova_core::{ca::CaMaterial, helper, oscmd, sysproxy, trust, EngineConfig};
 use nova_proto::{
-    CaStatus, Flow, Header, HelperStatus, InsightReport, Interception, McpStatus, NetworkConditions,
-    ProxyStatus, Rule, TlsScope,
+    CaStatus, Flow, Header, HelperStatus, InsightReport, Interception, McpStatus, NetworkConditions, ProxyStatus, Rule,
+    TlsScope,
 };
 use tauri::ipc::Channel;
 use tauri::State;
@@ -80,10 +80,7 @@ pub fn proxy_status(state: State<'_, Arc<AppState>>) -> ProxyStatus {
 }
 
 #[tauri::command]
-pub async fn start_proxy(
-    state: State<'_, Arc<AppState>>,
-    port: Option<u16>,
-) -> Result<ProxyStatus, String> {
+pub async fn start_proxy(state: State<'_, Arc<AppState>>, port: Option<u16>) -> Result<ProxyStatus, String> {
     let t = started();
     record("proxy.start", t, ensure_engine(&state, port).map(|_| ()))?;
     Ok(make_status(&state))
@@ -148,6 +145,7 @@ pub fn clear_flows(state: State<'_, Arc<AppState>>) {
     let had = state.flows.retained();
     state.flows.clear();
     state.stream.discard_flows();
+    state.stream.frames.clear();
     tracing::info!(cleared = had, "flows cleared");
     crate::usage!("flows.clear", n = had);
 }
@@ -163,24 +161,48 @@ pub fn clear_flows(state: State<'_, Arc<AppState>>) {
 /// Async, and analysed on a blocking thread: a synchronous command runs on the
 /// main thread, and a full window of flows takes long enough to stall the UI.
 #[tauri::command]
-pub async fn get_insights(state: State<'_, Arc<AppState>>, known: Option<f64>) -> Result<Option<InsightReport>, String> {
+pub async fn get_insights(
+    state: State<'_, Arc<AppState>>,
+    known: Option<f64>,
+) -> Result<Option<InsightReport>, String> {
     let state = state.inner().clone();
-    let report = tauri::async_runtime::spawn_blocking(move || state.insights())
-        .await
-        .map_err(|e| e.to_string())?;
+    let report = tauri::async_runtime::spawn_blocking(move || state.insights()).await.map_err(|e| e.to_string())?;
     Ok((known != Some(report.generation)).then_some(report))
 }
 
 /// Anti-patterns in flows the engine does not hold — an imported session,
 /// which exists only in the UI. Sent without bodies; the checks never read them.
-///
-/// Today's Network Conditions say nothing about how a saved session was
-/// recorded, so no added latency is assumed.
 #[tauri::command]
 pub async fn analyze_flows(flows: Vec<Flow>) -> Result<InsightReport, String> {
-    tauri::async_runtime::spawn_blocking(move || nova_core::insights::analyze(&flows, &Default::default()))
-        .await
-        .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || nova_core::insights::analyze(&flows)).await.map_err(|e| e.to_string())
+}
+
+/* ------------------------------- WebSocket ------------------------------- */
+
+/// Every frame the engine holds for one socket, as previews, and how many of
+/// its frames were evicted. The Inspector loads this when a socket is opened:
+/// it is how frames captured while the UI was paused (or before a reload)
+/// reach the panel.
+#[derive(serde::Serialize)]
+pub struct WsFrames {
+    pub frames: Vec<nova_proto::WsMessage>,
+    pub dropped: u64,
+}
+
+#[tauri::command]
+pub fn ws_frames(state: State<'_, Arc<AppState>>, flow_id: String) -> WsFrames {
+    let (frames, dropped) = state.stream.frames.previews(&flow_id);
+    WsFrames { frames, dropped }
+}
+
+/// One frame with its whole captured payload, for the frame someone expands.
+#[tauri::command]
+pub fn ws_frame(state: State<'_, Arc<AppState>>, flow_id: String, seq: u64) -> Result<nova_proto::WsMessage, String> {
+    state
+        .stream
+        .frames
+        .frame(&flow_id, seq)
+        .ok_or_else(|| format!("frame {seq} of {flow_id} is no longer held (older frames are evicted)"))
 }
 
 /* --------------------------------- MCP --------------------------------- */
@@ -213,9 +235,33 @@ pub async fn set_mcp_enabled(
         stop_mcp(&app);
     }
     let status = mcp_status_of(&app);
-    let json = serde_json::to_string_pretty(&status).map_err(|e| e.to_string())?;
-    std::fs::write(app.mcp_path(), json).map_err(|e| e.to_string())?;
+    persist_mcp(&app, &status)?;
     Ok(status)
+}
+
+/// Turn hiding credentials in MCP results on or off, persisting the choice.
+#[tauri::command]
+pub fn set_mcp_redact(state: State<'_, Arc<AppState>>, redact: bool) -> Result<McpStatus, String> {
+    state.mcp_redact.store(redact, Ordering::Relaxed);
+    let status = mcp_status_of(&state);
+    persist_mcp(&state, &status)?;
+    Ok(status)
+}
+
+/// Issue a new MCP token. The running endpoint checks against the new one from
+/// its next request; clients set up with the old one have to be updated.
+#[tauri::command]
+pub fn rotate_mcp_token(state: State<'_, Arc<AppState>>) -> Result<McpStatus, String> {
+    state.rotate_mcp_token()?;
+    Ok(mcp_status_of(&state))
+}
+
+/// Save the endpoint settings for next launch — without the token, which has a
+/// user-only file of its own.
+fn persist_mcp(app: &AppState, status: &McpStatus) -> Result<(), String> {
+    let saved = McpStatus { token: None, ..status.clone() };
+    let json = serde_json::to_string_pretty(&saved).map_err(|e| e.to_string())?;
+    std::fs::write(app.mcp_path(), json).map_err(|e| e.to_string())
 }
 
 /// Stop the endpoint if it is running, and clear the port the engine sees.
@@ -227,17 +273,17 @@ pub fn stop_mcp(state: &AppState) {
 }
 
 fn mcp_status_of(state: &AppState) -> McpStatus {
+    let redact = state.mcp_redact.load(Ordering::Relaxed);
     match state.mcp.lock().unwrap().as_ref() {
         Some(handle) => McpStatus {
             running: true,
             port: handle.addr.port(),
             url: Some(format!("http://{}/", handle.addr)),
+            // Only while running: that is when the UI shows the setup command.
+            token: state.mcp_token().ok(),
+            redact,
         },
-        None => McpStatus {
-            running: false,
-            port: crate::mcp::DEFAULT_MCP_PORT,
-            url: None,
-        },
+        None => McpStatus { running: false, port: crate::mcp::DEFAULT_MCP_PORT, url: None, token: None, redact },
     }
 }
 
@@ -250,7 +296,7 @@ const MAX_READ_BODY: u64 = 16 * 1024 * 1024;
 
 /// Most of a spilled body an export carries per side: the size previews were
 /// held at before they shrank, so a session file or HAR keeps what it used to.
-const EXPORT_BODY: u64 = 512 * 1024;
+pub(crate) const EXPORT_BODY: u64 = 512 * 1024;
 
 /// Fetch a body the UI is not holding: from the on-disk store when it spilled,
 /// otherwise from the retained flow itself.
@@ -287,8 +333,7 @@ pub fn read_body_from(
     };
     match state.bodies.read(flow_id, which, MAX_READ_BODY) {
         Ok((bytes, total, truncated)) => {
-            let mut preview =
-                nova_core::flow::build_preview(bytes, total, truncated, media_type, encoding);
+            let mut preview = nova_core::flow::build_preview(bytes, total, truncated, media_type, encoding);
             // The body is still on disk; the UI can ask again.
             preview.spilled = true;
             Ok(preview)
@@ -302,18 +347,13 @@ pub fn read_body_from(
             // preview. A body that spilled but failed to read back must stay an
             // error: the preview is capped, and handing it out here would pass
             // off a truncated body as the whole thing.
-            let nothing_stored = disk_err
-                .downcast_ref::<std::io::Error>()
-                .map_or(true, |io| io.kind() == std::io::ErrorKind::NotFound);
+            let nothing_stored =
+                disk_err.downcast_ref::<std::io::Error>().is_none_or(|io| io.kind() == std::io::ErrorKind::NotFound);
             if !nothing_stored {
-                return Err(format!(
-                    "reading the stored {side} body of flow {flow_id}: {disk_err:#}"
-                ));
+                return Err(format!("reading the stored {side} body of flow {flow_id}: {disk_err:#}"));
             }
-            let flow = state
-                .flows
-                .get(flow_id)
-                .ok_or_else(|| format!("flow {flow_id} is no longer retained: {disk_err}"))?;
+            let flow =
+                state.flows.get(flow_id).ok_or_else(|| format!("flow {flow_id} is no longer retained: {disk_err}"))?;
             let body = match which {
                 nova_core::flow::Side::Request => flow.request_body,
                 nova_core::flow::Side::Response => flow.response_body,
@@ -323,34 +363,11 @@ pub fn read_body_from(
     }
 }
 
-/// Every flow the engine still retains, newest first.
-///
-/// The UI drops body previews it is not showing, so anything that needs *all* of
-/// them — saving a session, exporting HAR — asks for this rather than reading its
-/// own list.
-#[tauri::command]
-pub fn retained_flows(state: State<'_, Arc<AppState>>) -> Vec<Flow> {
-    retained_flows_from(&state)
-}
-
-/// The body of `retained_flows`, taking `&AppState` so it is reachable from
-/// tests. Bodies that outgrew the in-memory preview are read back from disk.
-pub fn retained_flows_from(state: &AppState) -> Vec<Flow> {
-    let mut flows = state.flows.newest_first();
-    for flow in &mut flows {
-        fill_spilled(state, flow, EXPORT_BODY);
-    }
-    flows
-}
-
 /// Swap each truncated preview whose full body is on disk for that body, read
 /// up to `max_bytes`. A side that cannot be read back keeps its preview.
-fn fill_spilled(state: &AppState, flow: &mut Flow, max_bytes: u64) {
+pub(crate) fn fill_spilled(state: &AppState, flow: &mut Flow, max_bytes: u64) {
     use nova_core::flow::Side;
-    for (side, body) in [
-        (Side::Request, &mut flow.request_body),
-        (Side::Response, &mut flow.response_body),
-    ] {
+    for (side, body) in [(Side::Request, &mut flow.request_body), (Side::Response, &mut flow.response_body)] {
         let Some(preview) = body.as_ref().filter(|b| b.spilled && b.truncated) else {
             continue;
         };
@@ -373,11 +390,7 @@ pub fn get_script(state: State<'_, Arc<AppState>>) -> String {
 
 /// Set the script source and whether it runs against live traffic; persist it.
 #[tauri::command]
-pub fn set_script(
-    state: State<'_, Arc<AppState>>,
-    source: String,
-    enabled: bool,
-) -> Result<(), String> {
+pub fn set_script(state: State<'_, Arc<AppState>>, source: String, enabled: bool) -> Result<(), String> {
     // Its length, not its text: the script is the user's own code and can
     // easily contain a token they pasted in to reproduce something.
     tracing::info!(enabled, bytes = source.len(), "script changed");
@@ -391,16 +404,19 @@ pub fn set_script(
 
 /* -------------------------- network conditions -------------------------- */
 
+/// Keep apps on TCP by taking HTTP/3 out of `Alt-Svc` (on by default).
+#[tauri::command]
+pub fn set_keep_on_tcp(state: State<'_, Arc<AppState>>, on: bool) {
+    state.keep_on_tcp.store(on, Ordering::Relaxed);
+}
+
 #[tauri::command]
 pub fn get_network_conditions(state: State<'_, Arc<AppState>>) -> NetworkConditions {
     *state.net.read().unwrap()
 }
 
 #[tauri::command]
-pub fn set_network_conditions(
-    state: State<'_, Arc<AppState>>,
-    net: NetworkConditions,
-) -> Result<(), String> {
+pub fn set_network_conditions(state: State<'_, Arc<AppState>>, net: NetworkConditions) -> Result<(), String> {
     tracing::info!(
         enabled = net.enabled,
         latency_ms = net.latency_ms,
@@ -450,17 +466,8 @@ pub fn set_breakpoint(state: State<'_, Arc<AppState>>, armed: bool, pattern: Opt
 
 /// Resolve a paused request: continue (with edited headers) or abort.
 #[tauri::command]
-pub fn resume_breakpoint(
-    state: State<'_, Arc<AppState>>,
-    id: String,
-    cont: bool,
-    headers: Vec<Header>,
-) {
-    let resume = if cont {
-        Resume::Continue(headers)
-    } else {
-        Resume::Abort
-    };
+pub fn resume_breakpoint(state: State<'_, Arc<AppState>>, id: String, cont: bool, headers: Vec<Header>) {
+    let resume = if cont { Resume::Continue(headers) } else { Resume::Abort };
     state.breakpoints.resume(&id, resume);
 }
 
@@ -536,10 +543,7 @@ fn timed<T>(op: &'static str, f: impl FnOnce() -> Result<T, String>) -> (Result<
 }
 
 #[tauri::command]
-pub async fn set_system_proxy(
-    state: State<'_, Arc<AppState>>,
-    enable: bool,
-) -> Result<ProxyStatus, String> {
+pub async fn set_system_proxy(state: State<'_, Arc<AppState>>, enable: bool) -> Result<ProxyStatus, String> {
     // One change at a time; see `AppState::sysproxy_lock`. How long a toggle
     // queued behind another is logged, so "the switch was slow" can tell
     // waiting from working.
@@ -577,9 +581,7 @@ pub async fn set_system_proxy(
                 let fresh = record(
                     "sysproxy.snapshot",
                     t,
-                    tauri::async_runtime::spawn_blocking(sysproxy::snapshot)
-                        .await
-                        .map_err(|e| e.to_string()),
+                    tauri::async_runtime::spawn_blocking(sysproxy::snapshot).await.map_err(|e| e.to_string()),
                 )?
                 .without_own(addr.port());
                 cost.snapshot_ms = t.elapsed().as_millis() as u64;
@@ -587,14 +589,12 @@ pub async fn set_system_proxy(
                 // recoverable on next launch. Worth a line of its own: if this
                 // write is the step that failed, the machine was never touched,
                 // and that is a different support conversation.
-                let backup_json =
-                    serde_json::to_string_pretty(&fresh).map_err(|e| e.to_string())?;
+                let backup_json = serde_json::to_string_pretty(&fresh).map_err(|e| e.to_string())?;
                 let t = started();
                 record(
                     "sysproxy.backup",
                     t,
-                    std::fs::write(state.sysproxy_backup_path(), backup_json)
-                        .map_err(|e| e.to_string()),
+                    std::fs::write(state.sysproxy_backup_path(), backup_json).map_err(|e| e.to_string()),
                 )?;
                 fresh
             }
@@ -949,15 +949,49 @@ mod ui_track_tests {
         // becomes `other`, which is a silent hole in the counts rather than an
         // error — so the two lists are checked against each other by hand, here.
         for name in [
-            "flows", "rules", "break", "scripts", "certs", // sections
-            "header", "query", "body", "cookies", "raw", "summary", "treeview", "timing",
+            "flows",
+            "rules",
+            "break",
+            "scripts",
+            "certs", // sections
+            "header",
+            "query",
+            "body",
+            "cookies",
+            "raw",
+            "summary",
+            "treeview",
+            "timing",
             "messages", // pane tabs
-            "resend", "copy_curl", // flow actions
-            "http", "https", "ws", // proto chips
-            "xhr", "json", "graphql", "mcp", "form", "xml", "document", "media", "other", // type chips
-            "1xx", "2xx", "3xx", "4xx", "5xx", "err", // status chips
-            "all", "pinned", "app", "host", "path", "set", // scope kinds
-            "open", "done", "skip", // onboarding
+            "resend",
+            "copy_curl", // flow actions
+            "http",
+            "https",
+            "ws", // proto chips
+            "xhr",
+            "json",
+            "graphql",
+            "mcp",
+            "form",
+            "xml",
+            "document",
+            "media",
+            "other", // type chips
+            "1xx",
+            "2xx",
+            "3xx",
+            "4xx",
+            "5xx",
+            "err", // status chips
+            "all",
+            "pinned",
+            "app",
+            "host",
+            "path",
+            "set", // scope kinds
+            "open",
+            "done",
+            "skip", // onboarding
         ] {
             assert_eq!(ui_event_name(name), name, "{name} is not in the vocabulary");
         }
@@ -996,12 +1030,11 @@ pub async fn install_helper(state: State<'_, Arc<AppState>>) -> Result<HelperSta
     })?;
     let staged = state.data_dir.clone();
     let t = started();
-    let outcome = tauri::async_runtime::spawn_blocking(move || {
-        helper::install(&source, &staged, helper::current_uid())
-    })
-    .await
-    .map_err(|e| e.to_string())
-    .and_then(|r| r.map_err(|e| e.to_string()));
+    let outcome =
+        tauri::async_runtime::spawn_blocking(move || helper::install(&source, &staged, helper::current_uid()))
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r.map_err(|e| e.to_string()));
     record("helper.install", t, outcome)?;
     Ok(crate::helper_status_now())
 }
@@ -1063,8 +1096,7 @@ pub async fn replay(state: &AppState, mut flow: Flow, internal: bool) -> Result<
         .build()
         .map_err(|e| e.to_string())?;
 
-    let method =
-        reqwest::Method::from_bytes(flow.method.as_bytes()).map_err(|e| e.to_string())?;
+    let method = reqwest::Method::from_bytes(flow.method.as_bytes()).map_err(|e| e.to_string())?;
     let mut req = client.request(method, &flow.url).header("x-nova-resend", "1");
     if internal {
         req = req.header("x-nova-internal", "1");
@@ -1072,10 +1104,8 @@ pub async fn replay(state: &AppState, mut flow: Flow, internal: bool) -> Result<
 
     for h in &flow.request_headers {
         let lname = h.name.to_ascii_lowercase();
-        if matches!(
-            lname.as_str(),
-            "host" | "content-length" | "connection" | "transfer-encoding" | "accept-encoding"
-        ) || lname.starts_with(':')
+        if matches!(lname.as_str(), "host" | "content-length" | "connection" | "transfer-encoding" | "accept-encoding")
+            || lname.starts_with(':')
         {
             continue;
         }
@@ -1108,16 +1138,9 @@ pub fn ca_status(state: State<'_, Arc<AppState>>) -> Result<CaStatus, String> {
 /// which needs no administrator password; `all_users` opts into the machine-wide
 /// system store (and its admin prompt) instead.
 #[tauri::command]
-pub async fn install_ca(
-    state: State<'_, Arc<AppState>>,
-    all_users: Option<bool>,
-) -> Result<CaStatus, String> {
+pub async fn install_ca(state: State<'_, Arc<AppState>>, all_users: Option<bool>) -> Result<CaStatus, String> {
     let ca = ca_id(&state)?;
-    let domain = if all_users.unwrap_or(false) {
-        trust::TrustDomain::System
-    } else {
-        trust::TrustDomain::User
-    };
+    let domain = if all_users.unwrap_or(false) { trust::TrustDomain::System } else { trust::TrustDomain::User };
     // The trust domain is the whole story of this operation: the user domain
     // needs no password, the system domain costs an admin prompt.
     let scope = if matches!(domain, trust::TrustDomain::System) { "system" } else { "user" };
@@ -1141,28 +1164,19 @@ pub async fn install_ca(
 /// Returns `Ok(None)` rather than an error when there is no icon — a missing
 /// picture is a normal answer, and the table falls back to a glyph.
 #[tauri::command]
-pub async fn app_icon(
-    state: State<'_, Arc<AppState>>,
-    name: String,
-) -> Result<Option<String>, String> {
+pub async fn app_icon(state: State<'_, Arc<AppState>>, name: String) -> Result<Option<String>, String> {
     if let Some(hit) = state.app_icons.lock().unwrap().get(&name) {
         return Ok(hit.clone());
     }
     let bundle = nova_core::procinfo::global().bundle_for(&name);
     let icon = match bundle {
         // Off the async runtime: this shells out to `sips`, which is not instant.
-        Some(path) => tauri::async_runtime::spawn_blocking(move || {
-            nova_core::appicon::icon_data_url(&path)
-        })
-        .await
-        .map_err(|e| e.to_string())?,
+        Some(path) => tauri::async_runtime::spawn_blocking(move || nova_core::appicon::icon_data_url(&path))
+            .await
+            .map_err(|e| e.to_string())?,
         None => None,
     };
-    state
-        .app_icons
-        .lock()
-        .unwrap()
-        .insert(name, icon.clone());
+    state.app_icons.lock().unwrap().insert(name, icon.clone());
     Ok(icon)
 }
 
@@ -1182,10 +1196,7 @@ pub async fn uninstall_ca(state: State<'_, Arc<AppState>>) -> Result<CaStatus, S
 pub async fn regenerate_ca(state: State<'_, Arc<AppState>>) -> Result<CaStatus, String> {
     let (data_dir, old) = {
         let guard = state.ca.lock().unwrap();
-        (
-            state.data_dir.clone(),
-            guard.as_ref().map(trust::CaId::of),
-        )
+        (state.data_dir.clone(), guard.as_ref().map(trust::CaId::of))
     };
     if let Some(old) = old {
         let _ = tauri::async_runtime::spawn_blocking(move || trust::uninstall(&old)).await;
@@ -1193,11 +1204,7 @@ pub async fn regenerate_ca(state: State<'_, Arc<AppState>>) -> Result<CaStatus, 
     let _ = std::fs::remove_file(data_dir.join("ca.pem"));
     let _ = std::fs::remove_file(data_dir.join("ca.key"));
     let t = started();
-    let fresh = record(
-        "cert.regenerate",
-        t,
-        CaMaterial::load_or_create(&data_dir).map_err(|e| e.to_string()),
-    )?;
+    let fresh = record("cert.regenerate", t, CaMaterial::load_or_create(&data_dir).map_err(|e| e.to_string()))?;
     *state.ca.lock().unwrap() = Some(fresh);
     ca_status_inner(&state)
 }
@@ -1212,17 +1219,9 @@ fn ensure_engine(state: &AppState, port: Option<u16>) -> Result<SocketAddr, Stri
     let addr = SocketAddr::from(([127, 0, 0, 1], port.unwrap_or(9090)));
     let handle = {
         let ca_guard = state.ca.lock().unwrap();
-        let ca = ca_guard
-            .as_ref()
-            .ok_or_else(|| "Certificate authority not initialized".to_string())?;
-        nova_core::start(
-            EngineConfig { addr },
-            ca,
-            state.stream.clone(),
-            state.stream.clone(),
-            state.hooks(),
-        )
-        .map_err(|e| format!("failed to start proxy: {e}"))?
+        let ca = ca_guard.as_ref().ok_or_else(|| "Certificate authority not initialized".to_string())?;
+        nova_core::start(EngineConfig { addr }, ca, state.stream.clone(), state.stream.clone(), state.hooks())
+            .map_err(|e| format!("failed to start proxy: {e}"))?
     };
     *state.engine.lock().unwrap() = Some(handle);
     Ok(addr)
@@ -1242,9 +1241,7 @@ fn read_backup(state: &AppState) -> Result<Option<sysproxy::Backup>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("cannot read the saved proxy settings: {e}")),
     };
-    serde_json::from_str(&text)
-        .map(Some)
-        .map_err(|e| format!("the saved proxy settings are unreadable: {e}"))
+    serde_json::from_str(&text).map(Some).map_err(|e| format!("the saved proxy settings are unreadable: {e}"))
 }
 
 fn make_status(state: &AppState) -> ProxyStatus {
@@ -1260,12 +1257,7 @@ fn make_status(state: &AppState) -> ProxyStatus {
             system_proxy,
             pending_restore,
         },
-        None => ProxyStatus {
-            flows_captured,
-            system_proxy,
-            pending_restore,
-            ..Default::default()
-        },
+        None => ProxyStatus { flows_captured, system_proxy, pending_restore, ..Default::default() },
     }
 }
 
@@ -1283,9 +1275,7 @@ fn ca_id(state: &AppState) -> Result<trust::CaId, String> {
 
 fn ca_status_inner(state: &AppState) -> Result<CaStatus, String> {
     let guard = state.ca.lock().unwrap();
-    let ca = guard
-        .as_ref()
-        .ok_or_else(|| "Certificate authority not initialized".to_string())?;
+    let ca = guard.as_ref().ok_or_else(|| "Certificate authority not initialized".to_string())?;
     let id = trust::CaId::of(ca);
     let state = trust::trust_state(&id);
     Ok(CaStatus {

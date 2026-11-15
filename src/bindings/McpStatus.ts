@@ -11,4 +11,13 @@ port: number,
 /**
  * Endpoint URL to hand an MCP client, when running.
  */
-url: string | null, };
+url: string | null, 
+/**
+ * Bearer token a client must send (`Authorization: Bearer …`). Never
+ * written to `mcp.json`; it lives in its own user-only file.
+ */
+token: string | null, 
+/**
+ * Whether credentials are hidden in what the endpoint returns.
+ */
+redact: boolean, };

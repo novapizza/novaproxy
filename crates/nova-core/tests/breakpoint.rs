@@ -100,22 +100,13 @@ async fn breakpoint_pause_edit_resume() {
 
     // The flow should currently be in the Paused state.
     assert!(
-        flows
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|f| f.id == interception.id && f.state == FlowState::Paused),
+        flows.lock().unwrap().iter().any(|f| f.id == interception.id && f.state == FlowState::Paused),
         "no paused flow recorded"
     );
 
     // Resume with an injected header.
-    breakpoints.resume(
-        &interception.id,
-        Resume::Continue(vec![Header {
-            name: "x-nova-edited".into(),
-            value: "yes".into(),
-        }]),
-    );
+    breakpoints
+        .resume(&interception.id, Resume::Continue(vec![Header { name: "x-nova-edited".into(), value: "yes".into() }]));
 
     let response = tokio::time::timeout(Duration::from_secs(5), client)
         .await

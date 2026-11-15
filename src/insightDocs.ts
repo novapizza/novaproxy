@@ -43,9 +43,9 @@ export const INSIGHT_DOCS: Record<InsightRule, InsightDoc> = {
     impact: "Failed requests, degraded features",
   },
   "error-rate": {
-    what: "A quarter or more of one app's requests to a host failing (at least ten requests).",
-    why: "A high failure share usually hides one repeating cause — an expired token, a stale URL, a broken deploy.",
-    fix: "Open the failing flows and group them by status: 401/403 point at auth, 404 at URLs, 5xx at the server.",
+    what: "A quarter or more of one app's requests to a host failing (at least ten requests). When none of them got any response, the finding says so: that is the network path, not the API.",
+    why: "A high failure share usually hides one repeating cause — an expired token, a stale URL, a broken deploy. Requests that never get an answer are usually blocked (an ad blocker, DNS filter or VPN — expected for telemetry) or the host is unreachable.",
+    fix: "Open the failing flows and group them by status: 401/403 point at auth, 404 at URLs, 5xx at the server. For no response, read the flow's error: it names the cause.",
     impact: "Broken features",
   },
   uncompressed: {
@@ -86,7 +86,7 @@ export const INSIGHT_DOCS: Record<InsightRule, InsightDoc> = {
   },
   "slow-endpoint": {
     what: "Median server wait of a second or more over three calls, or any single call waiting ten seconds.",
-    why: "This is time before the first byte with connection setup excluded — the server itself is slow, not the network.",
+    why: "This is time before the first byte with connection setup and the request upload excluded — the server itself is slow, not the network.",
     fix: "Profile the queries or upstream calls behind the endpoint, cache its result, or make slow work asynchronous (202 and poll).",
     impact: "Latency, timeouts",
   },
@@ -97,13 +97,13 @@ export const INSIGHT_DOCS: Record<InsightRule, InsightDoc> = {
     impact: "Latency",
   },
   "token-in-url": {
-    what: "Tokens, keys, passwords or JWTs in query strings.",
+    what: "Tokens, secrets, passwords or JWTs in query strings (High). Parameters named key, api_key, token or auth are reported as Info: browser API keys are often public by design, and Google's AIza… keys are skipped.",
     why: "URLs are written to server, proxy and CDN logs, browser history, and leak to other sites through the Referer header.",
     fix: "Send credentials in the Authorization header or the request body.",
     impact: "Credential leak",
   },
   "insecure-cookie": {
-    what: "Cookies set over HTTPS without Secure, or session cookies without HttpOnly.",
+    what: "Cookies set over HTTPS without Secure, or session cookies without HttpOnly. Grouped by site, so one vendor's subdomains make one finding.",
     why: "Without Secure a cookie can be sent over plain HTTP and read on the network; without HttpOnly any injected script can steal the session.",
     fix: "Mark every cookie Secure, and session and auth cookies HttpOnly too.",
     impact: "Session hijacking",

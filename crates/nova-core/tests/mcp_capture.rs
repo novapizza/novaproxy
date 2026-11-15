@@ -69,13 +69,8 @@ async fn post_through_proxy(
 async fn wait_for(flows: &Arc<Mutex<Vec<Flow>>>, path: &str) -> Option<Flow> {
     for _ in 0..60 {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let found = flows
-            .lock()
-            .unwrap()
-            .iter()
-            .rev()
-            .find(|f| f.path == path && f.state == FlowState::Completed)
-            .cloned();
+        let found =
+            flows.lock().unwrap().iter().rev().find(|f| f.path == path && f.state == FlowState::Completed).cloned();
         if found.is_some() {
             return found;
         }
@@ -93,9 +88,9 @@ async fn mcp_traffic_is_recognised_and_tagged() {
 
     let sink = Arc::new(VecSink(Arc::new(Mutex::new(Vec::new()))));
     let flows = sink.0.clone();
-    let hooks = EngineHooks::in_memory(Arc::new(nova_core::breakpoint::Breakpoints::new(
-        Arc::new(nova_core::breakpoint::NoopBreakpointSink),
-    )));
+    let hooks = EngineHooks::in_memory(Arc::new(nova_core::breakpoint::Breakpoints::new(Arc::new(
+        nova_core::breakpoint::NoopBreakpointSink,
+    ))));
 
     let proxy_port = 39_401u16;
     let handle = nova_core::start(
@@ -150,18 +145,12 @@ async fn mcp_traffic_is_recognised_and_tagged() {
     assert!(!mcp_flow.internal, "someone else's MCP server is not our traffic");
 
     let other = wait_for(&flows, "/rpc").await.expect("no flow for /rpc");
-    assert!(
-        other.mcp.is_none(),
-        "non-MCP JSON-RPC must not be tagged, or the MCP filter means nothing"
-    );
+    assert!(other.mcp.is_none(), "non-MCP JSON-RPC must not be tagged, or the MCP filter means nothing");
 
     let ours = wait_for(&flows, "/internal").await.expect("no flow for /internal");
     assert!(ours.internal, "the x-nova-internal marker must be honoured");
     assert!(
-        !ours
-            .request_headers
-            .iter()
-            .any(|h| h.name.eq_ignore_ascii_case("x-nova-internal")),
+        !ours.request_headers.iter().any(|h| h.name.eq_ignore_ascii_case("x-nova-internal")),
         "the marker is ours and must be stripped before forwarding"
     );
 

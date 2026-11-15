@@ -63,11 +63,9 @@ async fn captures_http_flow_end_to_end() {
         &ca,
         sink,
         Arc::new(nova_core::NoopWsSink),
-        nova_core::EngineHooks::in_memory(Arc::new(
-            nova_core::breakpoint::Breakpoints::new(Arc::new(
-                nova_core::breakpoint::NoopBreakpointSink,
-            )),
-        )),
+        nova_core::EngineHooks::in_memory(Arc::new(nova_core::breakpoint::Breakpoints::new(Arc::new(
+            nova_core::breakpoint::NoopBreakpointSink,
+        )))),
     )
     .unwrap();
 
@@ -77,9 +75,8 @@ async fn captures_http_flow_end_to_end() {
     // Speak HTTP-proxy to the engine: absolute-form request line.
     let mut stream = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
     let target = format!("http://127.0.0.1:{upstream_port}/hello");
-    let req = format!(
-        "GET {target} HTTP/1.1\r\nHost: 127.0.0.1:{upstream_port}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
-    );
+    let req =
+        format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1:{upstream_port}\r\nAccept: */*\r\nConnection: close\r\n\r\n");
     stream.write_all(req.as_bytes()).await.unwrap();
 
     let mut response = Vec::new();
@@ -87,21 +84,13 @@ async fn captures_http_flow_end_to_end() {
     let response = String::from_utf8_lossy(&response);
 
     // 1. The proxy forwarded the real upstream body to the client.
-    assert!(
-        response.contains(RESPONSE_BODY),
-        "client did not receive upstream body; got:\n{response}"
-    );
+    assert!(response.contains(RESPONSE_BODY), "client did not receive upstream body; got:\n{response}");
 
     // 2. Body finalization is async — wait for the completed snapshot.
     let mut completed: Option<Flow> = None;
     for _ in 0..40 {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        completed = flows
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|f| f.state == FlowState::Completed)
-            .cloned();
+        completed = flows.lock().unwrap().iter().find(|f| f.state == FlowState::Completed).cloned();
         if completed.is_some() {
             break;
         }
@@ -118,10 +107,7 @@ async fn captures_http_flow_end_to_end() {
         "response body not captured: {:?}",
         body.text
     );
-    assert!(
-        flow.content_type.as_deref().unwrap_or("").contains("json"),
-        "content-type not recorded"
-    );
+    assert!(flow.content_type.as_deref().unwrap_or("").contains("json"), "content-type not recorded");
 
     handle.stop();
     let _ = std::fs::remove_dir_all(&ca_dir);

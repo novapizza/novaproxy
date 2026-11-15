@@ -1,128 +1,158 @@
 # NovaProxy
 
-An open-source, cross-platform HTTP/HTTPS debugging proxy — a Proxyman alternative
-built on a native Rust core (hudsucker) inside a Tauri v2 shell with a React/TS UI.
+An open-source HTTP/HTTPS debugging proxy: a Rust engine (hudsucker + rustls)
+in a Tauri v2 desktop app with a React/TypeScript UI. It captures and decrypts
+traffic, lets you change it on the way through, finds anti-patterns in it, and
+hands it to AI agents over MCP.
 
-See [NovaProxy.md](./NovaProxy.md) for the full design and phased roadmap.
+Platforms: **macOS (Apple Silicon)** and **Windows**, both signed and
+auto-updating. Linux builds in CI but is not shipped yet.
 
-## Status — Phase 0 + Phase 1 foundation (runnable)
+The original design and roadmap are in [NovaProxy.md](./NovaProxy.md); review
+notes and plans are in [notes/](./notes/).
 
-Implemented and verified end-to-end:
+## What it does
 
-- **Native Rust proxy engine** (`crates/nova-core`) on hudsucker 0.24 + rustls.
-  - HTTP **and** HTTPS interception (MITM) with a generated root CA and
-    **on-the-fly per-host leaf certs** (cached).
-  - **Streaming body tee** — chunks are forwarded downstream immediately while a
-    capped copy is captured, so SSE / gRPC / large downloads are never stalled.
-  - **Request↔response correlation** (hudsucker gives us none) via a
-    per-connection FIFO; `CONNECT` tunnels are excluded.
-  - gzip / deflate / brotli decode on the captured copy; text vs. binary sniffing.
-- **One-click certificate management** (`crates/nova-core/src/{ca,trust}.rs` +
-  Tauri commands): auto root CA (0600 key), live trust status, and
-  install / uninstall / regenerate behind one native macOS auth prompt.
-- **Tauri backend** (`src-tauri`): start/stop proxy, CA commands, and flow
-  streaming to the UI over a Tauri **Channel**.
-- **Shared types** (`crates/nova-proto`) generated to TypeScript with `ts-rs`.
-- **React UI** (`src/`): a Proxyman-style dense dashboard on one light theme —
-  scope tree (apps / domains / pinned), three groups of filter chips, a windowed
-  flows table, and a Request | Response inspector (headers / query / body /
-  cookies / raw / treeview / timing, JSON pretty-print, image preview), plus the
-  cert panel and setup help. See `design.md` for the visual system.
+**Capture**
+- HTTP and HTTPS interception with a generated root CA and per-host leaf
+  certificates. Upstream connections trust Mozilla's roots plus the OS store
+  (so corporate re-signing proxies work), never NovaProxy's own CA.
+- HTTP/2 to servers, negotiated by ALPN; apps can talk HTTP/1.1 to the proxy
+  either way. The Protocol column shows what was spoken with the server.
+- **SSL proxying scope**: decrypt all hosts, or tunnel some untouched (pinned
+  apps, mTLS).
+- **System proxy** on macOS and Windows, with a snapshot of the previous
+  settings that is restored on disable, on quit, and after a crash.
+- **Keep apps on TCP**: HTTP/3 advertisements (`Alt-Svc: h3`) are taken out of
+  responses so apps do not switch to QUIC, which no HTTP proxy can see.
+- Each flow is attributed to the app that sent it, with its icon.
+- WebSocket capture: frames are kept by the engine and streamed to the UI as
+  previews; a frame's full payload loads when you expand it.
+- Real timing per flow (DNS, connect, TLS, sending, server wait, download) and
+  a slow-server marker (🐢) in the table.
 
-### Phase 2 — traffic control (landed)
+**Memory and disk stay bounded on long captures**: 10,000 flows retained;
+64 KB body previews held compressed, larger bodies spilled to disk (64 MB each,
+1 GB total); WebSocket payloads under a 64 MB budget; no body bytes on the
+engine → UI stream; exports written to disk one flow at a time.
 
-- **Rules engine** (`crates/nova-core/src/rules.rs`): wildcard-matched **Map
-  Remote**, **Map Local**, **Block**, and header **Rewrite**, applied to live
-  traffic and persisted to `rules.json`. Editable in the Rules section; edits
-  take effect without restarting the engine. (Map Remote fully redirects plain
-  HTTP; for already-tunneled HTTPS only the Host header changes.)
-- **Resend / Replay**: re-issues a captured flow *through* the proxy so it is
-  recaptured (tagged `resent`).
-- **System-proxy toggle** (`crates/nova-core/src/sysproxy.rs`, macOS): points
-  every network service's HTTP/HTTPS proxy at NovaProxy behind one auth prompt,
-  **snapshots prior state**, restores it on disable, and **restores after an
-  unclean exit** on next launch.
-- **Breakpoints** (`crates/nova-core/src/breakpoint.rs`): arm a URL-glob
-  breakpoint; the next matching request pauses mid-flight (its task `.await`s a
-  oneshot while the connection is held open), raising the **intercept modal**
-  where you edit request headers and **Continue** or **Abort**. One-shot arming.
+**Change traffic**
+- Rules: Map Remote, Map Local, Block, header Rewrite — live, persisted.
+- Breakpoints: pause a matching request, edit it, continue or abort.
+- JavaScript hooks (`onRequest` / `onResponse`) in a QuickJS sandbox.
+- Network conditions: added latency and a download throttle.
+- Resend any flow; copy as cURL.
 
-### Phase 3 — scripting (landed)
+**Understand it**
+- **Insights**: 23 fixed rules over the capture — request bursts and N+1
+  loops, polling, retry storms, rate limiting, error rates, uncompressed or
+  oversized responses, caching mistakes, redirect chains, slow servers, CORS
+  preflight cost, credentials in URLs or over plain HTTP, insecure cookies,
+  heavy images, mixed content, missing security headers, broken assets, empty
+  responses, slow connection setup, CDN misses. Each finding has numbers,
+  advice and example flows; mute what you don't care about. Exports as
+  Markdown.
+- Filters by app, host, protocol, payload kind and status, plus a condition
+  builder; save filters and app/host selections.
 
-- **JavaScript sandbox** (`crates/nova-core/src/scripting.rs`): a QuickJS
-  interpreter (rquickjs) on a dedicated thread — the async handler ships a flow
-  snapshot over channels and awaits the result. User scripts define
-  `onRequest(flow)` / `onResponse(flow)`; each `flow` exposes `method`, `host`,
-  `path`, `url`, `status`, a mutable `headers` map, and `abort()`. Header edits
-  are applied and `abort()` short-circuits with a 403. Editable in the Scripts
-  section, persisted to `script.js`, toggled on/off live. A throwing hook can't
-  wedge traffic (errors leave the flow unchanged).
+**Share it**
+- Save a session (`.nova`) and reopen it later.
+- Export HAR 1.2. Credentials (auth headers, cookies, API keys, password and
+  token fields) are hidden by default — **Settings → General → Exports**.
 
-- **Network conditions** (`crates/nova-core/src/intercept.rs`): simulate
-  latency (delay before each response) and a downlink throttle (paces response
-  body chunks to a kbps cap), configured in Settings and persisted.
-- **Session save/load + HAR export** (`src/session.ts`): save all captured
-  flows to a `.nova` file and reload them, or export to HAR 1.2 — via the native
-  file dialog (commands in the palette). Per-flow cURL export was already there.
+**MCP server for AI agents** (off by default; **Settings → MCP**)
 
-Not yet built (rest of Phase 3+): reverse proxy, WebSocket message inspection,
-raw TCP/UDP view, protobuf decode; plus TLS passthrough auto-fallback, body
-spill-to-disk, real timing instrumentation, transparent capture.
+Loopback only, and a client must send the access token shown in Settings. The
+command to copy there looks like:
+
+```bash
+claude mcp add --transport http novaproxy http://127.0.0.1:9091/ \
+  --header "Authorization: Bearer <token>"
+```
+
+Tools: `list_flows`, `search_flows`, `get_flow`, `get_body`,
+`summarize_session`, `get_insights`, `explain_failure`, `diff_flows`,
+`replay_request`, `list_rules`, `set_rule`, `delete_rule`, `proxy_status`.
+Credentials are hidden in what the endpoint returns unless you turn that off;
+replays still send the real values. The token can be rotated in Settings.
 
 ## Layout
 
 ```
 crates/nova-proto   shared serde types → src/bindings/*.ts (ts-rs)
-crates/nova-core    proxy engine: ca.rs, trust.rs, intercept.rs, flow.rs, lib.rs
-crates/nova-os      OS surfaces: trust store, system proxy, helper, app icons
-src-tauri           Tauri shell: state.rs, commands.rs, menu.rs, lib.rs
+crates/nova-core    the engine: intercept.rs (capture, tee, WebSocket),
+                    insights.rs, redact.rs, timing.rs, bodystore.rs,
+                    flowstore.rs, wsstore.rs, rules.rs, scripting.rs, ca.rs,
+                    trust.rs, upstream.rs
+crates/nova-os      OS surfaces: system proxy, trust store, helper IPC, app icons
+crates/nova-helper  the macOS privileged helper (system proxy, trust)
+src-tauri           the app: state.rs (stream to the UI), commands.rs, mcp.rs,
+                    analysis.rs (MCP summary/diff/explain), export.rs, menu.rs
 src/                React frontend
-  flows/            the Flows section: scope tree, filter bar, table, columns
-  inspector/        the two panes and their panels
-  filter.ts         one filter value + the predicate everything narrows through
-  builder.ts        structured conditions (field · operator · value)
-  classify.ts       protocol / payload kind / status class — the three chip axes
+  flows/            scope tree, filter bar, table, columns
+  inspector/        request and response panes and their panels
   shortcuts.ts      every chord, read by both the dispatcher and the dialog
 ```
 
-**Keyboard**: `⌘/` (or **Help → Keyboard Shortcuts**) lists every chord, rendered
-from `src/shortcuts.ts`. `⌘P` opens the command palette; `⌘K` clears the capture.
+**Keyboard**: `⌘/` (or **Help → Keyboard Shortcuts**) lists every chord. `⌘P`
+opens the command palette; `⌘K` clears the capture.
 
-**Visual harness**: `preview.html` renders the Flows section against mock flows —
-`npm run dev`, then open `/preview.html` (`?panels=1` for every inspector panel,
-`?shortcuts=1` for the dialog). It needs no proxy, no CA and no traffic, which is
-what makes a layout regression cheap to see.
+**Visual harness**: `preview.html` renders the Flows section against mock
+flows — `npm run dev`, then open `/preview.html` (`?panels=1` for every
+inspector panel, `?shortcuts=1` for the dialog). No proxy, CA or traffic
+needed.
 
 ## Develop
 
-Prereqs: Rust (stable), Node 20+, and the Tauri v2 macOS deps (Xcode CLT).
+Prerequisites: Rust (stable), Node 20+, and the Tauri v2 prerequisites for your
+platform (Xcode command line tools on macOS; on Windows, the MSVC build tools
+and NASM, which aws-lc needs).
 
 ```bash
 npm install
-npm run gen:types      # regenerate src/bindings from Rust (also runs in tests)
-npm run app            # tauri dev — launches the desktop app + vite
+npm run gen:types      # regenerate src/bindings from Rust
+npm run app            # tauri dev — the desktop app plus vite
 ```
 
-In the app: **Start proxy** → open **Certificate** → *Install & trust* → route a
-client through the proxy:
+In the app: **Start proxy** → **Certificate** → *Install & trust*, then turn on
+the system proxy or point a client at it:
 
 ```bash
 curl -x http://127.0.0.1:9090 --cacert "<ca.pem>" https://example.com
 ```
 
-Flows stream into the list in real time.
+(The Certificate page shows where `ca.pem` is.)
+
+## Check
+
+What CI runs on every pull request (`.github/workflows/ci.yml`):
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace            # unit tests plus end-to-end tests over real sockets
+npm run lint                      # ESLint: errors fail, hook-dependency warnings do not
+npx tsc --noEmit
+npx vitest run
+```
+
+Tests and clippy run on Windows and macOS; a Linux job builds and tests too
+but does not block a merge yet. For a headless engine to try by hand:
+
+```bash
+cargo run -p nova-core --example serve    # proxy on :39190, prints each flow
+```
 
 ## Updates
 
 Released builds check for a new version themselves. **Settings → General →
 Updates** shows the current version, checks on demand, and installs — and the
 native menu asks for that same check: **NovaProxy → Check for Updates…** on
-macOS, **Help → Check for Updates…** on Windows and Linux, which opens Settings
-on the card rather than answering in a dialog of its own. The check also runs
-once at launch (switchable there) but only ever *reports* — installing
-replaces a binary that holds a root CA and closes the window (an exec into the
-new build on macOS, an exit into the NSIS installer on Windows), so it stays a
-click.
+macOS, **Help → Check for Updates…** on Windows, which opens Settings on the
+card rather than answering in a dialog of its own. The check also runs once at
+launch (switchable there) but only ever *reports* — installing replaces a
+binary that holds a root CA and closes the window (an exec into the new build
+on macOS, an exit into the NSIS installer on Windows), so it stays a click.
 
 The plumbing:
 
@@ -132,14 +162,14 @@ tag push → CI builds + signs → NovaProxy_<ver>_<arch>.app.tar.gz + .sig
                              → latest.yml  on R2  ← download page reads
 ```
 
-`crates/nova-proto` carries `UpdateStatus` / `UpdateProgress`, `src-tauri/src/update.rs`
-owns the two commands, `src-tauri/src/menu.rs` holds the menu item (which only
-emits an event — the card does the work), and `src/update.ts` holds the card's
-state machine (tested in `src/update.test.ts`).
+`crates/nova-proto` carries `UpdateStatus` / `UpdateProgress`,
+`src-tauri/src/update.rs` owns the two commands, `src-tauri/src/menu.rs` holds
+the menu item (which only emits an event — the card does the work), and
+`src/update.ts` holds the card's state machine (tested in `src/update.test.ts`).
 
-A development build has **no** updater endpoint — the endpoint and public key are
-injected at release time — and Settings says so rather than offering a button
-that can only fail.
+A development build has **no** updater endpoint — the endpoint and public key
+are injected at release time — and Settings says so rather than offering a
+button that can only fail.
 
 ### Releasing an updatable build
 
@@ -160,11 +190,3 @@ Then set, in the repo's `Production` environment:
 
 Miss any of them and the release still builds — it just cannot be an update
 source, which CI says with a warning rather than a failure.
-
-## Verify
-
-```bash
-cargo test -p nova-core          # end-to-end capture test over a real socket
-cargo run -p nova-core --example serve   # headless engine on :39190 for manual curl
-npx tsc --noEmit                 # frontend typecheck
-```

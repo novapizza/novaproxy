@@ -99,6 +99,18 @@ export interface Prefs {
    * chatty endpoint comes back next session with the same id.
    */
   mutedInsights: string[];
+  /**
+   * Hide credentials (auth headers, cookies, API keys, password and token
+   * fields) in HAR exports. On by default: a HAR is made to be attached to a
+   * ticket, and that is how tokens leak. Session files are not touched -- they
+   * are for reopening in NovaProxy, where replays need the real values.
+   */
+  redactHar: boolean;
+  /**
+   * Take HTTP/3 out of `Alt-Svc` so apps keep using TCP, where the proxy can
+   * see them. On by default; pushed to the engine at launch and on change.
+   */
+  keepOnTcp: boolean;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -116,6 +128,8 @@ export const DEFAULT_PREFS: Prefs = {
   autoCheckUpdates: true,
   onboardingDone: false,
   mutedInsights: [],
+  redactHar: true,
+  keepOnTcp: true,
 };
 
 const KEY = "novaproxy.prefs";
@@ -203,6 +217,9 @@ export function normalizePrefs(raw: unknown): Prefs {
     mutedInsights: Array.isArray(v.mutedInsights)
       ? [...new Set(v.mutedInsights.filter((x): x is string => typeof x === "string"))]
       : [],
+    // Like `autoCheckUpdates`: only an explicit `false` opts out.
+    redactHar: v.redactHar !== false,
+    keepOnTcp: v.keepOnTcp !== false,
   };
 }
 

@@ -15,8 +15,7 @@ use windows_sys::Win32::Security::Authorization::{
     ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
 };
 use windows_sys::Win32::Security::{
-    SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR,
+    SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
 };
 
 use super::{wide, wide_path};
@@ -42,13 +41,8 @@ pub fn restrict_to_owner(path: &Path) -> Result<()> {
     }
     let file = wide_path(path);
     // SAFETY: `file` is NUL-terminated and `sd` is a valid descriptor.
-    let ok = unsafe {
-        SetFileSecurityW(
-            file.as_ptr(),
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            sd,
-        )
-    };
+    let ok =
+        unsafe { SetFileSecurityW(file.as_ptr(), DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, sd) };
     let err = std::io::Error::last_os_error();
     unsafe { LocalFree(sd as _) };
     if ok == 0 {

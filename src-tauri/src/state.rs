@@ -85,6 +85,9 @@ pub struct UiStream {
     state: Mutex<StreamState>,
     /// Set once the flush thread is running; a reload rebinds, it does not respawn.
     flusher: AtomicBool,
+    /// Every captured frame with its payload. The UI is sent previews and
+    /// fetches the rest from here (`ws_frames`, `ws_frame`).
+    pub frames: nova_core::wsstore::WsFrameStore,
 }
 
 #[derive(Default)]
@@ -338,10 +341,15 @@ impl FlowSink for UiStream {
 }
 
 impl WsSink for UiStream {
+    /// Keep the frame, and send the UI its preview — unless the UI is paused:
+    /// the frame is still held here, and the panel backfills from the store
+    /// when the socket is opened.
     fn emit(&self, msg: WsMessage) {
+        let preview = nova_core::wsstore::preview(&msg);
+        self.frames.push(msg);
         let mut st = self.state.lock().unwrap();
-        if st.channel.is_some() {
-            st.queue_frame(msg);
+        if st.channel.is_some() && st.paused.is_none() {
+            st.queue_frame(preview);
         }
     }
 }
@@ -412,10 +420,19 @@ pub struct AppState {
     /// read one from. Cached both ways: extracting an icon shells out to `sips`,
     /// and a row that mentions a CLI tool must not pay for that on every repaint.
     pub app_icons: Mutex<HashMap<String, Option<String>>>,
-    /// The last insight report and what it was computed from (store
-    /// generation, added latency). The UI asks every few seconds and MCP on
+    /// The last insight report and the store generation it was computed
+    /// from. The UI asks every few seconds and MCP on
     /// demand; between changes to the store, both get this copy.
-    insights: Mutex<Option<((u64, u32), InsightReport)>>,
+    insights: Mutex<Option<(u64, InsightReport)>>,
+    /// Strip HTTP/3 advertisements so apps stay on TCP (see
+    /// `nova_core::EngineHooks::keep_on_tcp`). The UI sets it from its prefs.
+    pub keep_on_tcp: Arc<AtomicBool>,
+    /// Whether the MCP endpoint hides credentials (auth headers, cookies, secret
+    /// query parameters and body fields) in what it returns. On by default.
+    pub mcp_redact: AtomicBool,
+    /// The bearer token MCP clients must send, read from (or first written to)
+    /// `mcp-token` in the data directory. Cached after the first read.
+    mcp_token: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -450,24 +467,57 @@ impl AppState {
             pending_restore: AtomicBool::new(false),
             app_icons: Mutex::new(HashMap::new()),
             insights: Mutex::new(None),
+            mcp_redact: AtomicBool::new(true),
+            keep_on_tcp: Arc::new(AtomicBool::new(true)),
+            mcp_token: Mutex::new(None),
         }
     }
 
-    /// Insights over every retained flow, recomputed only when the store (or
-    /// the latency NovaProxy adds) changed since the last call.
+    /// The MCP access token. Created on first use: 256 random bits, hex, in a
+    /// file only this user can read — the same protection the CA key gets.
+    pub fn mcp_token(&self) -> Result<String, String> {
+        let mut cached = self.mcp_token.lock().unwrap();
+        if let Some(t) = cached.as_ref() {
+            return Ok(t.clone());
+        }
+        let path = self.mcp_token_path();
+        let token = match std::fs::read_to_string(&path) {
+            Ok(t) if t.trim().len() >= 32 => t.trim().to_string(),
+            _ => {
+                let token = new_token();
+                write_private(&path, &token).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+                token
+            }
+        };
+        *cached = Some(token.clone());
+        Ok(token)
+    }
+
+    /// Replace the MCP token; clients configured with the old one stop working.
+    pub fn rotate_mcp_token(&self) -> Result<String, String> {
+        let token = new_token();
+        let path = self.mcp_token_path();
+        write_private(&path, &token).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        *self.mcp_token.lock().unwrap() = Some(token.clone());
+        Ok(token)
+    }
+
+    pub fn mcp_token_path(&self) -> PathBuf {
+        self.data_dir.join("mcp-token")
+    }
+
+    /// Insights over every retained flow, recomputed only when the store
+    /// changed since the last call.
     pub fn insights(&self) -> InsightReport {
-        let net = *self.net.read().unwrap();
-        let latency = if net.enabled { net.latency_ms } else { 0 };
-        let key = (self.flows.generation(), latency);
+        let key = self.flows.generation();
         let mut cache = self.insights.lock().unwrap();
         if let Some((k, report)) = cache.as_ref() {
             if *k == key {
                 return report.clone();
             }
         }
-        let opts = nova_core::insights::Options { added_latency_ms: latency as f64 };
-        let mut report = nova_core::insights::analyze(&self.flows.shells(), &opts);
-        report.generation = key.0 as f64;
+        let mut report = nova_core::insights::analyze(&self.flows.shells());
+        report.generation = key as f64;
         *cache = Some((key, report.clone()));
         report
     }
@@ -484,6 +534,7 @@ impl AppState {
             flows: self.flows.clone(),
             connects: self.connects.clone(),
             internal_port: self.mcp_port.clone(),
+            keep_on_tcp: self.keep_on_tcp.clone(),
         }
     }
 
@@ -515,6 +566,36 @@ impl AppState {
 
     pub fn mcp_path(&self) -> PathBuf {
         self.data_dir.join("mcp.json")
+    }
+}
+
+/// 256 random bits as hex, from two v4 UUIDs' worth of OS randomness each.
+fn new_token() -> String {
+    let mut bytes = Vec::with_capacity(32);
+    while bytes.len() < 32 {
+        bytes.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Write `contents` to a file readable by this user only. On Windows the data
+/// directory under the profile already carries a per-user ACL.
+fn write_private(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+        f.write_all(contents.as_bytes())?;
+        // `mode` only applies on create; tighten a file that already existed.
+        std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)
     }
 }
 
@@ -568,12 +649,7 @@ mod stream_tests {
 
     /// A text frame of `len` bytes, numbered so tests can tell which survived.
     fn sized_frame(flow_id: &str, seq: u64, len: usize) -> WsMessage {
-        WsMessage {
-            seq,
-            size: len as u64,
-            text: Some("x".repeat(len)),
-            ..frame(flow_id)
-        }
+        WsMessage { seq, size: len as u64, text: Some("x".repeat(len)), ..frame(flow_id) }
     }
 
     fn seqs(msg: &serde_json::Value) -> Vec<u64> {
@@ -677,12 +753,33 @@ mod stream_tests {
     }
 
     #[test]
-    fn frames_keep_flowing_while_paused() {
+    fn frames_wait_in_the_engine_while_paused() {
         let (stream, sent) = bound();
         stream.pause();
         WsSink::emit(&stream, frame("a"));
         stream.flush();
-        assert_eq!(sent.lock().unwrap()[0]["ws"].as_array().unwrap().len(), 1);
+        assert!(sent.lock().unwrap().is_empty(), "nothing goes out while paused");
+        assert_eq!(stream.frames.previews("a").0.len(), 1, "but the frame is kept");
+    }
+
+    #[test]
+    fn the_ui_gets_a_preview_and_the_store_keeps_the_payload() {
+        let (stream, sent) = bound();
+        let long = sized_frame("a", 0, nova_core::wsstore::PREVIEW_CHARS * 10);
+        WsSink::emit(&stream, long);
+        stream.flush();
+        let sent = sent.lock().unwrap();
+        let shown = &sent[0]["ws"][0];
+        assert_eq!(shown["text"].as_str().map(str::len), Some(nova_core::wsstore::PREVIEW_CHARS));
+        assert_eq!(shown["truncated"], true);
+        let full = stream.frames.frame("a", 0).unwrap();
+        assert_eq!(full.text.map(|t| t.len()), Some(nova_core::wsstore::PREVIEW_CHARS * 10));
+    }
+
+    /// Queue a frame as is, past the preview cut: the queue's own limits are
+    /// what these tests are about.
+    fn queue_raw(stream: &UiStream, m: WsMessage) {
+        stream.state.lock().unwrap().queue_frame(m);
     }
 
     #[test]
@@ -690,7 +787,7 @@ mod stream_tests {
         let (stream, sent) = bound();
         let size = MAX_WS_BYTES_PER_TICK / 2;
         for seq in 0..5 {
-            WsSink::emit(&stream, sized_frame("a", seq, size));
+            queue_raw(&stream, sized_frame("a", seq, size));
         }
         stream.flush();
         stream.flush();
@@ -706,7 +803,7 @@ mod stream_tests {
     #[test]
     fn a_frame_larger_than_the_tick_budget_still_goes_out() {
         let (stream, sent) = bound();
-        WsSink::emit(&stream, sized_frame("a", 0, MAX_WS_BYTES_PER_TICK + 1));
+        queue_raw(&stream, sized_frame("a", 0, MAX_WS_BYTES_PER_TICK + 1));
         stream.flush();
         assert_eq!(seqs(&sent.lock().unwrap()[0]), [0]);
     }
@@ -715,10 +812,10 @@ mod stream_tests {
     fn past_its_byte_budget_the_queue_drops_the_oldest_frames_and_says_so() {
         let (stream, sent) = bound();
         let size = MAX_QUEUED_WS_BYTES / 4;
-        WsSink::emit(&stream, sized_frame("a", 0, size));
-        WsSink::emit(&stream, sized_frame("b", 0, size));
+        queue_raw(&stream, sized_frame("a", 0, size));
+        queue_raw(&stream, sized_frame("b", 0, size));
         for seq in 1..5 {
-            WsSink::emit(&stream, sized_frame("a", seq, size));
+            queue_raw(&stream, sized_frame("a", seq, size));
         }
         {
             let st = stream.state.lock().unwrap();

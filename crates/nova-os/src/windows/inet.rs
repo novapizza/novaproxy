@@ -14,10 +14,10 @@ use anyhow::{bail, Result};
 use windows_sys::Win32::Foundation::GlobalFree;
 use windows_sys::Win32::NetworkManagement::Rras::{RasEnumEntriesW, ERROR_BUFFER_TOO_SMALL, RASENTRYNAMEW};
 use windows_sys::Win32::Networking::WinInet::{
-    InternetQueryOptionW, InternetSetOptionW, INTERNET_OPTION_PER_CONNECTION_OPTION,
-    INTERNET_OPTION_REFRESH, INTERNET_OPTION_SETTINGS_CHANGED, INTERNET_PER_CONN_AUTOCONFIG_URL,
-    INTERNET_PER_CONN_FLAGS, INTERNET_PER_CONN_FLAGS_UI, INTERNET_PER_CONN_OPTIONW,
-    INTERNET_PER_CONN_OPTION_LISTW, INTERNET_PER_CONN_PROXY_BYPASS, INTERNET_PER_CONN_PROXY_SERVER,
+    InternetQueryOptionW, InternetSetOptionW, INTERNET_OPTION_PER_CONNECTION_OPTION, INTERNET_OPTION_REFRESH,
+    INTERNET_OPTION_SETTINGS_CHANGED, INTERNET_PER_CONN_AUTOCONFIG_URL, INTERNET_PER_CONN_FLAGS,
+    INTERNET_PER_CONN_FLAGS_UI, INTERNET_PER_CONN_OPTIONW, INTERNET_PER_CONN_OPTION_LISTW,
+    INTERNET_PER_CONN_PROXY_BYPASS, INTERNET_PER_CONN_PROXY_SERVER,
 };
 
 use super::{from_wide_buf, from_wide_ptr, registry, wide};
@@ -51,17 +51,14 @@ fn ras_entries() -> Vec<String> {
     let mut count = 0u32;
     // SAFETY: `buf` holds `bytes` bytes of entries with `dwSize` set, as the
     // API requires; null phonebook means "every phonebook".
-    let mut rc = unsafe {
-        RasEnumEntriesW(std::ptr::null(), std::ptr::null(), buf.as_mut_ptr(), &mut bytes, &mut count)
-    };
+    let mut rc =
+        unsafe { RasEnumEntriesW(std::ptr::null(), std::ptr::null(), buf.as_mut_ptr(), &mut bytes, &mut count) };
     if rc == ERROR_BUFFER_TOO_SMALL {
         let n = (bytes / entry_size).max(1) as usize;
         buf = (0..n).map(|_| blank()).collect();
         bytes = n as u32 * entry_size;
         // SAFETY: as above, with the size the first call asked for.
-        rc = unsafe {
-            RasEnumEntriesW(std::ptr::null(), std::ptr::null(), buf.as_mut_ptr(), &mut bytes, &mut count)
-        };
+        rc = unsafe { RasEnumEntriesW(std::ptr::null(), std::ptr::null(), buf.as_mut_ptr(), &mut bytes, &mut count) };
     }
     if rc != 0 {
         // No RAS service (Server Core, some sandboxes) means no RAS entries,
@@ -69,11 +66,7 @@ fn ras_entries() -> Vec<String> {
         tracing::debug!(rc, "RasEnumEntriesW failed; treating as no VPN entries");
         return Vec::new();
     }
-    buf.iter()
-        .take(count as usize)
-        .map(|e| from_wide_buf(&e.szEntryName))
-        .filter(|n| !n.is_empty())
-        .collect()
+    buf.iter().take(count as usize).map(|e| from_wide_buf(&e.szEntryName)).filter(|n| !n.is_empty()).collect()
 }
 
 /// Read one connection's settings.
@@ -260,10 +253,7 @@ fn option(id: u32) -> INTERNET_PER_CONN_OPTIONW {
     o
 }
 
-fn list(
-    conn: &mut Option<Vec<u16>>,
-    opts: &mut [INTERNET_PER_CONN_OPTIONW],
-) -> INTERNET_PER_CONN_OPTION_LISTW {
+fn list(conn: &mut Option<Vec<u16>>, opts: &mut [INTERNET_PER_CONN_OPTIONW]) -> INTERNET_PER_CONN_OPTION_LISTW {
     INTERNET_PER_CONN_OPTION_LISTW {
         dwSize: size_of::<INTERNET_PER_CONN_OPTION_LISTW>() as u32,
         pszConnection: ptr(conn),

@@ -65,8 +65,9 @@ export function percentile(sorted: readonly number[], p: number): number | null 
 
 /**
  * `/users/42/posts?x=1` → `/users/:id/posts`. A copy of the engine's
- * `normalize_path`, kept to the same cases, so "Most called" groups calls the
- * way the findings do.
+ * `normalize_path`, so "Most called" groups calls the way the findings do. Both
+ * are tested against `crates/nova-core/src/normalize_path_cases.json`: add a
+ * case there when either one changes.
  */
 export function normalizePath(path: string): string {
   const bare = path.split(/[?#]/)[0];

@@ -21,7 +21,7 @@ export interface TimingBreakdown {
   spanMs: number;
   /** The request went out on an already-open connection. */
   reused: boolean;
-  /** How long the request body took to stream upstream, when there was one. */
+  /** When the last request body byte went upstream, from the start of the exchange. */
   requestMs: number | null;
   /** Nothing was measured — render an explanation instead of empty bars. */
   empty: boolean;
@@ -35,9 +35,10 @@ export interface TimingBreakdown {
  * request, a Map Local response, an imported session from an older build)
  * reports `empty` so the UI can say so rather than draw invented bars.
  *
- * `Waiting` is time-to-first-byte with connection setup subtracted, because TTFB
- * is measured from the start of the exchange and would otherwise double-count
- * the setup phases sitting inside it.
+ * `Waiting` is time-to-first-byte with connection setup (and any upload that
+ * outlasted it, as `Sending request`) subtracted, because TTFB is measured from
+ * the start of the exchange and would otherwise double-count the phases
+ * sitting inside it.
  */
 export function timingBreakdown(flow: Flow): TimingBreakdown {
   const t = flow.timings;
@@ -54,10 +55,14 @@ export function timingBreakdown(flow: Flow): TimingBreakdown {
   push("connect", "TCP connect", t?.connect_ms, "var(--c-blue)");
   push("tls", "TLS handshake", t?.tls_ms, "var(--c-cyan)");
 
-  const setup = at;
-  if (t?.ttfb_ms != null) {
-    push("wait", "Waiting (server)", Math.max(t.ttfb_ms - setup, 0), "var(--c-amber)");
+  // The part of the upload that ran past connection setup: the server could
+  // not answer before it had the whole request. `request_ms` is when the last
+  // body byte left, counted from the start, so it overlaps the setup above.
+  if (t?.ttfb_ms != null && t.request_ms != null && t.request_ms > at) {
+    push("send", "Sending request", Math.min(t.request_ms, t.ttfb_ms) - at, "var(--c-pink)");
   }
+  const wait = serverWaitOf(t);
+  if (wait != null) push("wait", "Waiting (server)", wait, "var(--c-amber)");
   push("download", "Download", t?.download_ms, "var(--c-green)");
 
   const measured = at;
@@ -86,10 +91,22 @@ export const SLOW_WAIT_MS = 500;
  * at a breakpoint, where the wait is the person editing it.
  */
 export function serverWaitMs(flow: Flow): number | null {
-  const t = flow.timings;
-  if (t?.ttfb_ms == null || flow.edits?.breakpoint) return null;
+  if (flow.edits?.breakpoint) return null;
+  return serverWaitOf(flow.timings);
+}
+
+/**
+ * Time to first byte less what came before the server could answer:
+ * connection setup, and the request body still going up. The engine's
+ * `nova_core::timing::server_wait_ms` is the same definition — keep them in
+ * step. Network Conditions latency needs no subtracting: the engine stamps TTFB
+ * before it adds that delay.
+ */
+function serverWaitOf(t: Flow["timings"] | null | undefined): number | null {
+  if (t?.ttfb_ms == null) return null;
   const setup = (t.dns_ms ?? 0) + (t.connect_ms ?? 0) + (t.tls_ms ?? 0);
-  return Math.max(t.ttfb_ms - setup, 0);
+  const sent = Math.max(t.request_ms ?? 0, setup);
+  return Math.max(t.ttfb_ms - sent, 0);
 }
 
 /** The server wait, when it is slow enough to mark. */

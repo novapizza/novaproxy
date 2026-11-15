@@ -44,6 +44,25 @@ use tower_service::Service;
 
 use crate::flow::now_ms;
 
+/// How long the server took to start answering: time to first byte, less what
+/// happened before the server could answer — connection setup, and the request
+/// body still going up. The single definition behind the slow-endpoint finding,
+/// the turtle and the waterfall's `Waiting (server)` phase (`src/timing.ts`
+/// mirrors it; keep the two in step).
+///
+/// `request_ms` is an offset from the start of the exchange (when the last body
+/// byte left), so it already contains the setup it overlaps; the later of the
+/// two is when the server had the whole request.
+///
+/// Network Conditions latency is *not* subtracted: `ttfb_ms` is stamped before
+/// NovaProxy adds it (see `handle_response`).
+pub fn server_wait_ms(t: &nova_proto::Timings) -> Option<f64> {
+    let ttfb = t.ttfb_ms?;
+    let setup = t.dns_ms.unwrap_or(0.0) + t.connect_ms.unwrap_or(0.0) + t.tls_ms.unwrap_or(0.0);
+    let sent = t.request_ms.unwrap_or(0.0).max(setup);
+    Some((ttfb - sent).max(0.0))
+}
+
 /// Samples older than this are dropped: they belong to connections whose flow
 /// never claimed them (errored, aborted), and keeping them risks a later flow to
 /// the same host claiming a stale handshake.
@@ -80,10 +99,7 @@ impl Default for ConnectLog {
 
 impl ConnectLog {
     pub fn new(cap: usize) -> Self {
-        Self {
-            samples: Mutex::new(VecDeque::new()),
-            cap: cap.max(1),
-        }
+        Self { samples: Mutex::new(VecDeque::new()), cap: cap.max(1) }
     }
 
     /// Record a completed connection setup.
@@ -102,9 +118,7 @@ impl ConnectLog {
     pub fn claim(&self, host: &str, flow_started_ms: f64) -> Option<ConnectSample> {
         let host = normalize_host(host);
         let mut samples = self.samples.lock().unwrap();
-        let idx = samples
-            .iter()
-            .position(|s| s.host == host && s.at_ms >= flow_started_ms - CLOCK_SLOP_MS)?;
+        let idx = samples.iter().position(|s| s.host == host && s.at_ms >= flow_started_ms - CLOCK_SLOP_MS)?;
         samples.remove(idx)
     }
 
@@ -285,16 +299,18 @@ pub fn instrumented_connector(
     http.enforce_http(false);
     let http = Timed { inner: http, log: log.clone(), layer: Layer::Tcp };
 
-    // HTTP/1.1 only upstream, matching what hudsucker's own connector advertises
-    // under its default features. Advertising h2 here without enabling it in
-    // hudsucker would negotiate a protocol the forwarding client cannot speak,
-    // and h2 multiplexing also weakens the request↔response correlation the
-    // handler relies on (see `intercept`). Turning HTTP/2 on is a deliberate,
-    // separate change — not a side effect of instrumenting timings.
+    // HTTP/2 and HTTP/1.1 upstream: ALPN offers both and the server picks.
+    // The forwarding client speaks h2 (nova-core enables hyper-util's
+    // `http2`), and multiplexing cannot mix up which response belongs to which
+    // request: hudsucker clones the handler for every request, so each
+    // handler's FIFO in `intercept` only ever holds its own exchange. Many
+    // requests then share one connection; the first claims its setup cost in
+    // `ConnectLog`, the rest are marked reused — which is what happened.
     let https = hyper_rustls::HttpsConnectorBuilder::new()
         .with_tls_config((*tls_config).clone())
         .https_or_http()
         .enable_http1()
+        .enable_http2()
         .wrap_connector(http);
 
     Timed { inner: https, log, layer: Layer::Whole }
@@ -305,13 +321,7 @@ mod tests {
     use super::*;
 
     fn sample(host: &str, at_ms: f64) -> ConnectSample {
-        ConnectSample {
-            host: host.into(),
-            at_ms,
-            dns_ms: Some(1.0),
-            connect_ms: Some(2.0),
-            tls_ms: Some(3.0),
-        }
+        ConnectSample { host: host.into(), at_ms, dns_ms: Some(1.0), connect_ms: Some(2.0), tls_ms: Some(3.0) }
     }
 
     #[test]

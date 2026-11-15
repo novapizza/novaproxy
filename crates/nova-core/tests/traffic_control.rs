@@ -37,9 +37,9 @@ fn start_engine(
 
     // Defaults, then the two things this harness varies: the rule set and how
     // many body bytes are retained.
-    let mut hooks = EngineHooks::in_memory(Arc::new(nova_core::breakpoint::Breakpoints::new(
-        Arc::new(nova_core::breakpoint::NoopBreakpointSink),
-    )));
+    let mut hooks = EngineHooks::in_memory(Arc::new(nova_core::breakpoint::Breakpoints::new(Arc::new(
+        nova_core::breakpoint::NoopBreakpointSink,
+    ))));
     hooks.rules = Arc::new(RwLock::new(rules));
     hooks.bodies = Arc::new(nova_core::bodystore::BodyStore::memory_only(body_cap));
     hooks.flows = Arc::new(nova_core::flowstore::FlowStore::new(hooks.bodies.clone(), 10_000));
@@ -71,9 +71,7 @@ fn rule(kind: RuleKind, pattern: &str) -> Rule {
 /// Send one absolute-form proxy request and read the full response.
 async fn proxy_get(port: u16, target: &str, host: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    let req = format!(
-        "GET {target} HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n"
-    );
+    let req = format!("GET {target} HTTP/1.1\r\nHost: {host}\r\nAccept: */*\r\nConnection: close\r\n\r\n");
     stream.write_all(req.as_bytes()).await.unwrap();
     let mut response = Vec::new();
     stream.read_to_end(&mut response).await.unwrap();
@@ -221,8 +219,7 @@ async fn an_unreachable_upstream_says_why() {
     let (handle, flows, ca_dir) = start_engine(39_105, nova_core::DEFAULT_BODY_CAP, Vec::new(), "refused");
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let response =
-        proxy_get(39_105, &format!("http://127.0.0.1:{closed}/x"), &format!("127.0.0.1:{closed}")).await;
+    let response = proxy_get(39_105, &format!("http://127.0.0.1:{closed}/x"), &format!("127.0.0.1:{closed}")).await;
     assert!(response.starts_with("HTTP/1.1 502"), "{response}");
     let body = body_of(&response);
     assert!(body.starts_with("NovaProxy: upstream error: "), "{body}");

@@ -30,7 +30,12 @@ pid: number | null,
  * Name of the originating process (e.g. "Google Chrome"), if resolved.
  * Best-effort; `None` when attribution failed or on unsupported platforms.
  */
-process: string | null, http_version: string, state: FlowState, status: number | null, request_headers: Array<Header>, response_headers: Array<Header>, request_body: BodyPreview | null, response_body: BodyPreview | null, 
+process: string | null, 
+/**
+ * HTTP version: the request's until a response arrives, then the one
+ * spoken with the server (which can be HTTP/2 when the app used HTTP/1.1).
+ */
+http_version: string, state: FlowState, status: number | null, request_headers: Array<Header>, response_headers: Array<Header>, request_body: BodyPreview | null, response_body: BodyPreview | null, 
 /**
  * Bytes seen on the wire for the request body.
  */
@@ -88,4 +93,11 @@ internal: boolean,
 /**
  * What NovaProxy changed about this exchange on its way through.
  */
-edits: Edits, };
+edits: Edits, 
+/**
+ * NovaProxy took the HTTP/3 entries out of the response's `Alt-Svc`
+ * before passing it on, so the app keeps using TCP (where NovaProxy can
+ * see it) instead of switching to QUIC. `response_headers` still shows
+ * what the server sent.
+ */
+alt_svc_h3_removed: boolean, };

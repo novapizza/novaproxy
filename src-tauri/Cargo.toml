@@ -47,6 +47,7 @@ nova-proto = { path = "../crates/nova-proto" }
 # service, so no web framework is needed).
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 tower-service = "0.3"
 schemars = "1"
 rmcp = { version = "3.0.0", features = ["server", "macros", "transport-streamable-http-server", "transport-streamable-http-server-session", "server-side-http"] }

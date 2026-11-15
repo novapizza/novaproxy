@@ -46,10 +46,13 @@ export const api = {
   clearFlows: () => invoke<void>("clear_flows"),
 
   /**
-   * Every flow the engine still retains, newest first — bodies included.
-   * The list keeps no body bytes, so exports read them from here.
+   * Write flows to `path` as a session (`nova`) or HAR, one at a time in the
+   * backend. `ids` sets which flows and in what order; a flow in `extra` (an
+   * imported session, which the engine never held) is written from there.
+   * Resolves to how many flows were written.
    */
-  retainedFlows: () => invoke<Flow[]>("retained_flows"),
+  exportFlows: (path: string, format: "nova" | "har", ids: string[], extra: Flow[], redact: boolean) =>
+    invoke<number>("export_flows", { path, format, ids, extra, redact }),
 
   /**
    * Anti-patterns in what the engine retains. Pass the `generation` of the last
@@ -59,11 +62,26 @@ export const api = {
   /** The same checks over flows only the list holds (an imported session). */
   analyzeFlows: (flows: Flow[]) => invoke<InsightReport>("analyze_flows", { flows }),
 
+  /**
+   * Every frame the engine holds for a socket, as previews (text cut short,
+   * binary payload left out), and how many of its frames were evicted.
+   */
+  wsFrames: (flowId: string) => invoke<{ frames: WsMessage[]; dropped: number }>("ws_frames", { flowId }),
+  /** One frame with its whole captured payload. */
+  wsFrame: (flowId: string, seq: number) => invoke<WsMessage>("ws_frame", { flowId, seq }),
+
   /** State of the MCP endpoint that exposes captured traffic to AI tooling. */
   mcpStatus: () => invoke<McpStatus>("mcp_status"),
   /** Start or stop that endpoint; the choice is remembered across launches. */
   setMcpEnabled: (enable: boolean, port?: number) =>
     invoke<McpStatus>("set_mcp_enabled", { enable, port }),
+  /** Hide (or show) credentials in what the endpoint returns. Remembered. */
+  setMcpRedact: (redact: boolean) => invoke<McpStatus>("set_mcp_redact", { redact }),
+  /** Issue a new access token; clients set up with the old one stop working. */
+  rotateMcpToken: () => invoke<McpStatus>("rotate_mcp_token"),
+
+  /** Strip HTTP/3 from `Alt-Svc` so apps stay on TCP (see `EngineHooks::keep_on_tcp`). */
+  setKeepOnTcp: (on: boolean) => invoke<void>("set_keep_on_tcp", { on }),
 
   getTlsScope: () => invoke<TlsScope>("get_tls_scope"),
   setTlsScope: (scope: TlsScope) => invoke<void>("set_tls_scope", { scope }),

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Flow } from "./api";
 import type { Insight } from "./bindings/Insight";
+import sharedCases from "../crates/nova-core/src/normalize_path_cases.json";
 import { hostTable, normalizePath, percentile, reportMarkdown, safeTarget, summarize } from "./report";
 
 function mk(over: Partial<Flow> = {}): Flow {
@@ -113,6 +114,11 @@ describe("normalizePath", () => {
     expect(normalizePath("/o/3fa85f64-5717-4562-b3fc-2c963f66afa6")).toBe("/o/:uuid");
     expect(normalizePath("/blob/9f86d081884c7d65")).toBe("/blob/:hash");
     expect(normalizePath("/v2/search")).toBe("/v2/search");
+  });
+
+  // The engine's tests run the same file, so the two copies cannot drift apart.
+  it.each(sharedCases as [string, string][])("normalizes %j like the engine", (input, want) => {
+    expect(normalizePath(input)).toBe(want);
   });
 });
 

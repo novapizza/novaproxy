@@ -48,9 +48,7 @@ fn owner_uid_from(args: impl Iterator<Item = String>) -> Result<u32> {
     while let Some(arg) = args.next() {
         if arg == "--owner-uid" {
             let value = args.next().unwrap_or_default();
-            return value
-                .parse()
-                .map_err(|_| anyhow::anyhow!("`{value}` is not a uid"));
+            return value.parse().map_err(|_| anyhow::anyhow!("`{value}` is not a uid"));
         }
     }
     bail!("usage: nova-helper --owner-uid <uid>")

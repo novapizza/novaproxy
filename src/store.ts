@@ -41,6 +41,12 @@ interface Store {
   /** Append a frame's worth of captured frames in one store update. */
   /** Append a batch of frames, plus counts of frames dropped before they arrived. */
   addWsMessages: (batch: WsMessage[], dropped?: Record<string, number>) => void;
+  /**
+   * Take the engine's frames for one socket as the start of its list: frames
+   * that arrived while the UI was paused, or before a reload, fill in. Frames
+   * already streamed past the engine's newest are kept after them.
+   */
+  backfillWs: (flowId: string, frames: WsMessage[], dropped: number) => void;
   loadFlows: (flows: Flow[]) => void;
   clear: () => void;
   setRecording: (v: boolean) => void;
@@ -69,11 +75,9 @@ export const MAX_WS_FRAMES = 2_000;
 
 /**
  * Frame payload held across every socket, at most; past it the oldest frames go,
- * whichever socket they belong to. `MAX_WS_FRAMES` alone let one socket hold
- * 2,000 frames of up to 64 KB each, and nothing bounded the sockets together.
- *
- * Temporary: frames are to move into the engine and be fetched for the socket
- * actually open, like bodies are, at which point this budget goes.
+ * whichever socket they belong to. Frames arrive as previews (at most 200
+ * characters of text, no binary payload; the engine keeps the rest), so this
+ * is a backstop rather than the limit that normally applies.
  */
 export const MAX_WS_BYTES = 64 * 1024 * 1024;
 
@@ -225,6 +229,30 @@ export function applyFlowBatch(
  * dropped is kept alongside so the panel can say so, rather than quietly showing
  * a partial conversation.
  */
+/** See `backfillWs`. */
+export function mergeBackfill(
+  flowId: string,
+  frames: WsMessage[],
+  dropped: number,
+  wsMessages: Record<string, WsMessage[]>,
+  wsDropped: Record<string, number>,
+  cap: number,
+): { wsMessages?: Record<string, WsMessage[]>; wsDropped?: Record<string, number> } {
+  if (frames.length === 0 && dropped === 0) return {};
+  const newest = frames.reduce((n, m) => Math.max(n, Number(m.seq)), -1);
+  const live = (wsMessages[flowId] ?? []).filter((m) => Number(m.seq) > newest);
+  let all = frames.concat(live);
+  let cut = 0;
+  if (all.length > cap) {
+    cut = all.length - cap;
+    all = all.slice(cut);
+  }
+  return {
+    wsMessages: { ...wsMessages, [flowId]: all },
+    wsDropped: { ...wsDropped, [flowId]: Math.max(wsDropped[flowId] ?? 0, dropped) + cut },
+  };
+}
+
 export function appendWsMessages(
   batch: WsMessage[],
   flows: Flow[],
@@ -348,6 +376,8 @@ export const useStore = create<Store>((set) => ({
         dropped,
       }),
     ),
+  backfillWs: (flowId, frames, dropped) =>
+    set((s) => mergeBackfill(flowId, frames, dropped, s.wsMessages, s.wsDropped, MAX_WS_FRAMES)),
   // Replace the flow list (used when importing a saved .nova session). Imported
   // flows keep their bodies: nothing else has a copy to fetch them from.
   loadFlows: (flows) => set({ flows, selectedId: null, wsMessages: {}, wsDropped: {}, imported: true }),

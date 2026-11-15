@@ -71,8 +71,7 @@ const MAX_LOG_BYTES: u64 = 200 * 1024 * 1024;
 /// them for `N` network services and thirty lines a click would bury everything
 /// else. Run with `RUST_LOG=nova_os=debug` to see which `networksetup`
 /// subcommand is the slow one.
-const DEFAULT_FILTER: &str =
-    "novaproxy=info,novaproxy_lib=info,novaproxy_ui=info,nova_core=info,nova_os=info";
+const DEFAULT_FILTER: &str = "novaproxy=info,novaproxy_lib=info,novaproxy_ui=info,nova_core=info,nova_os=info";
 
 /// The two identifiers every usage event carries.
 ///
@@ -92,10 +91,7 @@ static IDS: OnceLock<Ids> = OnceLock::new();
 
 /// Session and device ids, initialized on first use.
 pub fn ids() -> &'static Ids {
-    IDS.get_or_init(|| Ids {
-        session: short_id(),
-        device: load_or_create_device_id(),
-    })
+    IDS.get_or_init(|| Ids { session: short_id(), device: load_or_create_device_id() })
 }
 
 /// A UUID with the dashes removed, truncated — long enough not to collide
@@ -206,9 +202,7 @@ pub fn init() -> Option<Guard> {
         .with_ansi(false)
         .with_target(true)
         .with_filter(filter())
-        .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
-            meta.target() != USAGE_TARGET
-        }));
+        .with_filter(tracing_subscriber::filter::filter_fn(|meta| meta.target() != USAGE_TARGET));
 
     // Usage: only the usage target, as JSON lines. Flattened so each line is a
     // flat object rather than `{"fields":{…}}` wrapped in span machinery.
@@ -219,23 +213,15 @@ pub fn init() -> Option<Guard> {
         .with_target(false)
         .with_span_list(false)
         .with_current_span(false)
-        .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
-            meta.target() == USAGE_TARGET
-        }));
+        .with_filter(tracing_subscriber::filter::filter_fn(|meta| meta.target() == USAGE_TARGET));
 
     // stdout stays for `cargo tauri dev`; in a bundled app nothing reads it,
     // which is the whole reason the file layers exist.
     let stdout_layer = fmt::layer()
         .with_filter(filter())
-        .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
-            meta.target() != USAGE_TARGET
-        }));
+        .with_filter(tracing_subscriber::filter::filter_fn(|meta| meta.target() != USAGE_TARGET));
 
-    tracing_subscriber::registry()
-        .with(diag_layer)
-        .with(usage_layer)
-        .with(stdout_layer)
-        .init();
+    tracing_subscriber::registry().with(diag_layer).with(usage_layer).with(stdout_layer).init();
 
     if !pruned.is_empty() {
         tracing::warn!(
@@ -245,11 +231,7 @@ pub fn init() -> Option<Guard> {
         );
     }
 
-    Some(Guard {
-        _diagnostics: diag_guard,
-        _usage: usage_guard,
-        dir,
-    })
+    Some(Guard { _diagnostics: diag_guard, _usage: usage_guard, dir })
 }
 
 /// Fall back to the old stdout-only subscriber when the files cannot be opened.
@@ -305,7 +287,7 @@ pub fn prune_by_size(dir: &Path, max_bytes: u64) -> Vec<PathBuf> {
         .filter_map(|e| {
             let path = e.path();
             let meta = e.metadata().ok()?;
-            meta.is_file().then(|| (path, meta.len()))
+            meta.is_file().then_some((path, meta.len()))
         })
         .collect();
     // By name, which is by date: both streams are `<prefix>.<YYYY-MM-DD>.<ext>`.
@@ -391,10 +373,7 @@ mod tests {
         let inside = home.join("Library/Application Support/NovaProxy/ca.pem");
         let out = redact_path(&inside);
         assert!(out.starts_with('~'), "{out}");
-        assert!(
-            !out.contains(&*home.to_string_lossy()),
-            "the home path survived redaction: {out}"
-        );
+        assert!(!out.contains(&*home.to_string_lossy()), "the home path survived redaction: {out}");
         assert!(out.ends_with("ca.pem"));
     }
 
@@ -458,10 +437,8 @@ mod tests {
         // 3000 bytes against a 2500 budget: one file is enough to get under it,
         // and it must be the oldest.
         let removed = prune_by_size(&dir, 2500);
-        let names: Vec<String> = removed
-            .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
+        let names: Vec<String> =
+            removed.iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(names, vec!["novaproxy.2026-08-01.log"], "oldest goes first");
         assert!(dir.join("novaproxy.2026-08-03.log").exists(), "newest is kept");
 

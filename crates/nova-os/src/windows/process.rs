@@ -10,9 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use windows_sys::Win32::Foundation::CloseHandle;
-use windows_sys::Win32::Storage::FileSystem::{
-    GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
-};
+use windows_sys::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
 use windows_sys::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
@@ -51,9 +49,7 @@ pub fn display_name(path: &str) -> String {
         return hit.clone();
     }
     let stem = file_stem(path);
-    let name = file_description(path)
-        .filter(|d| usable_description(d))
-        .unwrap_or(stem);
+    let name = file_description(path).filter(|d| usable_description(d)).unwrap_or(stem);
     cache.lock().unwrap().insert(path.to_string(), name.clone());
     name
 }
@@ -61,11 +57,8 @@ pub fn display_name(path: &str) -> String {
 /// `C:\…\chrome.exe` → `chrome`.
 pub fn file_stem(path: &str) -> String {
     let file = path.rsplit(['\\', '/']).next().unwrap_or(path);
-    let stem = file
-        .len()
-        .checked_sub(4)
-        .filter(|&i| file[i..].eq_ignore_ascii_case(".exe"))
-        .map_or(file, |i| &file[..i]);
+    let stem =
+        file.len().checked_sub(4).filter(|&i| file[i..].eq_ignore_ascii_case(".exe")).map_or(file, |i| &file[..i]);
     stem.to_string()
 }
 

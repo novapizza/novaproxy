@@ -20,41 +20,27 @@ use http_body_util::BodyStream;
 use hudsucker::hyper::header::{HeaderName, HeaderValue};
 use hudsucker::hyper::http::request::Parts;
 use hudsucker::hyper::{Request, Response};
-use hudsucker::tokio_tungstenite::tungstenite::Message;
-use hudsucker::{
-    Body, HttpContext, HttpHandler, RequestOrResponse, WebSocketContext, WebSocketHandler,
-};
+use hudsucker::tokio_tungstenite::tungstenite::{Error as WsError, Message};
+use hudsucker::{Body, HttpContext, HttpHandler, RequestOrResponse, WebSocketContext, WebSocketHandler};
 use nova_proto::{FlowState, Interception, WsDirection, WsMessage, WsOpcode};
 
 use crate::bodystore::BodyCapture;
 use crate::breakpoint::Resume;
-use crate::flow::{
-    build_preview, collect_headers, header_value, new_flow, now_ms, Shared, Side, WsRoute,
-};
+use crate::flow::{build_preview, collect_headers, header_value, new_flow, now_ms, Shared, Side, WsRoute};
 use crate::rules::{apply_request, guess_media_type, Outcome};
 use crate::scripting::{self, ScriptFlow};
 use crate::tlsscope::should_intercept_host;
 
 /// Flatten a header map into owned name/value pairs for scripts.
 fn header_pairs(map: &hudsucker::hyper::HeaderMap) -> Vec<(String, String)> {
-    map.iter()
-        .map(|(k, v)| {
-            (
-                k.as_str().to_string(),
-                String::from_utf8_lossy(v.as_bytes()).into_owned(),
-            )
-        })
-        .collect()
+    map.iter().map(|(k, v)| (k.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned())).collect()
 }
 
 /// Replace a header map with the script-provided set (supports add + delete).
 fn apply_headers(map: &mut hudsucker::hyper::HeaderMap, headers: &[(String, String)]) {
     map.clear();
     for (k, v) in headers {
-        if let (Ok(n), Ok(val)) = (
-            HeaderName::try_from(k.as_str()),
-            HeaderValue::try_from(v.as_str()),
-        ) {
+        if let (Ok(n), Ok(val)) = (HeaderName::try_from(k.as_str()), HeaderValue::try_from(v.as_str())) {
             map.insert(n, val);
         }
     }
@@ -63,27 +49,11 @@ fn apply_headers(map: &mut hudsucker::hyper::HeaderMap, headers: &[(String, Stri
 /// Derive `(scheme, host, path, url)` from request parts. origin-form URIs
 /// (path only) reach us after a CONNECT, i.e. TLS → default scheme https.
 fn describe(parts: &Parts) -> (String, String, String, String) {
-    let host = parts
-        .uri
-        .host()
-        .map(|h| h.to_string())
-        .or_else(|| header_value(&parts.headers, "host"))
-        .unwrap_or_default();
-    let scheme = parts
-        .uri
-        .scheme_str()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "https".to_string());
-    let path = parts
-        .uri
-        .path_and_query()
-        .map(|p| p.to_string())
-        .unwrap_or_else(|| "/".to_string());
-    let url = if parts.uri.scheme_str().is_some() {
-        parts.uri.to_string()
-    } else {
-        format!("{scheme}://{host}{path}")
-    };
+    let host =
+        parts.uri.host().map(|h| h.to_string()).or_else(|| header_value(&parts.headers, "host")).unwrap_or_default();
+    let scheme = parts.uri.scheme_str().map(|s| s.to_string()).unwrap_or_else(|| "https".to_string());
+    let path = parts.uri.path_and_query().map(|p| p.to_string()).unwrap_or_else(|| "/".to_string());
+    let url = if parts.uri.scheme_str().is_some() { parts.uri.to_string() } else { format!("{scheme}://{host}{path}") };
     (scheme, host, path, url)
 }
 
@@ -98,19 +68,12 @@ pub struct NovaHandler {
 
 impl NovaHandler {
     pub fn new(shared: Arc<Shared>) -> Self {
-        Self {
-            shared,
-            pending: VecDeque::new(),
-        }
+        Self { shared, pending: VecDeque::new() }
     }
 }
 
 impl HttpHandler for NovaHandler {
-    async fn handle_request(
-        &mut self,
-        ctx: &HttpContext,
-        req: Request<Body>,
-    ) -> RequestOrResponse {
+    async fn handle_request(&mut self, ctx: &HttpContext, req: Request<Body>) -> RequestOrResponse {
         // CONNECT establishes the TLS tunnel; hudsucker then re-delivers the
         // decrypted inner requests here. Don't record the tunnel itself — doing
         // so would desync the request↔response FIFO below.
@@ -172,8 +135,7 @@ impl HttpHandler for NovaHandler {
                 flow.state = FlowState::Completed;
                 flow.response_size = len;
                 flow.content_type = Some("text/plain; charset=utf-8".into());
-                flow.response_body =
-                    Some(build_preview(msg, len, false, Some("text/plain".into()), None));
+                flow.response_body = Some(build_preview(msg, len, false, Some("text/plain".into()), None));
                 flow.duration_ms = Some(now_ms() - flow.started_at);
                 self.shared.insert(flow);
                 let resp = Response::builder()
@@ -195,8 +157,7 @@ impl HttpHandler for NovaHandler {
                         flow.content_type = Some(ct.to_string());
                         flow.response_headers =
                             vec![nova_proto::Header { name: "content-type".into(), value: ct.into() }];
-                        flow.response_body =
-                            Some(build_preview(bytes.clone(), len, false, Some(ct.into()), None));
+                        flow.response_body = Some(build_preview(bytes.clone(), len, false, Some(ct.into()), None));
                         flow.duration_ms = Some(now_ms() - flow.started_at);
                         self.shared.insert(flow);
                         let resp = Response::builder()
@@ -220,10 +181,7 @@ impl HttpHandler for NovaHandler {
                     }
                 }
             }
-            Outcome::Forward {
-                mapped_from,
-                rewritten,
-            } => {
+            Outcome::Forward { mapped_from, rewritten } => {
                 flow.edits.rule = mapped_from.is_some() || rewritten;
                 flow.mapped_from = mapped_from;
 
@@ -236,13 +194,7 @@ impl HttpHandler for NovaHandler {
                     let key = ws_route_key(&flow.host, &flow.path);
                     flow.is_websocket = true;
                     self.shared.insert(flow);
-                    self.shared.ws_routes.lock().unwrap().insert(
-                        key,
-                        Arc::new(WsRoute {
-                            flow_id: id.clone(),
-                            seq: AtomicU64::new(0),
-                        }),
-                    );
+                    self.shared.ws_routes.lock().unwrap().insert(key, Arc::new(WsRoute::new(id.clone())));
                     return RequestOrResponse::Request(Request::from_parts(parts, body));
                 }
 
@@ -263,11 +215,7 @@ impl HttpHandler for NovaHandler {
                     };
                     match self.shared.breakpoints.wait(interception).await {
                         Resume::Abort => {
-                            let started = self
-                                .shared
-                                .flow(&id)
-                                .map(|f| f.started_at)
-                                .unwrap_or_else(now_ms);
+                            let started = self.shared.flow(&id).map(|f| f.started_at).unwrap_or_else(now_ms);
                             self.shared.update(&id, |f| {
                                 f.state = FlowState::Error;
                                 f.error = Some("Aborted at breakpoint".into());
@@ -282,10 +230,9 @@ impl HttpHandler for NovaHandler {
                         }
                         Resume::Continue(edits) => {
                             for h in &edits {
-                                if let (Ok(n), Ok(v)) = (
-                                    HeaderName::try_from(h.name.as_str()),
-                                    HeaderValue::try_from(h.value.as_str()),
-                                ) {
+                                if let (Ok(n), Ok(v)) =
+                                    (HeaderName::try_from(h.name.as_str()), HeaderValue::try_from(h.value.as_str()))
+                                {
                                     parts.headers.insert(n, v);
                                 }
                             }
@@ -313,11 +260,7 @@ impl HttpHandler for NovaHandler {
                     };
                     if let Some(res) = self.shared.scripts.run(scripting::Hook::Request, sf).await {
                         if res.abort {
-                            let started = self
-                                .shared
-                                .flow(&id)
-                                .map(|f| f.started_at)
-                                .unwrap_or_else(now_ms);
+                            let started = self.shared.flow(&id).map(|f| f.started_at).unwrap_or_else(now_ms);
                             self.shared.update(&id, |f| {
                                 f.state = FlowState::Error;
                                 f.status = Some(403);
@@ -343,24 +286,13 @@ impl HttpHandler for NovaHandler {
                 }
 
                 self.pending.push_back(id.clone());
-                let teed = tee(
-                    body,
-                    self.shared.clone(),
-                    id,
-                    Side::Request,
-                    media_type,
-                    content_encoding,
-                );
+                let teed = tee(body, self.shared.clone(), id, Side::Request, media_type, content_encoding);
                 RequestOrResponse::Request(Request::from_parts(parts, teed))
             }
         }
     }
 
-    async fn handle_response(
-        &mut self,
-        _ctx: &HttpContext,
-        res: Response<Body>,
-    ) -> Response<Body> {
+    async fn handle_response(&mut self, _ctx: &HttpContext, res: Response<Body>) -> Response<Body> {
         let Some(id) = self.pending.pop_front() else {
             return res;
         };
@@ -368,6 +300,9 @@ impl HttpHandler for NovaHandler {
         let (mut parts, body) = res.into_parts();
         let status = parts.status.as_u16();
         let response_headers = collect_headers(&parts.headers);
+        // Captured as the server sent it; what the app receives loses its
+        // HTTP/3 advertisements (see `EngineHooks::keep_on_tcp`).
+        let h3_removed = self.shared.keep_on_tcp.load(Ordering::Relaxed) && strip_h3_alt_svc(&mut parts.headers);
         let content_type = header_value(&parts.headers, "content-type");
         let content_encoding = header_value(&parts.headers, "content-encoding");
 
@@ -376,15 +311,16 @@ impl HttpHandler for NovaHandler {
         let at_headers = now_ms();
         // Claim the connection this flow opened, if it opened one. Done here
         // because the connect happens while the request is in flight upstream.
-        let (host, started_at) = self
-            .shared
-            .flow(&id)
-            .map(|f| (f.host.clone(), f.started_at))
-            .unwrap_or_default();
+        let (host, started_at) = self.shared.flow(&id).map(|f| (f.host.clone(), f.started_at)).unwrap_or_default();
         let connect = self.shared.connects.claim(&host, started_at);
 
+        // The protocol actually spoken to the server: the app may talk
+        // HTTP/1.1 to the proxy while the server answers over h2.
+        let upstream_version = format!("{:?}", parts.version);
         self.shared.update(&id, |f| {
             f.status = Some(status);
+            f.http_version = upstream_version.clone();
+            f.alt_svc_h3_removed = h3_removed;
             f.response_headers = response_headers.clone();
             if f.content_type.is_none() {
                 f.content_type = content_type.clone();
@@ -405,19 +341,10 @@ impl HttpHandler for NovaHandler {
 
         // onResponse script hook: mutate response headers (abort is a no-op here).
         if self.shared.scripts.wants_response() {
-            let base = self
-                .shared
-                .flow(&id)
-                .map(|f| (f.method.clone(), f.host.clone(), f.path.clone(), f.url.clone()));
+            let base = self.shared.flow(&id).map(|f| (f.method.clone(), f.host.clone(), f.path.clone(), f.url.clone()));
             if let Some((method, host, path, url)) = base {
-                let sf = ScriptFlow {
-                    method,
-                    host,
-                    path,
-                    url,
-                    status: Some(status),
-                    headers: header_pairs(&parts.headers),
-                };
+                let sf =
+                    ScriptFlow { method, host, path, url, status: Some(status), headers: header_pairs(&parts.headers) };
                 if let Some(res) = self.shared.scripts.run(scripting::Hook::Response, sf).await {
                     apply_headers(&mut parts.headers, &res.headers);
                     let nh = collect_headers(&parts.headers);
@@ -434,14 +361,7 @@ impl HttpHandler for NovaHandler {
             }
         }
 
-        let teed = tee(
-            body,
-            self.shared.clone(),
-            id,
-            Side::Response,
-            content_type,
-            content_encoding,
-        );
+        let teed = tee(body, self.shared.clone(), id, Side::Response, content_type, content_encoding);
         Response::from_parts(parts, teed)
     }
 
@@ -576,17 +496,11 @@ fn ws_route_key(host: &str, path: &str) -> String {
 
 /// Decode a tungstenite [`Message`] into the fields of a [`WsMessage`],
 /// retaining at most `cap` bytes of payload for the preview.
-fn classify_message(
-    msg: &Message,
-    cap: usize,
-) -> (WsOpcode, Option<String>, Option<String>, u64, bool) {
+fn classify_message(msg: &Message, cap: usize) -> (WsOpcode, Option<String>, Option<String>, u64, bool) {
     use base64::Engine;
     let b64 = |bytes: &[u8]| {
         let keep = bytes.len().min(cap);
-        (
-            Some(base64::engine::general_purpose::STANDARD.encode(&bytes[..keep])),
-            bytes.len() > cap,
-        )
+        (Some(base64::engine::general_purpose::STANDARD.encode(&bytes[..keep])), bytes.len() > cap)
     };
     match msg {
         Message::Text(t) => {
@@ -614,10 +528,7 @@ fn classify_message(
             (WsOpcode::Pong, None, b64s, b.len() as u64, truncated)
         }
         Message::Close(frame) => {
-            let reason = frame
-                .as_ref()
-                .map(|f| format!("{} {}", u16::from(f.code), f.reason))
-                .unwrap_or_default();
+            let reason = frame.as_ref().map(|f| format!("{} {}", u16::from(f.code), f.reason)).unwrap_or_default();
             let size = reason.len() as u64;
             let text = if reason.is_empty() { None } else { Some(reason) };
             (WsOpcode::Close, text, None, size, false)
@@ -635,10 +546,7 @@ fn capture_ws_message(shared: &Arc<Shared>, ctx: &WebSocketContext, msg: &Messag
         WebSocketContext::ClientToServer { dst, .. } => (WsDirection::Sent, dst),
         WebSocketContext::ServerToClient { src, .. } => (WsDirection::Received, src),
     };
-    let key = ws_route_key(
-        uri.host().unwrap_or_default(),
-        uri.path_and_query().map(|p| p.as_str()).unwrap_or("/"),
-    );
+    let key = ws_route_key(uri.host().unwrap_or_default(), uri.path_and_query().map(|p| p.as_str()).unwrap_or("/"));
     record_ws_frame(shared, &key, direction, msg);
 }
 
@@ -666,17 +574,46 @@ fn record_ws_frame(shared: &Arc<Shared>, key: &str, direction: WsDirection, msg:
 
     // A close frame ends the socket: finalize the flow and retire the route.
     if matches!(opcode, WsOpcode::Close) {
-        let started = shared
-            .flow(&route.flow_id)
-            .map(|f| f.started_at)
-            .unwrap_or_else(now_ms);
-        shared.update(&route.flow_id, |f| {
-            if f.state != FlowState::Error {
-                f.state = FlowState::Completed;
-                f.duration_ms = Some(now_ms() - started);
-            }
-        });
-        shared.ws_routes.lock().unwrap().remove(key);
+        retire_ws_route(shared, key, &route);
+    }
+}
+
+/// The socket behind `route` is over: complete its flow and drop the route --
+/// only if it is still the one registered under `key`, since a new socket to
+/// the same URL replaces it there.
+fn retire_ws_route(shared: &Shared, key: &str, route: &Arc<WsRoute>) {
+    {
+        let mut routes = shared.ws_routes.lock().unwrap();
+        if routes.get(key).is_some_and(|r| Arc::ptr_eq(r, route)) {
+            routes.remove(key);
+        }
+    }
+    let started = shared.flow(&route.flow_id).map(|f| f.started_at).unwrap_or_else(now_ms);
+    shared.update(&route.flow_id, |f| {
+        if !matches!(f.state, FlowState::Error | FlowState::Completed) {
+            f.state = FlowState::Completed;
+            f.duration_ms = Some(now_ms() - started);
+        }
+    });
+}
+
+/// The route a WebSocket context belongs to, and its key.
+fn ws_route_for(shared: &Shared, ctx: &WebSocketContext) -> (String, Option<Arc<WsRoute>>) {
+    let uri = match ctx {
+        WebSocketContext::ClientToServer { dst, .. } => dst,
+        WebSocketContext::ServerToClient { src, .. } => src,
+    };
+    let key = ws_route_key(uri.host().unwrap_or_default(), uri.path_and_query().map(|p| p.as_str()).unwrap_or("/"));
+    let route = shared.ws_routes.lock().unwrap().get(&key).cloned();
+    (key, route)
+}
+
+/// One direction of a socket stopped relaying. When both have, the socket is
+/// gone even if no Close frame went by (a dropped connection, a killed app):
+/// without this its route would stay forever and its flow stay in progress.
+fn ws_direction_ended(shared: &Shared, key: &str, route: &Arc<WsRoute>) {
+    if route.open_directions.fetch_sub(1, Ordering::AcqRel) == 1 {
+        retire_ws_route(shared, key, route);
     }
 }
 
@@ -694,14 +631,118 @@ impl NovaWsHandler {
 }
 
 impl WebSocketHandler for NovaWsHandler {
-    async fn handle_message(
-        &mut self,
-        ctx: &WebSocketContext,
-        msg: Message,
-    ) -> Option<Message> {
+    /// hudsucker's relay loop, plus noticing when it ends: see
+    /// [`ws_direction_ended`].
+    async fn handle_websocket(
+        mut self,
+        ctx: WebSocketContext,
+        mut stream: impl futures::Stream<Item = Result<Message, WsError>> + Unpin + Send + 'static,
+        mut sink: impl futures::Sink<Message, Error = WsError> + Unpin + Send + 'static,
+    ) {
+        use futures::SinkExt;
+        // Looked up once, at the start: by the end a new socket to the same URL
+        // may have taken the key.
+        let (key, route) = ws_route_for(&self.shared, &ctx);
+        while let Some(message) = stream.next().await {
+            match message {
+                Ok(message) => {
+                    let Some(message) = self.handle_message(&ctx, message).await else { continue };
+                    match sink.send(message).await {
+                        Ok(()) | Err(WsError::ConnectionClosed) => {}
+                        Err(e) => tracing::debug!("WebSocket send error: {e}"),
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!("WebSocket message error: {e}");
+                    let _ = sink.send(Message::Close(None)).await;
+                    break;
+                }
+            }
+        }
+        if let Some(route) = route {
+            ws_direction_ended(&self.shared, &key, &route);
+        }
+    }
+
+    async fn handle_message(&mut self, ctx: &WebSocketContext, msg: Message) -> Option<Message> {
         capture_ws_message(&self.shared, ctx, &msg);
         Some(msg)
     }
+}
+
+/// Take the HTTP/3 alternatives out of every `Alt-Svc` header, dropping a
+/// header that has none left. Returns whether anything was removed.
+///
+/// `Alt-Svc: h3=":443"; ma=86400, h2=":443"` becomes `h2=":443"`. A `clear`
+/// is kept: it withdraws earlier advertisements, which is what we want anyway.
+pub fn strip_h3_alt_svc(headers: &mut hudsucker::hyper::HeaderMap) -> bool {
+    use hudsucker::hyper::header::ALT_SVC;
+    let values: Vec<String> =
+        headers.get_all(ALT_SVC).iter().filter_map(|v| v.to_str().ok().map(str::to_string)).collect();
+    if values.is_empty() {
+        return false;
+    }
+    let mut removed = false;
+    let mut kept: Vec<String> = Vec::new();
+    for value in &values {
+        for entry in split_alt_svc(value) {
+            let proto = entry.split('=').next().unwrap_or("").trim().trim_matches('"').to_ascii_lowercase();
+            if proto == "h3" || proto.starts_with("h3-") || proto == "quic" {
+                removed = true;
+            } else if !entry.trim().is_empty() {
+                kept.push(entry.trim().to_string());
+            }
+        }
+    }
+    if !removed {
+        return false;
+    }
+    headers.remove(ALT_SVC);
+    if !kept.is_empty() {
+        if let Ok(v) = HeaderValue::from_str(&kept.join(", ")) {
+            headers.insert(ALT_SVC, v);
+        }
+    }
+    true
+}
+
+/// Split an `Alt-Svc` value on the commas between alternatives, not the ones
+/// inside quoted strings.
+fn split_alt_svc(value: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut start, mut quoted) = (0, false);
+    for (i, c) in value.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            ',' if !quoted => {
+                out.push(&value[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&value[start..]);
+    out
+}
+
+/// Bytes of one body that may wait between forwarding and the capture task.
+const TEE_QUEUE_BYTES: usize = 8 * 1024 * 1024;
+
+/// What the forwarding side of a [`tee`] tells its capture task.
+#[derive(Default)]
+struct TeeState {
+    /// Every byte forwarded, captured or not: the body's real size.
+    total: AtomicU64,
+    /// Bytes sent to the capture task and not yet taken in.
+    queued: std::sync::atomic::AtomicUsize,
+    /// The capture fell [`TEE_QUEUE_BYTES`] behind and stopped taking chunks.
+    abandoned: std::sync::atomic::AtomicBool,
+}
+
+/// A capture whose blocking task died: the flow still completes, with its size
+/// and nothing else.
+fn lost_capture(total: u64) -> crate::bodystore::Captured {
+    crate::bodystore::Captured { inline: Vec::new(), total, truncated: total > 0, spilled: false }
 }
 
 /// Wrap `body` so every data frame is forwarded immediately while a capped copy
@@ -714,26 +755,74 @@ fn tee(
     media_type: Option<String>,
     content_encoding: Option<String>,
 ) -> Body {
+    // Chunks go to the capture task over a channel bounded by bytes, not by
+    // count: `TeeState::queued` is what waits in it. Forwarding never waits for
+    // the capture; when the capture falls that far behind (a disk slower than
+    // the network), it gives up on the rest of this body instead.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Bytes>();
+    let state = Arc::new(TeeState::default());
     let throttle_shared = shared.clone();
+    let producer_state = state.clone();
+    // Past this many bytes nothing more is kept (the preview is full and the
+    // spill file at its cap), so the rest is counted, never queued.
+    let keep_limit = if shared.bodies.spills() {
+        shared.bodies.per_body_cap().max(shared.bodies.inline_cap() as u64)
+    } else {
+        shared.bodies.inline_cap() as u64
+    };
 
     // Consumer: retain a capped preview (spilling the rest to the body store),
     // then finalize when the sender drops.
     tokio::spawn(async move {
-        let mut capture = BodyCapture::new(&shared.bodies, &id, side);
-        while let Some(chunk) = rx.recv().await {
-            capture.push(&chunk);
+        let mut capture = Some(BodyCapture::new(shared.bodies.clone(), &id, side));
+        while let Some(first) = rx.recv().await {
+            let mut batch = vec![first];
+            while batch.len() < 64 {
+                match rx.try_recv() {
+                    Ok(chunk) => batch.push(chunk),
+                    Err(_) => break,
+                }
+            }
+            let bytes: usize = batch.iter().map(Bytes::len).sum();
+            if let Some(mut c) = capture.take() {
+                // Writing the spill file blocks; keep it off the async workers.
+                capture = if c.needs_disk(bytes) {
+                    tokio::task::spawn_blocking(move || {
+                        batch.iter().for_each(|chunk| c.push(chunk));
+                        c
+                    })
+                    .await
+                    .ok()
+                } else {
+                    batch.iter().for_each(|chunk| c.push(chunk));
+                    Some(c)
+                };
+            }
+            state.queued.fetch_sub(bytes, Ordering::Relaxed);
         }
-        let captured = capture.finish();
+        let total = state.total.load(Ordering::Relaxed);
+        let captured = match capture {
+            Some(c) if state.abandoned.load(Ordering::Relaxed) => {
+                tracing::debug!(flow = %id, ?side, "body capture fell behind; kept the preview only");
+                c.abandon(total)
+            }
+            Some(c) => {
+                let mut done = if c.needs_disk(0) {
+                    tokio::task::spawn_blocking(move || c.finish()).await.ok()
+                } else {
+                    Some(c.finish())
+                }
+                .unwrap_or_else(|| lost_capture(total));
+                // Bytes past `keep_limit` were counted but never sent here.
+                done.total = done.total.max(total);
+                done.truncated |= done.total > done.inline.len() as u64;
+                done
+            }
+            None => lost_capture(total),
+        };
         let total = captured.total;
 
-        let mut preview = build_preview(
-            captured.inline,
-            total,
-            captured.truncated,
-            media_type,
-            content_encoding,
-        );
+        let mut preview = build_preview(captured.inline, total, captured.truncated, media_type, content_encoding);
         preview.spilled = captured.spilled;
         let done = now_ms();
 
@@ -776,11 +865,22 @@ fn tee(
     let stream = BodyStream::new(body).filter_map(move |frame_res| {
         let tx = tx.clone();
         let shared = throttle_shared.clone();
+        let producer_state = producer_state.clone();
         async move {
             match frame_res {
                 Ok(frame) => match frame.into_data() {
                     Ok(data) => {
-                        let _ = tx.send(data.clone());
+                        let st = &producer_state;
+                        let len = data.len();
+                        let before = st.total.fetch_add(len as u64, Ordering::Relaxed);
+                        if before < keep_limit && !st.abandoned.load(Ordering::Relaxed) {
+                            if st.queued.fetch_add(len, Ordering::Relaxed) + len > TEE_QUEUE_BYTES {
+                                st.queued.fetch_sub(len, Ordering::Relaxed);
+                                st.abandoned.store(true, Ordering::Relaxed);
+                            } else {
+                                let _ = tx.send(data.clone());
+                            }
+                        }
                         // Downlink throttle: pace response chunks to down_kbps.
                         if matches!(side, Side::Response) {
                             let net = *shared.net.read().unwrap();
@@ -874,10 +974,7 @@ mod tests {
     #[test]
     fn apply_headers_skips_invalid_names() {
         let mut map = HeaderMap::new();
-        apply_headers(
-            &mut map,
-            &[("bad name".into(), "x".into()), ("good".into(), "y".into())],
-        );
+        apply_headers(&mut map, &[("bad name".into(), "x".into()), ("good".into(), "y".into())]);
         assert_eq!(map.len(), 1);
         assert_eq!(map.get("good").unwrap(), "y");
     }
@@ -956,8 +1053,7 @@ mod tests {
 
     #[test]
     fn classify_binary_frame_is_base64_and_tracks_truncation() {
-        let (op, text, b64, size, trunc) =
-            classify_message(&Message::binary(vec![1u8, 2, 3, 4, 5]), 3);
+        let (op, text, b64, size, trunc) = classify_message(&Message::binary(vec![1u8, 2, 3, 4, 5]), 3);
         assert_eq!(op, WsOpcode::Binary);
         assert!(text.is_none());
         assert!(b64.is_some(), "binary payload is previewed as base64");
@@ -992,21 +1088,15 @@ mod tests {
     }
 
     fn shared_for_ws(ws_sink: Arc<VecWsSink>) -> Arc<Shared> {
-        let mut hooks = crate::EngineHooks::in_memory(Arc::new(
-            crate::breakpoint::Breakpoints::new(Arc::new(crate::breakpoint::NoopBreakpointSink)),
-        ));
+        let mut hooks = crate::EngineHooks::in_memory(Arc::new(crate::breakpoint::Breakpoints::new(Arc::new(
+            crate::breakpoint::NoopBreakpointSink,
+        ))));
         hooks.bodies = Arc::new(crate::bodystore::BodyStore::memory_only(1024));
         Arc::new(Shared::new(Arc::new(NoopFlowSink), ws_sink, hooks))
     }
 
     fn register_route(shared: &Arc<Shared>, key: &str, flow_id: &str) {
-        shared.ws_routes.lock().unwrap().insert(
-            key.to_string(),
-            Arc::new(WsRoute {
-                flow_id: flow_id.to_string(),
-                seq: AtomicU64::new(0),
-            }),
-        );
+        shared.ws_routes.lock().unwrap().insert(key.to_string(), Arc::new(WsRoute::new(flow_id.to_string())));
     }
 
     #[test]
@@ -1044,9 +1134,16 @@ mod tests {
         register_route(&shared, "host/ws", "f9");
         // The flow must exist for finalization to update its state.
         let mut flow = new_flow(
-            "f9".into(), 0, "GET".into(), "https".into(), "host".into(),
-            "/ws".into(), "https://host/ws".into(), "127.0.0.1:1".into(),
-            "HTTP/1.1".into(), Vec::new(),
+            "f9".into(),
+            0,
+            "GET".into(),
+            "https".into(),
+            "host".into(),
+            "/ws".into(),
+            "https://host/ws".into(),
+            "127.0.0.1:1".into(),
+            "HTTP/1.1".into(),
+            Vec::new(),
         );
         flow.is_websocket = true;
         shared.insert(flow);
@@ -1056,12 +1153,105 @@ mod tests {
         let stored = shared.flow("f9").unwrap();
         assert_eq!(stored.state, FlowState::Completed);
         assert!(stored.duration_ms.is_some());
-        assert!(
-            shared.ws_routes.lock().unwrap().get("host/ws").is_none(),
-            "route is retired after close"
-        );
+        assert!(shared.ws_routes.lock().unwrap().get("host/ws").is_none(), "route is retired after close");
         // A frame arriving after close finds no route and is dropped.
         record_ws_frame(&shared, "host/ws", WsDirection::Sent, &Message::text("late"));
         assert_eq!(ws_sink.0.lock().unwrap().len(), 1, "only the close frame was recorded");
+    }
+
+    // ---- body tee ----
+
+    #[tokio::test]
+    async fn tee_counts_every_byte_but_queues_only_what_it_keeps() {
+        use http_body_util::BodyExt;
+        let shared = shared_for_ws(Arc::new(VecWsSink(Mutex::new(Vec::new()))));
+        shared.insert(new_flow(
+            "f1".into(),
+            1,
+            "GET".into(),
+            "https".into(),
+            "h".into(),
+            "/".into(),
+            "https://h/".into(),
+            "127.0.0.1:1".into(),
+            "HTTP/1.1".into(),
+            Vec::new(),
+        ));
+        let chunks: Vec<Result<Bytes, hudsucker::Error>> = (0..64).map(|_| Ok(Bytes::from(vec![b'a'; 1024]))).collect();
+        let body = Body::from_stream(futures::stream::iter(chunks));
+        let teed = tee(body, shared.clone(), "f1".into(), Side::Response, Some("text/plain".into()), None);
+        let forwarded = teed.collect().await.unwrap().to_bytes();
+        assert_eq!(forwarded.len(), 64 * 1024, "forwarding is never cut short");
+
+        let mut flow = None;
+        for _ in 0..200 {
+            flow = shared.flow("f1").filter(|f| f.response_body.is_some());
+            if flow.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let flow = flow.expect("capture finalized the flow");
+        assert_eq!(flow.response_size, 64 * 1024, "the real size, though only the preview was queued");
+        let body = flow.response_body.unwrap();
+        assert!(body.truncated && !body.spilled);
+    }
+
+    #[test]
+    fn a_socket_that_drops_without_close_is_retired_when_both_directions_end() {
+        let ws_sink = Arc::new(VecWsSink(Mutex::new(Vec::new())));
+        let shared = shared_for_ws(ws_sink.clone());
+        shared.insert(new_flow(
+            "f3".into(),
+            3,
+            "GET".into(),
+            "https".into(),
+            "host".into(),
+            "/ws".into(),
+            "https://host/ws".into(),
+            "127.0.0.1:1".into(),
+            "HTTP/1.1".into(),
+            Vec::new(),
+        ));
+        register_route(&shared, "host/ws", "f3");
+        let route = shared.ws_routes.lock().unwrap().get("host/ws").cloned().unwrap();
+
+        ws_direction_ended(&shared, "host/ws", &route);
+        assert!(shared.ws_routes.lock().unwrap().contains_key("host/ws"), "one direction is still open");
+
+        // Meanwhile a new socket to the same URL takes the key...
+        register_route(&shared, "host/ws", "f4");
+        ws_direction_ended(&shared, "host/ws", &route);
+        assert_eq!(shared.flow("f3").unwrap().state, FlowState::Completed);
+        // ...and keeps it: only the old route was retired.
+        assert_eq!(shared.ws_routes.lock().unwrap().get("host/ws").unwrap().flow_id, "f4");
+    }
+
+    #[test]
+    fn http3_advertisements_are_stripped_and_the_rest_kept() {
+        use hudsucker::hyper::header::ALT_SVC;
+        let mut h = HeaderMap::new();
+        h.insert(
+            ALT_SVC,
+            HeaderValue::from_static("h3=\":443\"; ma=86400, h3-29=\":443\"; ma=86400, h2=\"alt.test:443\""),
+        );
+        assert!(strip_h3_alt_svc(&mut h));
+        assert_eq!(h.get(ALT_SVC).unwrap(), "h2=\"alt.test:443\"");
+
+        let mut only = HeaderMap::new();
+        only.insert(ALT_SVC, HeaderValue::from_static("h3=\":443\""));
+        assert!(strip_h3_alt_svc(&mut only));
+        assert!(only.get(ALT_SVC).is_none(), "nothing left: the header goes");
+
+        let mut none = HeaderMap::new();
+        none.insert(ALT_SVC, HeaderValue::from_static("clear"));
+        assert!(!strip_h3_alt_svc(&mut none));
+        assert_eq!(none.get(ALT_SVC).unwrap(), "clear");
+        assert!(!strip_h3_alt_svc(&mut HeaderMap::new()));
+    }
+
+    #[test]
+    fn quoted_commas_do_not_split_an_alternative() {
+        assert_eq!(split_alt_svc(r#"h2="a,b:443"; ma=1, h3=":443""#), vec![r#"h2="a,b:443"; ma=1"#, r#" h3=":443""#]);
     }
 }

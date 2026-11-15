@@ -13,10 +13,7 @@ pub enum Outcome {
     /// Map Remote rule rewrote the destination, and `rewritten` when a Rewrite
     /// rule changed a header — the UI marks the flow as edited either way, and
     /// a header rewrite is otherwise invisible in the outcome.
-    Forward {
-        mapped_from: Option<String>,
-        rewritten: bool,
-    },
+    Forward { mapped_from: Option<String>, rewritten: bool },
     /// Short-circuit with a 403.
     Block,
     /// Short-circuit by serving a local file.
@@ -75,8 +72,7 @@ pub fn apply_request(rules: &[Rule], url: &str, parts: &mut Parts) -> Outcome {
             }
             RuleKind::Rewrite => {
                 if let (Some(name), Some(value)) = (&rule.header_name, &rule.header_value) {
-                    if let (Ok(n), Ok(v)) =
-                        (HeaderName::try_from(name.as_str()), HeaderValue::try_from(value.as_str()))
+                    if let (Ok(n), Ok(v)) = (HeaderName::try_from(name.as_str()), HeaderValue::try_from(value.as_str()))
                     {
                         // Only a header that actually changed counts as a
                         // rewrite: re-setting the value that was already there
@@ -97,10 +93,7 @@ pub fn apply_request(rules: &[Rule], url: &str, parts: &mut Parts) -> Outcome {
         }
     }
 
-    Outcome::Forward {
-        mapped_from,
-        rewritten,
-    }
+    Outcome::Forward { mapped_from, rewritten }
 }
 
 /// Point `parts` at `target`'s host/scheme, preserving the original path+query.
@@ -117,15 +110,8 @@ fn remap(parts: &mut Parts, target: &str) -> Option<String> {
         .map(|s| s.to_string())
         .or_else(|| parts.uri.host().map(|h| h.to_string()))?;
 
-    let path_and_query = parts
-        .uri
-        .path_and_query()
-        .cloned()
-        .unwrap_or_else(|| "/".parse().unwrap());
-    let scheme = target_uri
-        .scheme()
-        .cloned()
-        .or_else(|| parts.uri.scheme().cloned())?;
+    let path_and_query = parts.uri.path_and_query().cloned().unwrap_or_else(|| "/".parse().unwrap());
+    let scheme = target_uri.scheme().cloned().or_else(|| parts.uri.scheme().cloned())?;
 
     let new_uri = Uri::builder()
         .scheme(scheme)
@@ -197,13 +183,7 @@ mod tests {
     /// request (absolute URI + Host header).
     fn parts_for(url: &str) -> Parts {
         let host = url.parse::<Uri>().unwrap().host().unwrap().to_string();
-        Request::builder()
-            .uri(url)
-            .header("host", host)
-            .body(())
-            .unwrap()
-            .into_parts()
-            .0
+        Request::builder().uri(url).header("host", host).body(()).unwrap().into_parts().0
     }
 
     fn rule(kind: RuleKind) -> Rule {
@@ -255,10 +235,7 @@ mod tests {
         let mut r = rule(RuleKind::Block);
         r.pattern = "*ads*".into();
         let mut parts = parts_for("http://ads.example.com/track");
-        assert_eq!(
-            apply_request(&[r], "http://ads.example.com/track", &mut parts),
-            Outcome::Block
-        );
+        assert_eq!(apply_request(&[r], "http://ads.example.com/track", &mut parts), Outcome::Block);
     }
 
     #[test]
@@ -266,10 +243,7 @@ mod tests {
         let mut r = rule(RuleKind::MapLocal);
         r.target = Some("/tmp/stub.json".into());
         let mut parts = parts_for("http://x.com/a");
-        assert_eq!(
-            apply_request(&[r], "http://x.com/a", &mut parts),
-            Outcome::MapLocal("/tmp/stub.json".into())
-        );
+        assert_eq!(apply_request(&[r], "http://x.com/a", &mut parts), Outcome::MapLocal("/tmp/stub.json".into()));
     }
 
     #[test]
@@ -292,15 +266,10 @@ mod tests {
         r.header_name = Some("x-custom".into());
         r.header_value = Some("same".into());
         let mut parts = parts_for("http://x.com/a");
-        parts
-            .headers
-            .insert(HeaderName::from_static("x-custom"), HeaderValue::from_static("same"));
+        parts.headers.insert(HeaderName::from_static("x-custom"), HeaderValue::from_static("same"));
         assert_eq!(
             apply_request(&[r], "http://x.com/a", &mut parts),
-            Outcome::Forward {
-                mapped_from: None,
-                rewritten: false
-            }
+            Outcome::Forward { mapped_from: None, rewritten: false }
         );
     }
 
@@ -313,13 +282,7 @@ mod tests {
         let outcome = apply_request(&[r], "http://x.com/a", &mut parts);
         // `rewritten` is what tells the UI this row was edited: a header rewrite
         // leaves no other trace in the outcome.
-        assert_eq!(
-            outcome,
-            Outcome::Forward {
-                mapped_from: None,
-                rewritten: true
-            }
-        );
+        assert_eq!(outcome, Outcome::Forward { mapped_from: None, rewritten: true });
         assert_eq!(parts.headers.get("x-custom").unwrap(), "novaproxy");
     }
 
@@ -330,13 +293,7 @@ mod tests {
         let mut parts = parts_for("http://api.example.com/v1/users?q=1");
 
         let outcome = apply_request(&[r], "http://api.example.com/v1/users?q=1", &mut parts);
-        assert_eq!(
-            outcome,
-            Outcome::Forward {
-                mapped_from: Some("api.example.com".into()),
-                rewritten: false
-            }
-        );
+        assert_eq!(outcome, Outcome::Forward { mapped_from: Some("api.example.com".into()), rewritten: false });
         // Host + scheme point at the target; path/query are preserved.
         assert_eq!(parts.uri.host(), Some("staging.example.com"));
         assert_eq!(parts.uri.scheme_str(), Some("https"));

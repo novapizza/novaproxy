@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  mergeBackfill,
   applyFlowBatch,
   appendWsMessages,
   MAX_FLOWS,
@@ -209,6 +210,27 @@ describe("body bytes are not kept in the list", () => {
     reset();
     useStore.getState().loadFlows([withBody("a")]);
     expect(useStore.getState().flows[0].request_body!.text).toBe("{}");
+  });
+});
+
+describe("mergeBackfill", () => {
+  const frame = (flow_id: string, seq: number) => ({ flow_id, seq }) as never;
+
+  it("puts the engine's frames first and keeps live ones past its newest", () => {
+    const live = { a: [frame("a", 4), frame("a", 5)] };
+    const out = mergeBackfill("a", [frame("a", 1), frame("a", 4)], 2, live, { a: 1 }, MAX_WS_FRAMES);
+    expect(out.wsMessages!.a).toEqual([frame("a", 1), frame("a", 4), frame("a", 5)]);
+    expect(out.wsDropped!.a).toBe(2);
+  });
+
+  it("changes nothing when the engine holds nothing (an imported session)", () => {
+    expect(mergeBackfill("a", [], 0, { a: [frame("a", 1)] }, {}, MAX_WS_FRAMES)).toEqual({});
+  });
+
+  it("keeps the newest frames when the merge is over the cap", () => {
+    const out = mergeBackfill("a", [frame("a", 1), frame("a", 2), frame("a", 3)], 0, {}, {}, 2);
+    expect(out.wsMessages!.a).toEqual([frame("a", 2), frame("a", 3)]);
+    expect(out.wsDropped!.a).toBe(1);
   });
 });
 

@@ -49,10 +49,7 @@ pub async fn check_update(
     pending: State<'_, PendingUpdate>,
     configured: State<'_, UpdaterConfigured>,
 ) -> Result<UpdateStatus, String> {
-    let mut status = UpdateStatus {
-        current_version: current_version(&app),
-        ..Default::default()
-    };
+    let mut status = UpdateStatus { current_version: current_version(&app), ..Default::default() };
 
     if !configured.0 {
         tracing::info!("updater not configured in this build");
@@ -100,12 +97,7 @@ pub async fn install_update(
 ) -> Result<(), String> {
     // Taken, not cloned: once the bytes are installed the handle describes a
     // version that is no longer newer than what is running.
-    let update = pending
-        .0
-        .lock()
-        .unwrap()
-        .take()
-        .ok_or("no update is pending — check for updates first")?;
+    let update = pending.0.lock().unwrap().take().ok_or("no update is pending — check for updates first")?;
 
     let mut downloaded = 0u64;
     // Download and install are separate steps so the system proxy can be put
@@ -120,18 +112,10 @@ pub async fn install_update(
                 downloaded += chunk as u64;
                 // A dropped channel means the window went away mid-download.
                 // Not worth aborting the install over, so the send is ignored.
-                let _ = channel.send(UpdateProgress {
-                    downloaded,
-                    total,
-                    done: false,
-                });
+                let _ = channel.send(UpdateProgress { downloaded, total, done: false });
             },
             || {
-                let _ = channel.send(UpdateProgress {
-                    downloaded: 0,
-                    total: None,
-                    done: true,
-                });
+                let _ = channel.send(UpdateProgress { downloaded: 0, total: None, done: true });
             },
         )
         .await
