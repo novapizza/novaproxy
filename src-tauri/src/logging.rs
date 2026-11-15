@@ -156,6 +156,14 @@ pub fn log_dir() -> PathBuf {
             return home.join("Library/Logs/NovaProxy");
         }
     }
+    // Linux and the BSDs: the XDG state dir, which is where logs belong there
+    // and keeps them out of the data dir.
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        if let Some(state) = dirs::state_dir() {
+            return state.join("NovaProxy").join("logs");
+        }
+    }
     // Windows: beside the data dir, not in it — see `crate::data_dir`.
     #[cfg(windows)]
     let base = crate::windows_app_dir();
