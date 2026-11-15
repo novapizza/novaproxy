@@ -19,6 +19,8 @@ pub const WANTED: u64 = 512;
 /// Raise the soft limit to `wanted`, or to the hard limit when that is lower.
 /// Never lowers it. Returns the soft limit in force afterwards.
 #[cfg(unix)]
+// `rlim_t` is `u64` on macOS and Linux but not on every unix; keep the casts.
+#[allow(clippy::unnecessary_cast)]
 pub fn raise(wanted: u64) -> std::io::Result<u64> {
     let mut lim = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
     // SAFETY: `lim` is a valid, writable rlimit for the call to fill.
@@ -45,6 +47,8 @@ pub fn raise(_wanted: u64) -> std::io::Result<u64> {
 
 /// The soft limit currently in force, if it can be read.
 #[cfg(unix)]
+// `rlim_t` is `u64` on macOS and Linux but not on every unix; keep the casts.
+#[allow(clippy::unnecessary_cast)]
 pub fn current() -> Option<u64> {
     let mut lim = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
     // SAFETY: as in `raise`.
