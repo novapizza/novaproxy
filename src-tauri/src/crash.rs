@@ -27,6 +27,7 @@
 //! [`write_marker`] allocates.
 
 use std::path::PathBuf;
+#[cfg(any(target_os = "macos", windows))]
 use std::sync::OnceLock;
 
 /// Where the marker is dropped, as a C string so the handler does not have to
@@ -206,6 +207,7 @@ fn write_marker(kind: u32, code: u64) {
 }
 
 /// Enough for both labels plus two 20-digit integers and a newline.
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))] // no crash handler there; still tested
 const MARKER_MAX: usize = 64;
 
 /// Render the marker into `buf`, returning how many bytes were written.
@@ -213,6 +215,7 @@ const MARKER_MAX: usize = 64;
 /// Split out from [`write_marker`] so the formatting — the part with an
 /// off-by-one in it, if there is one — can be tested without crashing a
 /// process.
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))] // no crash handler there; still tested
 fn format_marker(buf: &mut [u8; MARKER_MAX], kind: u32, code: u64) -> usize {
     let mut n = 0;
     n += put(buf, n, b"kind=");
@@ -225,6 +228,7 @@ fn format_marker(buf: &mut [u8; MARKER_MAX], kind: u32, code: u64) -> usize {
 
 /// Copy `src` in at `at`, returning how much was copied. Truncates rather than
 /// panicking: a short marker beats a panic inside a crash handler.
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))] // no crash handler there; still tested
 fn put(buf: &mut [u8; MARKER_MAX], at: usize, src: &[u8]) -> usize {
     let room = MARKER_MAX.saturating_sub(at);
     let n = src.len().min(room);
@@ -233,6 +237,7 @@ fn put(buf: &mut [u8; MARKER_MAX], at: usize, src: &[u8]) -> usize {
 }
 
 /// Decimal-format `value` at `at`. No allocation, no `write!`.
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))] // no crash handler there; still tested
 fn put_u64(buf: &mut [u8; MARKER_MAX], at: usize, value: u64) -> usize {
     // Digits come out backwards, so they are staged and then reversed in.
     let mut digits = [0u8; 20];
