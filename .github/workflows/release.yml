@@ -68,8 +68,13 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned: Rust 1.100 moved cargo's build directories, and tauri-build
+      # 2.6.3 (the newest 2.x) then copies bundled resources onto the wrong
+      # path and the macOS build fails with "Is a directory". Go back to
+      # `stable` once tauri-build handles the new layout.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.99.1
           targets: ${{ matrix.target }}
 
       # aws-lc-sys (rustls' backend, pulled in by hudsucker) assembles with NASM
