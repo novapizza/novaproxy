@@ -8,7 +8,11 @@ default-run = "novaproxy"
 
 [lib]
 name = "novaproxy_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Desktop links only the rlib. Tauri's template adds `staticlib` and `cdylib`
+# for iOS/Android; here they produced a ~760 MB `.a` plus a `.dylib` nothing
+# used, re-linked on every change — about 3x the incremental rebuild time.
+# Add them back if a mobile target is ever set up.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
