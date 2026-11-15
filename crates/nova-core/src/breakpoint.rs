@@ -42,11 +42,7 @@ impl Breakpoints {
     }
 
     pub fn arm(&self, pattern: String) {
-        *self.pattern.write().unwrap() = if pattern.trim().is_empty() {
-            "*".to_string()
-        } else {
-            pattern
-        };
+        *self.pattern.write().unwrap() = if pattern.trim().is_empty() { "*".to_string() } else { pattern };
         self.armed.store(true, Ordering::Relaxed);
     }
 
@@ -78,10 +74,7 @@ impl Breakpoints {
     /// one-shot: we disarm here so only the *next* request is caught.
     pub async fn wait(&self, interception: Interception) -> Resume {
         let (tx, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .unwrap()
-            .insert(interception.id.clone(), tx);
+        self.pending.lock().unwrap().insert(interception.id.clone(), tx);
         self.armed.store(false, Ordering::Relaxed);
         self.sink.paused(interception);
         rx.await.unwrap_or(Resume::Continue(Vec::new()))
@@ -153,10 +146,7 @@ mod tests {
 
         // Let wait() register the pending oneshot before resuming.
         tokio::time::sleep(Duration::from_millis(20)).await;
-        bp.resume(
-            "abc",
-            Resume::Continue(vec![Header { name: "x-edit".into(), value: "1".into() }]),
-        );
+        bp.resume("abc", Resume::Continue(vec![Header { name: "x-edit".into(), value: "1".into() }]));
 
         match handle.await.unwrap() {
             Resume::Continue(headers) => {

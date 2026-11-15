@@ -52,7 +52,7 @@ export function TimingPanel({ flow }: { flow: Flow }) {
       )}
       {b.requestMs != null && (
         <div className="timing-note">
-          Request body streamed upstream in {formatMs(b.requestMs)} ({formatCellBytes(flow.request_size)}).
+          Request body ({formatCellBytes(flow.request_size)}) fully sent {formatMs(b.requestMs)} after the request started.
         </div>
       )}
 

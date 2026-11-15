@@ -19,7 +19,11 @@ http-body-util = "0.1"
 # Client-side TLS + connector plumbing. We build hudsucker's upstream connector
 # ourselves (rather than `with_rustls_connector`) so DNS/TCP/TLS phases can be
 # measured — see `timing`. Versions match hudsucker's own so Cargo unifies them.
-hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "webpki-tokio", "tls12", "logging"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "webpki-tokio", "tls12", "logging"] }
+# The client hudsucker forwards with is hyper-util's; this turns on its HTTP/2
+# support (feature unification) without hudsucker's own `http2` feature, which
+# would also offer h2 to apps on the decrypted side. See `lib.rs` `start`.
+hyper-util = { version = "0.1", features = ["http2"] }
 # Upstream trust: Mozilla's roots plus the OS store, so machines whose security
 # software re-signs HTTPS still reach origins (see `upstream`).
 webpki-roots = "1"

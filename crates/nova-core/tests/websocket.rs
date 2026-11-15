@@ -91,11 +91,9 @@ async fn captures_websocket_frames_end_to_end() {
         &ca,
         flow_sink,
         ws_sink,
-        nova_core::EngineHooks::in_memory(Arc::new(
-            nova_core::breakpoint::Breakpoints::new(Arc::new(
-                nova_core::breakpoint::NoopBreakpointSink,
-            )),
-        )),
+        nova_core::EngineHooks::in_memory(Arc::new(nova_core::breakpoint::Breakpoints::new(Arc::new(
+            nova_core::breakpoint::NoopBreakpointSink,
+        )))),
     )
     .unwrap();
 
@@ -133,14 +131,10 @@ async fn captures_websocket_frames_end_to_end() {
     let sent: Vec<_> = frames.iter().filter(|m| m.direction == WsDirection::Sent).collect();
     let recv: Vec<_> = frames.iter().filter(|m| m.direction == WsDirection::Received).collect();
 
-    let sent_hello = sent
-        .iter()
-        .find(|m| m.opcode == WsOpcode::Text && m.text.as_deref() == Some("hello"));
+    let sent_hello = sent.iter().find(|m| m.opcode == WsOpcode::Text && m.text.as_deref() == Some("hello"));
     assert!(sent_hello.is_some(), "the sent text frame must be captured; got {frames:?}");
 
-    let recv_echo = recv
-        .iter()
-        .find(|m| m.opcode == WsOpcode::Text && m.text.as_deref() == Some("echo:hello"));
+    let recv_echo = recv.iter().find(|m| m.opcode == WsOpcode::Text && m.text.as_deref() == Some("echo:hello"));
     assert!(recv_echo.is_some(), "the received echo frame must be captured; got {frames:?}");
 
     // Every captured frame is bound to the same upgrade flow, which is flagged

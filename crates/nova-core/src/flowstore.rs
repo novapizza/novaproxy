@@ -278,9 +278,7 @@ struct Bodies([Option<String>; 4]);
 
 impl Bodies {
     fn copy(flow: &Flow) -> Self {
-        let get = |b: &Option<BodyPreview>| {
-            b.as_ref().map(|b| (b.text.clone(), b.base64.clone())).unwrap_or_default()
-        };
+        let get = |b: &Option<BodyPreview>| b.as_ref().map(|b| (b.text.clone(), b.base64.clone())).unwrap_or_default();
         let (rq_text, rq_b64) = get(&flow.request_body);
         let (rs_text, rs_b64) = get(&flow.response_body);
         Bodies([rq_text, rq_b64, rs_text, rs_b64])
@@ -295,12 +293,11 @@ impl Stored {
             Some((old, before)) => (Some(old), Some(before)),
             None => (None, None),
         };
-        let reuse = |now: &Option<String>, then: Option<&Option<String>>, frame: Option<&Option<Packed>>| {
-            match (then, frame) {
+        let reuse =
+            |now: &Option<String>, then: Option<&Option<String>>, frame: Option<&Option<Packed>>| match (then, frame) {
                 (Some(then), Some(Some(frame))) if then == now => Some(frame.clone()),
                 _ => None,
-            }
-        };
+            };
         let side = |body: &mut Option<BodyPreview>, at: usize, packed: Option<&PackedBody>| {
             let Some(body) = body.as_mut() else { return PackedBody::default() };
             let text = reuse(&body.text, before.as_ref().map(|b| &b.0[at]), packed.map(|p| &p.text))
@@ -438,7 +435,7 @@ mod tests {
         let s = FlowStore::new(bodies.clone(), 1);
 
         // Spill a body for f0, then push it out of the window.
-        let mut cap = crate::bodystore::BodyCapture::new(&bodies, "f0", crate::flow::Side::Response);
+        let mut cap = crate::bodystore::BodyCapture::new(&*bodies, "f0", crate::flow::Side::Response);
         cap.push(b"0123456789");
         cap.finish();
         assert!(bodies.read("f0", crate::flow::Side::Response, 1024).is_ok());

@@ -48,10 +48,7 @@ const TTL: Duration = Duration::from_millis(1000);
 impl ProcResolver {
     fn new() -> Self {
         Self {
-            cache: Mutex::new(Cache {
-                ports: HashMap::new(),
-                refreshed_at: None,
-            }),
+            cache: Mutex::new(Cache { ports: HashMap::new(), refreshed_at: None }),
             bundles: Mutex::new(HashMap::new()),
         }
     }
@@ -63,9 +60,7 @@ impl ProcResolver {
         let port = port_of(client_addr)?;
 
         let mut cache = self.cache.lock().unwrap();
-        let stale = cache
-            .refreshed_at
-            .map_or(true, |t| t.elapsed() > TTL);
+        let stale = cache.refreshed_at.is_none_or(|t| t.elapsed() > TTL);
         // Rebuild if the port is unknown (likely a brand-new connection) or the
         // snapshot has aged out.
         if stale || !cache.ports.contains_key(&port) {
@@ -78,11 +73,7 @@ impl ProcResolver {
         // in the capture.
         if let Some(info) = &found {
             if let Some(bundle) = &info.bundle {
-                self.bundles
-                    .lock()
-                    .unwrap()
-                    .entry(info.name.clone())
-                    .or_insert_with(|| bundle.clone());
+                self.bundles.lock().unwrap().entry(info.name.clone()).or_insert_with(|| bundle.clone());
             }
         }
         found
@@ -112,9 +103,7 @@ pub fn global() -> &'static ProcResolver {
 
 #[cfg(any(target_os = "macos", windows))]
 fn snapshot() -> HashMap<u16, ProcInfo> {
-    use netstat2::{
-        get_sockets_info, AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo,
-    };
+    use netstat2::{get_sockets_info, AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo};
 
     let af = AddressFamilyFlags::IPV4 | AddressFamilyFlags::IPV6;
     let mut map: HashMap<u16, ProcInfo> = HashMap::new();
@@ -135,11 +124,7 @@ fn snapshot() -> HashMap<u16, ProcInfo> {
         };
         let (name, bundle) = names.entry(pid).or_insert_with(|| describe(pid)).clone();
         // Keep the first process seen for a given local port.
-        map.entry(tcp.local_port).or_insert(ProcInfo {
-            pid,
-            name,
-            bundle,
-        });
+        map.entry(tcp.local_port).or_insert(ProcInfo { pid, name, bundle });
     }
     map
 }

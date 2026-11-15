@@ -129,7 +129,7 @@ export function Inspector({
             </span>
           </div>
           <div className="insp-body">
-            <WsPanel key={flow.id} messages={wsMessages} dropped={wsDropped} />
+            <WsPanel key={flow.id} flowId={flow.id} messages={wsMessages} dropped={wsDropped} />
           </div>
         </div>
       </div>
@@ -211,6 +211,12 @@ export function Inspector({
         onCopy={() => void copyTab("response")}
         meta={metaFor(flow, "response")}
       >
+        {resTab === "Header" && flow.alt_svc_h3_removed && (
+          <div className="ws-note">
+            NovaProxy removed the HTTP/3 entries from <code>Alt-Svc</code> before passing this
+            response on, so the app stays on TCP. Shown below as the server sent it.
+          </div>
+        )}
         {resTab === "Header" && (
           <KeyValueTable
             rows={flow.response_headers.map((h) => ({ k: h.name, v: h.value }))}

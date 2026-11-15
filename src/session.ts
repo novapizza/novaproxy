@@ -1,23 +1,28 @@
 import { save, open } from "@tauri-apps/plugin-dialog";
 import { api, type Flow } from "./api";
 
-// Captured flow values arrive as JS numbers at runtime even though ts-rs types
-// some as bigint; guard JSON.stringify against any stray bigint just in case.
-const jsonReplacer = (_k: string, v: unknown) => (typeof v === "bigint" ? Number(v) : v);
+/**
+ * Which flows an export writes: their ids in list order, plus the flows the
+ * engine never held (an imported session lives only in the list).
+ */
+export interface ExportSet {
+  ids: string[];
+  extra: Flow[];
+}
 
-const num = (n: number | bigint | null | undefined) => (n == null ? 0 : Number(n));
-
-/** Save all captured flows as a `.nova` session file. Returns true if saved. */
-export async function exportSession(flows: Flow[]): Promise<boolean> {
+/**
+ * Save flows as a `.nova` session file. The backend writes it flow by flow,
+ * bodies included, so a long capture never sits in the webview as one string.
+ * Returns the number written, or null if the dialog was cancelled.
+ */
+export async function exportSession(set: ExportSet): Promise<number | null> {
   const path = await save({
     title: "Save NovaProxy session",
     defaultPath: "session.nova",
     filters: [{ name: "NovaProxy session", extensions: ["nova"] }],
   });
-  if (!path) return false;
-  const doc = { format: "novaproxy-session", version: 1, flows };
-  await api.writeFile(path, JSON.stringify(doc, jsonReplacer, 2));
-  return true;
+  if (!path) return null;
+  return api.exportFlows(path, "nova", set.ids, set.extra, false);
 }
 
 /** Load flows from a `.nova` session file. Returns null if cancelled. */
@@ -35,81 +40,19 @@ export async function importSession(): Promise<Flow[] | null> {
   return flows;
 }
 
-/** Export all flows as an HTTP Archive (HAR 1.2) file. Returns true if saved. */
-export async function exportHar(flows: Flow[]): Promise<boolean> {
+/**
+ * Export flows as an HTTP Archive (HAR 1.2), written by the backend like a
+ * session (`src-tauri/src/export.rs` builds the entries); `redact` hides
+ * credentials. Returns the number written, or null if cancelled.
+ */
+export async function exportHar(set: ExportSet, redact: boolean): Promise<number | null> {
   const path = await save({
     title: "Export as HAR",
     defaultPath: "novaproxy.har",
     filters: [{ name: "HTTP Archive", extensions: ["har"] }],
   });
-  if (!path) return false;
-
-  const entries = flows.map((f) => {
-    const reqHeaders = f.request_headers.map((h) => ({ name: h.name, value: h.value }));
-    const resHeaders = f.response_headers.map((h) => ({ name: h.name, value: h.value }));
-    let queryString: { name: string; value: string }[] = [];
-    try {
-      queryString = [...new URL(f.url).searchParams.entries()].map(([name, value]) => ({ name, value }));
-    } catch {
-      queryString = [];
-    }
-    const dur = f.duration_ms ?? 0;
-    // Real measurements where we have them, HAR's -1 ("not available") where we
-    // don't — never a fabricated zero. `connect` includes `ssl` per the HAR
-    // spec, and `wait` is TTFB with connection setup taken back out so the
-    // phases sum to `time` instead of double-counting it.
-    const t = f.timings;
-    const dns = t?.dns_ms ?? -1;
-    const ssl = t?.tls_ms ?? -1;
-    const connect = t?.connect_ms != null ? t.connect_ms + Math.max(ssl, 0) : -1;
-    const setup = Math.max(dns, 0) + Math.max(connect, 0);
-    const wait = t?.ttfb_ms != null ? Math.max(t.ttfb_ms - setup, 0) : dur;
-    const receive = t?.download_ms ?? 0;
-    return {
-      startedDateTime: new Date(f.started_at).toISOString(),
-      time: dur,
-      request: {
-        method: f.method,
-        url: f.url,
-        httpVersion: f.http_version,
-        cookies: [],
-        headers: reqHeaders,
-        queryString,
-        headersSize: -1,
-        bodySize: num(f.request_size),
-        ...(f.request_body?.text
-          ? { postData: { mimeType: f.request_body.media_type ?? "", text: f.request_body.text } }
-          : {}),
-      },
-      response: {
-        status: f.status ?? 0,
-        statusText: "",
-        httpVersion: f.http_version,
-        cookies: [],
-        headers: resHeaders,
-        content: {
-          size: num(f.response_body?.size ?? f.response_size),
-          mimeType: f.content_type ?? "",
-          text: f.response_body?.text ?? "",
-        },
-        redirectURL: "",
-        headersSize: -1,
-        bodySize: num(f.response_size),
-      },
-      cache: {},
-      timings: { blocked: -1, dns, connect, ssl, send: 0, wait, receive },
-    };
-  });
-
-  const har = {
-    log: {
-      version: "1.2",
-      creator: { name: "NovaProxy", version: "0.1.0" },
-      entries,
-    },
-  };
-  await api.writeFile(path, JSON.stringify(har, jsonReplacer, 2));
-  return true;
+  if (!path) return null;
+  return api.exportFlows(path, "har", set.ids, set.extra, redact);
 }
 
 /** Save the Insights report as Markdown. Returns true if saved. */

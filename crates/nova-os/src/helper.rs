@@ -166,9 +166,7 @@ fn plain(value: &str, what: &str) -> Result<()> {
 /// interesting attack — a caller talking the helper into routing the machine's
 /// traffic through a remote host.
 pub fn validate_host(host: &str) -> Result<()> {
-    let ip: std::net::IpAddr = host
-        .parse()
-        .with_context(|| format!("`{host}` is not an IP address"))?;
+    let ip: std::net::IpAddr = host.parse().with_context(|| format!("`{host}` is not an IP address"))?;
     if !ip.is_loopback() {
         bail!("`{host}` is not a loopback address");
     }
@@ -272,9 +270,12 @@ pub fn install_plan(source_bin: &Path, staged_plist: &Path) -> Plan {
         Step::with_args(
             "/usr/bin/install",
             vec![
-                "-o".into(), "root".into(),
-                "-g".into(), "wheel".into(),
-                "-m".into(), "755".into(),
+                "-o".into(),
+                "root".into(),
+                "-g".into(),
+                "wheel".into(),
+                "-m".into(),
+                "755".into(),
                 source_bin.display().to_string(),
                 HELPER_BIN.into(),
             ],
@@ -282,9 +283,12 @@ pub fn install_plan(source_bin: &Path, staged_plist: &Path) -> Plan {
         Step::with_args(
             "/usr/bin/install",
             vec![
-                "-o".into(), "root".into(),
-                "-g".into(), "wheel".into(),
-                "-m".into(), "644".into(),
+                "-o".into(),
+                "root".into(),
+                "-g".into(),
+                "wheel".into(),
+                "-m".into(),
+                "644".into(),
                 staged_plist.display().to_string(),
                 PLIST_PATH.into(),
             ],
@@ -324,9 +328,7 @@ pub fn source_binary() -> Option<PathBuf> {
     }
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    [dir.join("nova-helper"), dir.join("../Resources/nova-helper")]
-        .into_iter()
-        .find(|p| p.is_file())
+    [dir.join("nova-helper"), dir.join("../Resources/nova-helper")].into_iter().find(|p| p.is_file())
 }
 
 /// Install the helper, then confirm by talking to it.
@@ -354,9 +356,8 @@ pub fn install(source_bin: &Path, staged_dir: &Path, owner_uid: u32) -> Result<(
     std::fs::write(&staged_plist, plist_xml(owner_uid))
         .with_context(|| format!("cannot stage {}", staged_plist.display()))?;
     let staged_bin = staged_dir.join(STAGED_BIN);
-    std::fs::copy(source_bin, &staged_bin).with_context(|| {
-        format!("cannot stage {} to {}", source_bin.display(), staged_bin.display())
-    })?;
+    std::fs::copy(source_bin, &staged_bin)
+        .with_context(|| format!("cannot stage {} to {}", source_bin.display(), staged_bin.display()))?;
 
     let ran = install_plan(&staged_bin, &staged_plist).run();
     let _ = std::fs::remove_file(&staged_plist);
@@ -525,8 +526,7 @@ pub mod server {
         // can have created it (`/var/run`), so removing it is safe.
         let path = socket_path();
         let _ = std::fs::remove_file(&path);
-        let listener =
-            UnixListener::bind(&path).with_context(|| format!("cannot bind {}", path.display()))?;
+        let listener = UnixListener::bind(&path).with_context(|| format!("cannot bind {}", path.display()))?;
         restrict_socket(&path, owner_uid)?;
         prepare_log();
         tracing::info!("nova-helper listening on {} for uid {owner_uid}", path.display());
@@ -590,11 +590,7 @@ pub mod server {
         // the call; `chown` reports failure through its return value.
         let rc = unsafe { libc::chown(c_path.as_ptr(), owner_uid as libc::uid_t, 0) };
         if rc != 0 {
-            bail!(
-                "cannot hand {} to uid {owner_uid}: {}",
-                path.display(),
-                std::io::Error::last_os_error()
-            );
+            bail!("cannot hand {} to uid {owner_uid}: {}", path.display(), std::io::Error::last_os_error());
         }
         Ok(())
     }
@@ -675,9 +671,8 @@ pub mod server {
         // "enable" is not blamed on the writes when the read is the cost.
         let known = || {
             let t = std::time::Instant::now();
-            let services = macos::parse_services(
-                crate::oscmd::capture("networksetup", &["-listallnetworkservices"]).as_str(),
-            );
+            let services =
+                macos::parse_services(crate::oscmd::capture("networksetup", &["-listallnetworkservices"]).as_str());
             tracing::info!(
                 count = services.len(),
                 ms = t.elapsed().as_millis() as u64,
@@ -787,11 +782,7 @@ mod tests {
         let xml = plist_xml(501);
         assert!(xml.contains("<key>StandardOutPath</key>"));
         assert!(xml.contains("<key>StandardErrorPath</key>"));
-        assert_eq!(
-            xml.matches(HELPER_LOG).count(),
-            2,
-            "both streams go to {HELPER_LOG}"
-        );
+        assert_eq!(xml.matches(HELPER_LOG).count(), 2, "both streams go to {HELPER_LOG}");
     }
 
     #[test]
@@ -831,10 +822,7 @@ mod tests {
             .map(|s| s.to_shell())
             .collect::<Vec<_>>()
             .join(" ; ");
-        assert!(
-            line.contains(&staged_bin.display().to_string()),
-            "the elevated step reads the staged copy: {line}"
-        );
+        assert!(line.contains(&staged_bin.display().to_string()), "the elevated step reads the staged copy: {line}");
         assert!(!line.contains("source-nova-helper"), "never the build tree: {line}");
 
         std::fs::remove_dir_all(&staged).ok();
@@ -852,11 +840,7 @@ mod tests {
 
     #[test]
     fn requests_and_replies_round_trip_as_one_json_line() {
-        let request = Request::Enable {
-            host: "127.0.0.1".into(),
-            port: 9090,
-            backup: backup(&["Wi-Fi"]),
-        };
+        let request = Request::Enable { host: "127.0.0.1".into(), port: 9090, backup: backup(&["Wi-Fi"]) };
         let line = serde_json::to_string(&request).unwrap();
         assert!(!line.contains('\n'), "the protocol is line-delimited");
         assert_eq!(serde_json::from_str::<Request>(&line).unwrap(), request);

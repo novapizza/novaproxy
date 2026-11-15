@@ -12,12 +12,14 @@ pub mod insights;
 pub mod intercept;
 pub mod mcp;
 pub mod procinfo;
+pub mod redact;
 pub mod rules;
 pub mod scripting;
 pub mod timing;
 pub mod tlsscope;
 pub mod trust;
 pub mod upstream;
+pub mod wsstore;
 
 // OS plumbing lives in its own crate so the privileged helper — which runs as
 // root — links none of the engine. Re-exported so callers still say
@@ -29,10 +31,10 @@ use std::sync::atomic::AtomicU16;
 use std::sync::{Arc, RwLock};
 
 use anyhow::Result;
-use hudsucker::rustls::crypto::aws_lc_rs;
 use hudsucker::hyper_util::client::legacy::Client;
 use hudsucker::hyper_util::rt::{TokioExecutor, TokioTimer};
 use hudsucker::hyper_util::server::conn::auto::Builder as ServerBuilder;
+use hudsucker::rustls::crypto::aws_lc_rs;
 use hudsucker::Proxy;
 use nova_proto::{NetworkConditions, Rule, TlsScope};
 use tokio::sync::oneshot;
@@ -41,8 +43,8 @@ pub use flow::{FlowSink, NoopWsSink, Shared, WsSink};
 
 use crate::bodystore::BodyStore;
 use crate::breakpoint::Breakpoints;
-use crate::flowstore::FlowStore;
 use crate::ca::CaMaterial;
+use crate::flowstore::FlowStore;
 use crate::intercept::{NovaHandler, NovaWsHandler};
 use crate::scripting::ScriptEngine;
 use crate::timing::ConnectLog;
@@ -69,6 +71,12 @@ pub struct EngineHooks {
     /// it are marked internal so an agent inspecting traffic does not mostly see
     /// its own tool calls.
     pub internal_port: Arc<AtomicU16>,
+    /// Keep apps on TCP: take HTTP/3 (`h3`, `h3-29`, `quic`) entries out of
+    /// `Alt-Svc` response headers. QUIC runs over UDP, which an HTTP proxy
+    /// never sees: browsers do not use it through a proxy, but an app that
+    /// learns a host speaks HTTP/3 can connect to it directly later and drop
+    /// out of the capture. On by default.
+    pub keep_on_tcp: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl EngineHooks {
@@ -86,6 +94,7 @@ impl EngineHooks {
             bodies,
             connects: Arc::new(ConnectLog::default()),
             internal_port: Arc::new(AtomicU16::new(0)),
+            keep_on_tcp: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 }
@@ -112,9 +121,7 @@ pub struct EngineConfig {
 
 impl Default for EngineConfig {
     fn default() -> Self {
-        Self {
-            addr: SocketAddr::from(([127, 0, 0, 1], 9090)),
-        }
+        Self { addr: SocketAddr::from(([127, 0, 0, 1], 9090)) }
     }
 }
 
@@ -222,10 +229,5 @@ pub fn start(
         }
     });
 
-    Ok(EngineHandle {
-        stop: Some(stop_tx),
-        addr: config.addr,
-        shared,
-    })
+    Ok(EngineHandle { stop: Some(stop_tx), addr: config.addr, shared })
 }
-

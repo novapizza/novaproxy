@@ -56,8 +56,7 @@
 use std::sync::Arc;
 
 use tauri::menu::{
-    AboutMetadata, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID,
-    WINDOW_SUBMENU_ID,
+    AboutMetadata, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID,
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
@@ -142,32 +141,19 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let maximize = PredefinedMenuItem::maximize(app, None)?;
     // One item cannot sit in two places, so each separator position needs its
     // own rather than sharing one.
-    let seps: Vec<PredefinedMenuItem<R>> = (0..8)
-        .map(|_| PredefinedMenuItem::separator(app))
-        .collect::<tauri::Result<_>>()?;
+    let seps: Vec<PredefinedMenuItem<R>> =
+        (0..8).map(|_| PredefinedMenuItem::separator(app)).collect::<tauri::Result<_>>()?;
 
     let show_logs = MenuItem::with_id(app, SHOW_LOGS, show_logs_label(), true, None::<&str>)?;
     // The one chord that lives in the menu rather than in the webview: it has to
     // work when focus is anywhere, and macOS users look for shortcuts in Help.
     // Everything else is dispatched by `src/useShortcuts.ts`, so that the
     // registry stays the single source of truth (issues/0003 §3).
-    let shortcuts = MenuItem::with_id(
-        app,
-        SHORTCUTS,
-        "Keyboard Shortcuts",
-        true,
-        Some("CmdOrCtrl+/"),
-    )?;
+    let shortcuts = MenuItem::with_id(app, SHORTCUTS, "Keyboard Shortcuts", true, Some("CmdOrCtrl+/"))?;
     // Enabled even in a build that cannot update itself: the honest answer to
     // "am I current?" is a sentence in the card, and an item greyed out for
     // reasons the user cannot see reads as a bug.
-    let check_updates = MenuItem::with_id(
-        app,
-        CHECK_UPDATES,
-        "Check for Updates…",
-        true,
-        None::<&str>,
-    )?;
+    let check_updates = MenuItem::with_id(app, CHECK_UPDATES, "Check for Updates…", true, None::<&str>)?;
 
     // The app submenu: macOS's, and macOS's alone.
     let app_menu = Submenu::with_items(
@@ -211,12 +197,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         WINDOW_SUBMENU_ID,
         "Window",
         true,
-        &[
-            &minimize as &dyn IsMenuItem<R>,
-            &maximize,
-            &seps[4],
-            &close_window,
-        ],
+        &[&minimize as &dyn IsMenuItem<R>, &maximize, &seps[4], &close_window],
     )?;
 
     // Help carries our items, plus About on the platforms with no app menu —
@@ -363,26 +344,15 @@ fn export(state: &AppState) {
             );
             // `result` matches the convention `commands::record` uses, so ok and
             // fail lines for the same event can be counted against each other.
-            crate::usage!(
-                "logs.export",
-                result = "ok",
-                files = bundle.files,
-                bytes = bundle.bytes
-            );
+            crate::usage!("logs.export", result = "ok", files = bundle.files, bytes = bundle.bytes);
             if let Err(e) = crate::logbundle::reveal(&bundle.path) {
                 // The zip is written either way, so this is a degraded success:
                 // say where it is rather than reporting a failure.
-                tracing::warn!(
-                    "could not reveal the support bundle: {}",
-                    crate::logging::redact(&e.to_string())
-                );
+                tracing::warn!("could not reveal the support bundle: {}", crate::logging::redact(&e.to_string()));
             }
         }
         Err(e) => {
-            tracing::error!(
-                "could not collect a support bundle: {}",
-                crate::logging::redact(&e.to_string())
-            );
+            tracing::error!("could not collect a support bundle: {}", crate::logging::redact(&e.to_string()));
             crate::usage!("logs.export", result = "fail");
         }
     }
@@ -413,25 +383,19 @@ mod tests {
         assert_eq!(action_for(SHORTCUTS), Some(Action::Shortcuts));
         // They must stay distinct, or one item would run another's code.
         let ids = [SHOW_LOGS, CHECK_UPDATES, SHORTCUTS];
-        assert_eq!(
-            ids.iter().collect::<std::collections::HashSet<_>>().len(),
-            ids.len()
-        );
+        assert_eq!(ids.iter().collect::<std::collections::HashSet<_>>().len(), ids.len());
         // Predefined items and typos alike: no action, no panic.
         assert_eq!(action_for("app.check-update"), None);
         assert_eq!(action_for(""), None);
     }
 
-    #[test]
-    fn quit_never_ends_up_with_nowhere_to_live() {
-        // Quit is in the app menu on macOS and in File everywhere else. A
-        // platform with neither an app menu nor window items would drop it
-        // entirely, and the menu is built at runtime so nothing else would
-        // notice. Today that combination does not exist; this is the guard for
-        // the day someone adds a platform.
-        assert!(
-            PLATFORM_HAS_APP_MENU || PLATFORM_HAS_WINDOW_ITEMS,
-            "no app menu and no File submenu means no way to quit from the menu"
-        );
-    }
+    // Quit is in the app menu on macOS and in File everywhere else. A platform
+    // with neither an app menu nor window items would drop it entirely, and the
+    // menu is built at runtime so nothing else would notice. Today that
+    // combination does not exist; this is the guard for the day someone adds a
+    // platform — checked when the tests compile, since both are constants.
+    const _: () = assert!(
+        PLATFORM_HAS_APP_MENU || PLATFORM_HAS_WINDOW_ITEMS,
+        "no app menu and no File submenu means no way to quit from the menu"
+    );
 }

@@ -8,10 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use hudsucker::certificate_authority::RcgenAuthority;
 use hudsucker::rustls::crypto::aws_lc_rs;
-use rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, Issuer, KeyPair,
-    KeyUsagePurpose,
-};
+use rcgen::{BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose};
 use sha2::{Digest, Sha256};
 
 /// Certs held in memory; mirrors the two files on disk.
@@ -49,8 +46,7 @@ impl CaMaterial {
     /// Build the hudsucker authority used to sign leaf certs during interception.
     pub fn authority(&self) -> Result<RcgenAuthority> {
         let key_pair = KeyPair::from_pem(&self.key_pem).context("parse CA private key")?;
-        let issuer =
-            Issuer::from_ca_cert_pem(&self.cert_pem, key_pair).context("parse CA certificate")?;
+        let issuer = Issuer::from_ca_cert_pem(&self.cert_pem, key_pair).context("parse CA certificate")?;
         // 1_000-entry leaf cache: minting per connection is a known perf trap.
         Ok(RcgenAuthority::new(issuer, 1_000, aws_lc_rs::default_provider()))
     }
@@ -82,11 +78,7 @@ fn generate() -> Result<(String, String)> {
     dn.push(DnType::OrganizationName, "NovaProxy");
     params.distinguished_name = dn;
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    params.key_usages = vec![
-        KeyUsagePurpose::KeyCertSign,
-        KeyUsagePurpose::CrlSign,
-        KeyUsagePurpose::DigitalSignature,
-    ];
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign, KeyUsagePurpose::DigitalSignature];
     // Long validity: this is a locally-trusted development root.
     params.not_before = time::OffsetDateTime::now_utc() - time::Duration::days(1);
     params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(3650);
@@ -114,13 +106,7 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
 pub fn fingerprint_pem(cert_pem: &str) -> Option<String> {
     let der = pem_to_der(cert_pem)?;
     let digest = Sha256::digest(&der);
-    Some(
-        digest
-            .iter()
-            .map(|b| format!("{b:02X}"))
-            .collect::<Vec<_>>()
-            .join(":"),
-    )
+    Some(digest.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":"))
 }
 
 /// SHA-1 thumbprint of the DER inside a PEM certificate, as `AA:BB:...`.
@@ -132,13 +118,7 @@ pub fn thumbprint_sha1_pem(cert_pem: &str) -> Option<String> {
     use sha1::Sha1;
     let der = pem_to_der(cert_pem)?;
     let digest = Sha1::digest(&der);
-    Some(
-        digest
-            .iter()
-            .map(|b| format!("{b:02X}"))
-            .collect::<Vec<_>>()
-            .join(":"),
-    )
+    Some(digest.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":"))
 }
 
 fn pem_to_der(pem: &str) -> Option<Vec<u8>> {

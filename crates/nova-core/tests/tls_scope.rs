@@ -80,9 +80,9 @@ async fn excluded_host_is_tunneled_without_decryption() {
     }));
 
     let proxy_port = 39_260u16;
-    let mut hooks = nova_core::EngineHooks::in_memory(Arc::new(
-        nova_core::breakpoint::Breakpoints::new(Arc::new(nova_core::breakpoint::NoopBreakpointSink)),
-    ));
+    let mut hooks = nova_core::EngineHooks::in_memory(Arc::new(nova_core::breakpoint::Breakpoints::new(Arc::new(
+        nova_core::breakpoint::NoopBreakpointSink,
+    ))));
     hooks.tls_scope = tls_scope;
 
     let handle = nova_core::start(
@@ -98,9 +98,7 @@ async fn excluded_host_is_tunneled_without_decryption() {
 
     // CONNECT to the echo server through the proxy.
     let mut sock = TcpStream::connect(("127.0.0.1", proxy_port)).await.unwrap();
-    let connect = format!(
-        "CONNECT 127.0.0.1:{echo_port} HTTP/1.1\r\nHost: 127.0.0.1:{echo_port}\r\n\r\n"
-    );
+    let connect = format!("CONNECT 127.0.0.1:{echo_port} HTTP/1.1\r\nHost: 127.0.0.1:{echo_port}\r\n\r\n");
     sock.write_all(connect.as_bytes()).await.unwrap();
     sock.flush().await.unwrap();
 

@@ -12,19 +12,15 @@ impl FlowSink for Printer {
     fn emit(&self, f: Flow) {
         if matches!(f.state, FlowState::Completed | FlowState::Error) {
             println!(
-                "FLOW {} {} -> {:?} ({} resp bytes) [app {}]{}{}{}",
+                "FLOW {} {} -> {:?} {} ({} resp bytes) [app {}]{}{}{}",
                 f.method,
                 f.url,
                 f.status,
+                f.http_version,
                 f.response_size,
-                f.process
-                    .as_deref()
-                    .map(|p| format!("{p}:{}", f.pid.unwrap_or(0)))
-                    .unwrap_or_else(|| "?".into()),
+                f.process.as_deref().map(|p| format!("{p}:{}", f.pid.unwrap_or(0))).unwrap_or_else(|| "?".into()),
                 if f.resent { " [resent]" } else { "" },
-                f.mapped_from
-                    .map(|h| format!(" [mapped-from {h}]"))
-                    .unwrap_or_default(),
+                f.mapped_from.map(|h| format!(" [mapped-from {h}]")).unwrap_or_default(),
                 f.error.map(|e| format!(" ERR:{e}")).unwrap_or_default(),
             );
         }
@@ -74,9 +70,9 @@ async fn main() {
             .unwrap_or_default(),
     }));
 
-    let mut hooks = nova_core::EngineHooks::in_memory(Arc::new(
-        nova_core::breakpoint::Breakpoints::new(Arc::new(nova_core::breakpoint::NoopBreakpointSink)),
-    ));
+    let mut hooks = nova_core::EngineHooks::in_memory(Arc::new(nova_core::breakpoint::Breakpoints::new(Arc::new(
+        nova_core::breakpoint::NoopBreakpointSink,
+    ))));
     hooks.rules = rules;
     hooks.scripts = scripts;
     hooks.net = net;

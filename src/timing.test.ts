@@ -107,11 +107,14 @@ describe("timingBreakdown", () => {
     expect(b.spanMs).toBe(40);
   });
 
-  it("surfaces the request-body phase separately from the waterfall", () => {
+  it("shows only the part of the upload that outlasted connection setup", () => {
     const b = timingBreakdown(mkFlow({ request_ms: 12, ttfb_ms: 50, download_ms: 5 }));
     expect(b.requestMs).toBe(12);
-    // It overlaps setup/waiting, so it must not become a waterfall bar.
-    expect(b.phases.map((p) => p.key)).toEqual(["wait", "download"]);
+    expect(b.phases.map((p) => [p.key, p.ms])).toEqual([["send", 12], ["wait", 38], ["download", 5]]);
+
+    // An upload that finished during the handshake adds no bar of its own.
+    const quick = timingBreakdown(mkFlow({ connect_ms: 30, request_ms: 20, ttfb_ms: 50 }));
+    expect(quick.phases.map((p) => p.key)).toEqual(["connect", "wait"]);
   });
 });
 
@@ -141,6 +144,15 @@ describe("server wait and the turtle", () => {
     const f = mkFlow({ dns_ms: 20, connect_ms: 30, tls_ms: 50, ttfb_ms: 700 });
     expect(serverWaitMs(f)).toBe(600);
     expect(timingBreakdown(f).phases.find((p) => p.key === "wait")?.ms).toBe(600);
+  });
+
+  it("does not count the upload as server time, nor setup twice", () => {
+    // Upload ended 900 ms in, after a 100 ms connect: the server had the
+    // request at 900 ms, not at 1000 ms.
+    const f = mkFlow({ connect_ms: 100, request_ms: 900, ttfb_ms: 1500 });
+    expect(serverWaitMs(f)).toBe(600);
+    const b = timingBreakdown(f);
+    expect(b.phases.reduce((n, p) => n + p.ms, 0)).toBe(1500);
   });
 
   it("marks waits over 500 ms only", () => {

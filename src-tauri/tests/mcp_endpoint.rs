@@ -15,16 +15,13 @@ use serde_json::{json, Value};
 struct Client {
     http: reqwest::Client,
     url: String,
+    token: String,
     next_id: std::cell::Cell<u64>,
 }
 
 impl Client {
-    fn new(url: String) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            url,
-            next_id: std::cell::Cell::new(1),
-        }
+    fn new(url: String, token: String) -> Self {
+        Self { http: reqwest::Client::new(), url, token, next_id: std::cell::Cell::new(1) }
     }
 
     async fn call(&self, method: &str, params: Value) -> Value {
@@ -38,6 +35,7 @@ impl Client {
             // Both types, as the streamable-HTTP transport requires.
             .header("accept", "application/json, text/event-stream")
             .header("mcp-protocol-version", "2025-06-18")
+            .header("authorization", format!("Bearer {}", self.token))
             .body(body.to_string())
             .send()
             .await
@@ -51,20 +49,11 @@ impl Client {
     /// Call a tool and return its structured result.
     async fn tool(&self, name: &str, args: Value) -> Value {
         let res = self.call("tools/call", json!({"name": name, "arguments": args})).await;
-        let result = res
-            .get("result")
-            .unwrap_or_else(|| panic!("{name} returned no result: {res}"));
-        assert_ne!(
-            result.get("isError"),
-            Some(&json!(true)),
-            "{name} reported an error: {result}"
-        );
+        let result = res.get("result").unwrap_or_else(|| panic!("{name} returned no result: {res}"));
+        assert_ne!(result.get("isError"), Some(&json!(true)), "{name} reported an error: {result}");
         // rmcp puts a typed tool return in structuredContent, with the JSON text
         // mirrored into content for clients that only read text.
-        result
-            .get("structuredContent")
-            .cloned()
-            .unwrap_or_else(|| result.clone())
+        result.get("structuredContent").cloned().unwrap_or_else(|| result.clone())
     }
 
     /// Call a tool expecting failure, returning the error text.
@@ -85,10 +74,7 @@ fn flow(id: &str, host: &str, path: &str) -> Flow {
         format!("https://{host}{path}"),
         "127.0.0.1:1".into(),
         "HTTP/1.1".into(),
-        vec![nova_proto::Header {
-            name: "content-type".into(),
-            value: "application/json".into(),
-        }],
+        vec![nova_proto::Header { name: "content-type".into(), value: "application/json".into() }],
     )
 }
 
@@ -116,9 +102,7 @@ fn seed(state: &AppState) {
     let mut theirs = flow("f1", "localhost", "/mcp");
     theirs.status = Some(200);
     theirs.process = Some("node".into());
-    theirs.request_body = Some(body(
-        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_file"}}"#,
-    ));
+    theirs.request_body = Some(body(r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_file"}}"#));
     theirs.mcp = Some(McpInfo {
         method: Some("tools/call".into()),
         tool: Some("read_file".into()),
@@ -158,7 +142,29 @@ async fn mcp_endpoint_serves_captured_traffic() {
 
     // Port 0: let the OS pick, so the test never collides with a real instance.
     let handle = mcp::start(state.clone(), 0).await.expect("MCP endpoint started");
-    let client = Client::new(format!("http://127.0.0.1:{}/", handle.addr.port()));
+    let url = format!("http://127.0.0.1:{}/", handle.addr.port());
+    let token = state.mcp_token().expect("token created on start");
+    assert_eq!(token.len(), 64, "256 bits, hex");
+
+    /* -------------------------------- access ------------------------------- */
+
+    // Loopback is not enough: without the token nothing is served.
+    let initialize = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "x", "version": "0"}}});
+    for auth in [None, Some("Bearer wrong"), Some(format!("Basic {token}").as_str())] {
+        let mut req = reqwest::Client::new()
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .body(initialize.to_string());
+        if let Some(a) = auth {
+            req = req.header("authorization", a);
+        }
+        let res = req.send().await.unwrap();
+        assert_eq!(res.status(), 401, "auth {auth:?} must be refused");
+    }
+
+    let client = Client::new(url, token);
 
     /* ------------------------------ handshake ------------------------------ */
 
@@ -174,15 +180,9 @@ async fn mcp_endpoint_serves_captured_traffic() {
         .await;
     let result = &init["result"];
     assert_eq!(result["serverInfo"]["name"], "novaproxy");
+    assert!(result["capabilities"]["tools"].is_object(), "server must advertise tools: {result}");
     assert!(
-        result["capabilities"]["tools"].is_object(),
-        "server must advertise tools: {result}"
-    );
-    assert!(
-        result["instructions"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("mcp_only"),
+        result["instructions"].as_str().unwrap_or_default().contains("mcp_only"),
         "instructions should tell an agent how to isolate MCP traffic"
     );
 
@@ -213,11 +213,7 @@ async fn mcp_endpoint_serves_captured_traffic() {
     /* ------------------------------ list_flows ------------------------------ */
 
     let rows = client.tool("list_flows", json!({})).await;
-    assert_eq!(
-        ids(&rows),
-        vec!["f1", "f0"],
-        "newest first, and NovaProxy's own traffic (f2) is excluded by default"
-    );
+    assert_eq!(ids(&rows), vec!["f1", "f0"], "newest first, and NovaProxy's own traffic (f2) is excluded by default");
 
     let rows = client.tool("list_flows", json!({"include_internal": true})).await;
     assert_eq!(ids(&rows), vec!["f2", "f1", "f0"], "opt back in explicitly");
@@ -226,14 +222,9 @@ async fn mcp_endpoint_serves_captured_traffic() {
 
     let rows = client.tool("list_flows", json!({"mcp_only": true})).await;
     assert_eq!(ids(&rows), vec!["f1"], "only the MCP server being debugged");
-    assert_eq!(
-        rows[0]["mcp"], "tools/call → read_file",
-        "the row names the method and tool, not just POST /mcp"
-    );
+    assert_eq!(rows[0]["mcp"], "tools/call → read_file", "the row names the method and tool, not just POST /mcp");
 
-    let rows = client
-        .tool("list_flows", json!({"mcp_only": true, "include_internal": true}))
-        .await;
+    let rows = client.tool("list_flows", json!({"mcp_only": true, "include_internal": true})).await;
     assert_eq!(ids(&rows), vec!["f2", "f1"]);
 
     /* ---------------------------- other filters ---------------------------- */
@@ -251,9 +242,7 @@ async fn mcp_endpoint_serves_captured_traffic() {
     assert_eq!(ids(&rows), vec!["f0"], "matches inside a captured body");
     let rows = client.tool("search_flows", json!({"query": "read_file"})).await;
     assert_eq!(ids(&rows), vec!["f1"]);
-    let rows = client
-        .tool("search_flows", json!({"query": "tools/call", "mcp_only": true}))
-        .await;
+    let rows = client.tool("search_flows", json!({"query": "tools/call", "mcp_only": true})).await;
     assert_eq!(ids(&rows), vec!["f1"], "filters compose with the query");
 
     /* ------------------------------ get_flow ------------------------------- */
@@ -263,18 +252,12 @@ async fn mcp_endpoint_serves_captured_traffic() {
     assert_eq!(detail["mcp_detail"]["tool"], "read_file");
     assert_eq!(detail["mcp_detail"]["transport"], "Http");
     assert!(
-        detail["request_headers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|h| h[0] == "content-type"),
+        detail["request_headers"].as_array().unwrap().iter().any(|h| h[0] == "content-type"),
         "headers come back from get_flow: {detail}"
     );
 
     // Bodies are capped, and the cap is visible.
-    let detail = client
-        .tool("get_flow", json!({"flow_id": "f0", "body_chars": 5}))
-        .await;
+    let detail = client.tool("get_flow", json!({"flow_id": "f0", "body_chars": 5})).await;
     let body = &detail["response_body"];
     assert_eq!(body["text"].as_str().unwrap().chars().count(), 5);
     assert_eq!(body["truncated"], true);
@@ -282,9 +265,7 @@ async fn mcp_endpoint_serves_captured_traffic() {
 
     /* ------------------------------ get_body ------------------------------- */
 
-    let out = client
-        .tool("get_body", json!({"flow_id": "f0", "side": "response"}))
-        .await;
+    let out = client.tool("get_body", json!({"flow_id": "f0", "side": "response"})).await;
     assert!(out["text"].as_str().unwrap().contains("ada"));
     assert_eq!(out["truncated"], false, "the whole preview fits");
 
@@ -305,10 +286,7 @@ async fn mcp_endpoint_serves_captured_traffic() {
     assert_eq!(rules.as_array().unwrap().len(), 1);
     assert_eq!(rules[0]["kind"], "MapRemote");
     assert_eq!(rules[0]["target"], "https://staging.example.com");
-    assert!(
-        state.rules_path().exists(),
-        "a rule set by an agent must survive a restart, like one set in the UI"
-    );
+    assert!(state.rules_path().exists(), "a rule set by an agent must survive a restart, like one set in the UI");
 
     client.tool("delete_rule", json!({"id": "r-mcp"})).await;
     let rules = client.tool("list_rules", json!({})).await;
@@ -324,21 +302,11 @@ async fn mcp_endpoint_serves_captured_traffic() {
     /* ------------------------------- errors -------------------------------- */
 
     let err = client.tool_err("get_flow", json!({"flow_id": "nope"})).await;
-    assert!(
-        err.contains("no flow with id nope"),
-        "an unknown id must be a clear error, not empty data: {err}"
-    );
-    let err = client
-        .tool_err("get_body", json!({"flow_id": "f0", "side": "sideways"}))
-        .await;
+    assert!(err.contains("no flow with id nope"), "an unknown id must be a clear error, not empty data: {err}");
+    let err = client.tool_err("get_body", json!({"flow_id": "f0", "side": "sideways"})).await;
     assert!(err.contains("request"), "bad side is rejected with guidance: {err}");
-    let err = client
-        .tool_err("set_rule", json!({"id": "bad", "kind": "MapRemote", "pattern": "*"}))
-        .await;
-    assert!(
-        err.contains("target"),
-        "a rule that could not act must not be silently accepted: {err}"
-    );
+    let err = client.tool_err("set_rule", json!({"id": "bad", "kind": "MapRemote", "pattern": "*"})).await;
+    assert!(err.contains("target"), "a rule that could not act must not be silently accepted: {err}");
 
     /* ------------------------------ insights ------------------------------- */
 
@@ -360,6 +328,54 @@ async fn mcp_endpoint_serves_captured_traffic() {
     assert_eq!(found["example_flow_ids"], json!(["t0"]));
     let out = client.tool("get_insights", json!({"app": "slack"})).await;
     assert_eq!(out["insights"].as_array().map(Vec::len), Some(0), "filtered by app");
+
+    /* ------------------------------ redaction ------------------------------ */
+
+    let mut secret = flow("s0", "api.example.com", "/login?state=1&code=abc123");
+    secret.request_headers.push(nova_proto::Header { name: "Authorization".into(), value: "Bearer sk-live-1".into() });
+    secret.request_body = Some(crate::body(r#"{"user":"ada","password":"hunter2"}"#));
+    state.flows.insert(secret);
+
+    let shown = client.tool("get_flow", json!({"flow_id": "s0"})).await.to_string();
+    for leaked in ["sk-live-1", "hunter2", "abc123"] {
+        assert!(!shown.contains(leaked), "{leaked} reached the client: {shown}");
+    }
+    assert!(shown.contains("Bearer [redacted]") && shown.contains("state=1"), "{shown}");
+    let rows = client.tool("search_flows", json!({"query": "login"})).await.to_string();
+    assert!(!rows.contains("abc123"), "{rows}");
+
+    state.mcp_redact.store(false, std::sync::atomic::Ordering::Relaxed);
+    let raw = client.tool("get_flow", json!({"flow_id": "s0"})).await.to_string();
+    assert!(raw.contains("hunter2"), "turned off, values come through: {raw}");
+
+    /* ---------------------------- analysis tools ---------------------------- */
+
+    let summary = client.tool("summarize_session", json!({})).await;
+    assert!(summary["flows"].as_u64().unwrap() >= 4, "{summary}");
+    assert!(summary["hosts"].as_array().unwrap().iter().any(|h| h["host"] == "api.example.com"), "{summary}");
+    let only = client.tool("summarize_session", json!({"host": "localhost"})).await;
+    assert_eq!(only["flows"], 1, "filtered by host: {only}");
+
+    let diff = client.tool("diff_flows", json!({"a": "f0", "b": "s0"})).await;
+    assert!(diff["summary"].to_string().contains("authorization"), "{diff}");
+
+    let why = client.tool("explain_failure", json!({"flow_id": "f0"})).await;
+    assert_eq!(why["failed"], false, "{why}");
+    let err = client.tool_err("diff_flows", json!({"a": "f0", "b": "nope"})).await;
+    assert!(err.contains("no flow with id nope"), "{err}");
+
+    // A rotated token applies at once.
+    let old = client.token.clone();
+    state.rotate_mcp_token().unwrap();
+    assert_ne!(state.mcp_token().unwrap(), old);
+    let res = reqwest::Client::new()
+        .post(&client.url)
+        .header("authorization", format!("Bearer {old}"))
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
 
     handle.stop();
     let _ = std::fs::remove_dir_all(&dir);

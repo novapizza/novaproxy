@@ -306,6 +306,35 @@ pub struct InsightsOut {
 /// Example flow ids per insight returned to an agent.
 const INSIGHT_EXAMPLES: usize = 20;
 
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct SummaryParams {
+    /// Only flows from this app/process (substring, case-insensitive).
+    pub app: Option<String>,
+    /// Only flows to this host (substring, case-insensitive).
+    pub host: Option<String>,
+    /// Include NovaProxy's own traffic. Excluded by default.
+    #[serde(default)]
+    pub include_internal: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DiffParams {
+    /// The flow to compare from (often one that worked).
+    pub a: String,
+    /// The flow to compare with it (often one that failed).
+    pub b: String,
+    /// Also compare headers that differ on every exchange (Date, request ids,
+    /// trace headers). Off by default.
+    #[serde(default)]
+    pub include_noisy: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ExplainParams {
+    /// Flow id, as returned by `list_flows`.
+    pub flow_id: String,
+}
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct ActionOut {
     pub ok: bool,
@@ -317,6 +346,39 @@ pub struct ActionOut {
 #[derive(Clone)]
 pub struct NovaMcp {
     state: Arc<AppState>,
+}
+
+impl NovaMcp {
+    /// Whether credentials are hidden from the client (the default).
+    fn redacting(&self) -> bool {
+        self.state.mcp_redact.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// A flow as the client may see it.
+    fn shown(&self, flow: Flow) -> Flow {
+        if self.redacting() {
+            nova_core::redact::flow(&flow)
+        } else {
+            flow
+        }
+    }
+
+    fn shown_body(&self, body: nova_proto::BodyPreview) -> nova_proto::BodyPreview {
+        if self.redacting() {
+            nova_core::redact::body(&body)
+        } else {
+            body
+        }
+    }
+
+    /// A listing row; only the URL can carry a secret there.
+    fn summary(&self, flow: &Flow) -> FlowSummary {
+        let mut row = summarize(flow);
+        if self.redacting() {
+            row.url = nova_core::redact::url(&row.url);
+        }
+        row
+    }
 }
 
 #[tool_router]
@@ -333,53 +395,34 @@ Filters: mcp_only (MCP/JSON-RPC traffic only), app, host, method, status, errors
 include_internal (NovaProxy's own traffic, excluded by default), limit.")]
     pub fn list_flows(&self, Parameters(filters): Parameters<Filters>) -> Json<Vec<FlowSummary>> {
         let limit = clamp_limit(filters.limit);
-        let flows = self
-            .state
-            .flows
-            .find(|f| matches_filters(f, &filters), limit);
-        Json(flows.iter().map(summarize).collect())
+        let flows = self.state.flows.find(|f| matches_filters(f, &filters), limit);
+        Json(flows.iter().map(|f| self.summary(f)).collect())
     }
 
     /// Search captured flows by substring across URL, headers and body previews.
     #[tool(description = "Search captured flows for a case-insensitive substring in the URL, \
 headers or captured body previews. Takes the same filters as list_flows.")]
-    pub fn search_flows(
-        &self,
-        Parameters(params): Parameters<SearchParams>,
-    ) -> Json<Vec<FlowSummary>> {
+    pub fn search_flows(&self, Parameters(params): Parameters<SearchParams>) -> Json<Vec<FlowSummary>> {
         let needle = params.query.to_lowercase();
         let limit = clamp_limit(params.filters.limit);
-        let flows = self.state.flows.find(
-            |f| matches_filters(f, &params.filters) && matches_query(f, &needle),
-            limit,
-        );
-        Json(flows.iter().map(summarize).collect())
+        let flows = self.state.flows.find(|f| matches_filters(f, &params.filters) && matches_query(f, &needle), limit);
+        Json(flows.iter().map(|f| self.summary(f)).collect())
     }
 
     /// Full detail for one flow: headers, capped bodies, measured timings.
     #[tool(description = "Get one flow in full: headers, measured timings, and both bodies \
 capped to body_chars characters each (default 2000). Use get_body for more of a body.")]
-    pub fn get_flow(
-        &self,
-        Parameters(params): Parameters<FlowIdParams>,
-    ) -> Result<Json<FlowDetail>, ErrorData> {
-        let flow = self
-            .state
-            .flows
-            .get(&params.flow_id)
-            .ok_or_else(|| unknown_flow(&params.flow_id))?;
+    pub fn get_flow(&self, Parameters(params): Parameters<FlowIdParams>) -> Result<Json<FlowDetail>, ErrorData> {
+        let flow = self.state.flows.get(&params.flow_id).ok_or_else(|| unknown_flow(&params.flow_id))?;
         let cap = params.body_chars.unwrap_or(FLOW_BODY_CHARS).min(MAX_BODY_CHARS);
-        Ok(Json(detail(&flow, cap)))
+        Ok(Json(detail(&self.shown(flow), cap)))
     }
 
     /// Read one side's body, pulling the full bytes from the body store when the
     /// preview was truncated.
     #[tool(description = "Read a flow's request or response body, up to max_chars characters \
 (default 20000, max 200000). Large bodies are stored on disk and fetched on demand.")]
-    pub fn get_body(
-        &self,
-        Parameters(params): Parameters<BodyParams>,
-    ) -> Result<Json<BodyOut>, ErrorData> {
+    pub fn get_body(&self, Parameters(params): Parameters<BodyParams>) -> Result<Json<BodyOut>, ErrorData> {
         let side = match params.side.to_lowercase().as_str() {
             "request" | "req" => Side::Request,
             "response" | "res" => Side::Response,
@@ -390,11 +433,7 @@ capped to body_chars characters each (default 2000). Use get_body for more of a 
                 ))
             }
         };
-        let flow = self
-            .state
-            .flows
-            .get(&params.flow_id)
-            .ok_or_else(|| unknown_flow(&params.flow_id))?;
+        let flow = self.state.flows.get(&params.flow_id).ok_or_else(|| unknown_flow(&params.flow_id))?;
         let preview = match side {
             Side::Request => flow.request_body.clone(),
             Side::Response => flow.response_body.clone(),
@@ -410,10 +449,7 @@ capped to body_chars characters each (default 2000). Use get_body for more of a 
         // The preview is capped in memory; when the full body was spilled, read
         // it back so a request for more than the preview can be honoured.
         if preview.spilled {
-            if let Ok((bytes, total, _)) =
-                self.state
-                    .bodies
-                    .read(&params.flow_id, side, (cap as u64).saturating_mul(4))
+            if let Ok((bytes, total, _)) = self.state.bodies.read(&params.flow_id, side, (cap as u64).saturating_mul(4))
             {
                 let full = nova_core::flow::build_preview(
                     bytes,
@@ -422,10 +458,10 @@ capped to body_chars characters each (default 2000). Use get_body for more of a 
                     preview.media_type.clone(),
                     preview.decoded_from.clone(),
                 );
-                return Ok(Json(body_out(&full, cap, true)));
+                return Ok(Json(body_out(&self.shown_body(full), cap, true)));
             }
         }
-        Ok(Json(body_out(&preview, cap, preview.spilled)))
+        Ok(Json(body_out(&self.shown_body(preview.clone()), cap, preview.spilled)))
     }
 
     /// Re-issue a captured request through the proxy.
@@ -435,18 +471,9 @@ as a new flow, marked as NovaProxy's own traffic so it does not pollute unfilter
         &self,
         Parameters(params): Parameters<FlowIdParams>,
     ) -> Result<Json<ActionOut>, ErrorData> {
-        let flow = self
-            .state
-            .flows
-            .get(&params.flow_id)
-            .ok_or_else(|| unknown_flow(&params.flow_id))?;
-        crate::commands::replay(&self.state, flow, true)
-            .await
-            .map_err(|e| ErrorData::internal_error(e, None))?;
-        Ok(Json(ActionOut {
-            ok: true,
-            detail: format!("replayed {} through the proxy", params.flow_id),
-        }))
+        let flow = self.state.flows.get(&params.flow_id).ok_or_else(|| unknown_flow(&params.flow_id))?;
+        crate::commands::replay(&self.state, flow, true).await.map_err(|e| ErrorData::internal_error(e, None))?;
+        Ok(Json(ActionOut { ok: true, detail: format!("replayed {} through the proxy", params.flow_id) }))
     }
 
     /// The current traffic-control rules.
@@ -459,10 +486,7 @@ as a new flow, marked as NovaProxy's own traffic so it does not pollute unfilter
     #[tool(description = "Add or replace a traffic-control rule. kind is one of MapRemote \
 (redirect to target base URL), MapLocal (serve target file), Block (403), Rewrite (set a \
 request header). Reusing an id replaces that rule.")]
-    pub fn set_rule(
-        &self,
-        Parameters(params): Parameters<SetRuleParams>,
-    ) -> Result<Json<ActionOut>, ErrorData> {
+    pub fn set_rule(&self, Parameters(params): Parameters<SetRuleParams>) -> Result<Json<ActionOut>, ErrorData> {
         let kind = parse_rule_kind(&params.kind)?;
         let rule = Rule {
             id: params.id.clone(),
@@ -484,21 +508,13 @@ request header). Reusing an id replaces that rule.")]
             }
             rules.clone()
         };
-        self.state
-            .persist_rules(&next)
-            .map_err(|e| ErrorData::internal_error(e, None))?;
-        Ok(Json(ActionOut {
-            ok: true,
-            detail: format!("rule {} saved ({} total)", rule.id, next.len()),
-        }))
+        self.state.persist_rules(&next).map_err(|e| ErrorData::internal_error(e, None))?;
+        Ok(Json(ActionOut { ok: true, detail: format!("rule {} saved ({} total)", rule.id, next.len()) }))
     }
 
     /// Remove a traffic-control rule.
     #[tool(description = "Delete a traffic-control rule by id.")]
-    pub fn delete_rule(
-        &self,
-        Parameters(params): Parameters<DeleteRuleParams>,
-    ) -> Result<Json<ActionOut>, ErrorData> {
+    pub fn delete_rule(&self, Parameters(params): Parameters<DeleteRuleParams>) -> Result<Json<ActionOut>, ErrorData> {
         let (next, removed) = {
             let mut rules = self.state.rules.write().unwrap();
             let before = rules.len();
@@ -506,35 +522,75 @@ request header). Reusing an id replaces that rule.")]
             (rules.clone(), before != rules.len())
         };
         if !removed {
-            return Err(ErrorData::invalid_params(
-                format!("no rule with id {}", params.id),
-                None,
-            ));
+            return Err(ErrorData::invalid_params(format!("no rule with id {}", params.id), None));
         }
-        self.state
-            .persist_rules(&next)
-            .map_err(|e| ErrorData::internal_error(e, None))?;
-        Ok(Json(ActionOut {
-            ok: true,
-            detail: format!("rule {} deleted", params.id),
-        }))
+        self.state.persist_rules(&next).map_err(|e| ErrorData::internal_error(e, None))?;
+        Ok(Json(ActionOut { ok: true, detail: format!("rule {} deleted", params.id) }))
     }
 
     /// Anti-patterns found in the captured traffic.
-    #[tool(description = "Anti-patterns NovaProxy detected in the captured traffic, most severe first: request bursts / N+1 loops, polling, retry storms, rate limiting, high error rates, uncompressed or oversized responses, uncacheable static assets, redirect chains and loops, slow server responses, CORS preflight overhead, credentials in URLs or over plain HTTP, and cookies missing Secure/HttpOnly, heavy or legacy-format images, short cache lifetimes on fingerprinted \
+    #[tool(
+        description = "Anti-patterns NovaProxy detected in the captured traffic, most severe first: request bursts / N+1 loops, polling, retry storms, rate limiting, high error rates, uncompressed or oversized responses, uncacheable static assets, redirect chains and loops, slow server responses, CORS preflight overhead, credentials in URLs or over plain HTTP, and cookies missing Secure/HttpOnly, heavy or legacy-format images, short cache lifetimes on fingerprinted \
 assets, mixed content, HTML pages missing security headers, missing assets (404), empty 200 \
-responses, slow DNS/TCP/TLS setup, and CDN cache misses. Each comes with numbers, advice and example flow ids for get_flow. Filters: app, host, min_severity (info | warning | high).")]
+responses, slow DNS/TCP/TLS setup, and CDN cache misses. Each comes with numbers, advice and example flow ids for get_flow. Filters: app, host, min_severity (info | warning | high)."
+    )]
     pub fn get_insights(&self, Parameters(params): Parameters<InsightParams>) -> Json<InsightsOut> {
         let report = self.state.insights();
         Json(InsightsOut {
             flows_analyzed: report.analyzed,
-            insights: report
-                .insights
-                .into_iter()
-                .filter(|i| matches_insight(i, &params))
-                .map(insight_out)
-                .collect(),
+            insights: report.insights.into_iter().filter(|i| matches_insight(i, &params)).map(insight_out).collect(),
         })
+    }
+
+    /// The capture at a glance.
+    #[tool(description = "Summarize the captured traffic in one call: counts by status class, \
+bytes, the busiest apps and hosts (with p50/p95 duration), the most-called, slowest (p95 server \
+wait) and most-failing endpoints with an example flow id each, and how many Insights findings \
+there are by severity. Start here for \"what is this app doing?\". Filters: app, host, \
+include_internal.")]
+    pub fn summarize_session(&self, Parameters(p): Parameters<SummaryParams>) -> Json<crate::analysis::SessionSummary> {
+        let filters = Filters {
+            app: p.app.clone(),
+            host: p.host.clone(),
+            include_internal: p.include_internal,
+            ..Filters::default()
+        };
+        let flows: Vec<Flow> = self.state.flows.shells().into_iter().filter(|f| matches_filters(f, &filters)).collect();
+        let mut report = self.state.insights();
+        let scope = InsightParams { app: p.app, host: p.host, min_severity: None };
+        report.insights.retain(|i| matches_insight(i, &scope));
+        Json(crate::analysis::summarize_session(&flows, &report))
+    }
+
+    /// What differs between two flows.
+    #[tool(description = "Compare two flows: method, URL and query parameters, status, request \
+and response headers (noise such as Date and trace ids left out unless include_noisy), bodies \
+(JSON compared path by path), and timings, with a plain-words summary first. Typical use: a call \
+that worked against one that failed (explain_failure suggests the pair).")]
+    pub fn diff_flows(
+        &self,
+        Parameters(p): Parameters<DiffParams>,
+    ) -> Result<Json<crate::analysis::FlowDiff>, ErrorData> {
+        let a = self.state.flows.get(&p.a).ok_or_else(|| unknown_flow(&p.a))?;
+        let b = self.state.flows.get(&p.b).ok_or_else(|| unknown_flow(&p.b))?;
+        let redact = self.redacting();
+        let show = move |k: &str, v: &str| shown_value(redact, k, v);
+        Ok(Json(crate::analysis::diff_flows(&a, &b, p.include_noisy, &show)))
+    }
+
+    /// Why a flow failed.
+    #[tool(description = "Explain why a flow failed, from what was captured: transport errors \
+(DNS, refused, timeout, reset, TLS certificate), NovaProxy's own rules, each 4xx/5xx with its \
+evidence (WWW-Authenticate, Allow, Retry-After, the API's error message), CORS problems a \
+browser would hit, and the newest earlier call to the same endpoint that succeeded, with the \
+request headers it sent that this one did not.")]
+    pub fn explain_failure(
+        &self,
+        Parameters(p): Parameters<ExplainParams>,
+    ) -> Result<Json<crate::analysis::Explanation>, ErrorData> {
+        let flow = self.state.flows.get(&p.flow_id).ok_or_else(|| unknown_flow(&p.flow_id))?;
+        let flow = self.shown(flow);
+        Ok(Json(crate::analysis::explain_failure(&flow, &self.state.flows.shells())))
     }
 
     /// Proxy and capture status.
@@ -543,13 +599,7 @@ proxy points at it, how many flows were captured and how many are still retained
     pub fn proxy_status(&self) -> Json<StatusOut> {
         // Read the engine, release it, then read the CA — never hold two of
         // AppState's locks at once, so no ordering can deadlock.
-        let engine_addr = self
-            .state
-            .engine
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|h| h.addr.to_string());
+        let engine_addr = self.state.engine.lock().unwrap().as_ref().map(|h| h.addr.to_string());
         let ca_trusted = self
             .state
             .ca
@@ -583,10 +633,13 @@ then get_body when a body is truncated.\n\n\
 To debug an MCP server, pass mcp_only=true: only JSON-RPC-over-HTTP/SSE exchanges are \
 returned, labelled with their method and tool. MCP over stdio never reaches the network and \
 therefore cannot be captured.\n\n\
-To find what is wrong with an app's traffic without reading every flow, call get_insights first: it lists detected anti-patterns with example flow ids.
+For an overview of a capture, call summarize_session; to find what is wrong with an app's traffic without reading every flow, call get_insights: it lists detected anti-patterns with example flow ids. For one failing request, explain_failure says why and names a successful call to compare it with in diff_flows.
 
 Your own calls to this endpoint are marked internal and excluded unless you pass \
-include_internal=true. Bodies are capped in every response; ask for more with get_body.",
+include_internal=true. Bodies are capped in every response; ask for more with get_body.\n\n\
+Unless the user turned it off, credentials are hidden: authorization headers, cookies and \
+secret query parameters or body fields read `[redacted]`. replay_request still sends the \
+original values.",
             )
     }
 }
@@ -606,11 +659,7 @@ pub fn matches_filters(flow: &Flow, f: &Filters) -> bool {
         return false;
     }
     if let Some(app) = &f.app {
-        let hit = flow
-            .process
-            .as_deref()
-            .map(|p| p.to_lowercase().contains(&app.to_lowercase()))
-            .unwrap_or(false);
+        let hit = flow.process.as_deref().map(|p| p.to_lowercase().contains(&app.to_lowercase())).unwrap_or(false);
         if !hit {
             return false;
         }
@@ -650,18 +699,10 @@ pub fn matches_query(flow: &Flow, needle_lowercase: &str) -> bool {
     if hit(&flow.url) || hit(&flow.method) {
         return true;
     }
-    if flow
-        .request_headers
-        .iter()
-        .chain(flow.response_headers.iter())
-        .any(|h| hit(&h.name) || hit(&h.value))
-    {
+    if flow.request_headers.iter().chain(flow.response_headers.iter()).any(|h| hit(&h.name) || hit(&h.value)) {
         return true;
     }
-    [&flow.request_body, &flow.response_body]
-        .into_iter()
-        .flatten()
-        .any(|b| b.text.as_deref().map(hit).unwrap_or(false))
+    [&flow.request_body, &flow.response_body].into_iter().flatten().any(|b| b.text.as_deref().map(hit).unwrap_or(false))
 }
 
 fn severity_rank(s: &str) -> Option<nova_proto::InsightSeverity> {
@@ -681,9 +722,7 @@ pub fn matches_insight(i: &nova_proto::Insight, p: &InsightParams) -> bool {
         needle.as_ref().is_none_or(|n| hay.to_lowercase().contains(&n.to_lowercase()))
     };
     let min = p.min_severity.as_deref().and_then(severity_rank);
-    min.is_none_or(|m| i.severity >= m)
-        && has(i.app.as_deref().unwrap_or(""), &p.app)
-        && has(&i.host, &p.host)
+    min.is_none_or(|m| i.severity >= m) && has(i.app.as_deref().unwrap_or(""), &p.app) && has(&i.host, &p.host)
 }
 
 /* -------------------------------- projection -------------------------------- */
@@ -724,11 +763,7 @@ fn summarize(flow: &Flow) -> FlowSummary {
 }
 
 fn detail(flow: &Flow, body_chars: usize) -> FlowDetail {
-    let headers = |hs: &[nova_proto::Header]| {
-        hs.iter()
-            .map(|h| (h.name.clone(), h.value.clone()))
-            .collect::<Vec<_>>()
-    };
+    let headers = |hs: &[nova_proto::Header]| hs.iter().map(|h| (h.name.clone(), h.value.clone())).collect::<Vec<_>>();
     FlowDetail {
         summary: summarize(flow),
         scheme: flow.scheme.clone(),
@@ -736,14 +771,8 @@ fn detail(flow: &Flow, body_chars: usize) -> FlowDetail {
         http_version: flow.http_version.clone(),
         request_headers: headers(&flow.request_headers),
         response_headers: headers(&flow.response_headers),
-        request_body: flow
-            .request_body
-            .as_ref()
-            .map(|b| body_out(b, body_chars, b.spilled)),
-        response_body: flow
-            .response_body
-            .as_ref()
-            .map(|b| body_out(b, body_chars, b.spilled)),
+        request_body: flow.request_body.as_ref().map(|b| body_out(b, body_chars, b.spilled)),
+        response_body: flow.response_body.as_ref().map(|b| body_out(b, body_chars, b.spilled)),
         timings: flow.timings.into(),
         mcp_detail: flow.mcp.as_ref().map(|m| McpDetail {
             method: m.method.clone(),
@@ -772,11 +801,7 @@ pub fn body_out(body: &nova_proto::BodyPreview, cap: usize, available_in_full: b
         truncated,
         text,
         binary: body.base64.as_ref().map(|_| {
-            format!(
-                "binary body, {} bytes ({})",
-                body.size,
-                body.media_type.as_deref().unwrap_or("unknown type")
-            )
+            format!("binary body, {} bytes ({})", body.size, body.media_type.as_deref().unwrap_or("unknown type"))
         }),
         available_in_full,
     }
@@ -798,23 +823,42 @@ fn parse_rule_kind(kind: &str) -> Result<RuleKind, ErrorData> {
 /// Reject rules that would silently do nothing — a rule the agent believes it
 /// installed but which cannot act is worse than an error.
 fn validate_rule(rule: &Rule) -> Result<(), ErrorData> {
-    let missing = |what: &str| {
-        Err(ErrorData::invalid_params(
-            format!("{:?} rules need {what}", rule.kind),
-            None,
-        ))
-    };
+    let missing = |what: &str| Err(ErrorData::invalid_params(format!("{:?} rules need {what}", rule.kind), None));
     match rule.kind {
-        RuleKind::MapRemote | RuleKind::MapLocal
-            if rule.target.as_deref().unwrap_or("").is_empty() =>
-        {
+        RuleKind::MapRemote | RuleKind::MapLocal if rule.target.as_deref().unwrap_or("").is_empty() => {
             missing("a target")
         }
-        RuleKind::Rewrite if rule.header_name.as_deref().unwrap_or("").is_empty() => {
-            missing("a header_name")
-        }
+        RuleKind::Rewrite if rule.header_name.as_deref().unwrap_or("").is_empty() => missing("a header_name"),
         _ if rule.pattern.is_empty() => missing("a pattern"),
         _ => Ok(()),
+    }
+}
+
+/// A value as the client may see it, for a diff: `key` is a header name, a
+/// `?query` parameter, a JSON key, `url` or `body`.
+fn shown_value(redact: bool, key: &str, value: &str) -> String {
+    use nova_core::redact;
+    if !redact {
+        return value.to_string();
+    }
+    match key {
+        "url" => redact::url(value),
+        "body" => redact::body_text(value, None),
+        _ => {
+            if let Some(param) = key.strip_prefix('?') {
+                if redact::is_secret_name(param) || redact::looks_like_jwt(value) {
+                    return redact::MARK.to_string();
+                }
+                return value.to_string();
+            }
+            if redact::is_secret_header(key) {
+                return redact::header_value(key, value);
+            }
+            if redact::is_secret_name(key) || redact::looks_like_jwt(value) {
+                return redact::MARK.to_string();
+            }
+            value.to_string()
+        }
     }
 }
 
@@ -826,6 +870,40 @@ fn unknown_flow(id: &str) -> ErrorData {
 }
 
 /* --------------------------------- transport --------------------------------- */
+
+/// Whether a request carries the endpoint's token as `Authorization: Bearer`.
+///
+/// Loopback alone is not enough: any local process — a malicious npm script, a
+/// browser extension's native host — could otherwise read decrypted traffic and
+/// install redirect rules. The comparison takes the same time whatever the
+/// input, so the token cannot be guessed a byte at a time.
+pub fn authorized(headers: &hyper::HeaderMap, token: &str) -> bool {
+    let Some(value) = headers.get(hyper::header::AUTHORIZATION).and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    let Some((scheme, given)) = value.trim().split_once(' ') else { return false };
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return false;
+    }
+    let (a, b) = (given.trim().as_bytes(), token.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+fn unauthorized() -> hyper::Response<http_body_util::combinators::BoxBody<hyper::body::Bytes, std::convert::Infallible>>
+{
+    use http_body_util::BodyExt;
+    hyper::Response::builder()
+        .status(hyper::StatusCode::UNAUTHORIZED)
+        .header(hyper::header::WWW_AUTHENTICATE, "Bearer realm=\"novaproxy\"")
+        .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(
+            http_body_util::Full::new(hyper::body::Bytes::from_static(
+                b"NovaProxy MCP needs its access token: send `Authorization: Bearer <token>`. Copy the setup command from NovaProxy > Settings > MCP.",
+            ))
+            .boxed(),
+        )
+        .expect("static response")
+}
 
 /// A running MCP endpoint. Dropping it (or calling [`McpHandle::stop`]) shuts the
 /// listener down.
@@ -857,10 +935,13 @@ impl Drop for McpHandle {
 /// validates the inbound `Host` header against loopback names by default, which
 /// blocks DNS-rebinding attacks from a browser page.
 pub async fn start(state: Arc<AppState>, port: u16) -> Result<McpHandle, String> {
+    // Fail before binding when the token cannot be read or created: an endpoint
+    // that cannot check a token must not serve.
+    state.mcp_token()?;
+    let auth_state = state.clone();
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .map_err(|e| format!("cannot bind MCP endpoint on {addr}: {e}"))?;
+    let listener =
+        tokio::net::TcpListener::bind(addr).await.map_err(|e| format!("cannot bind MCP endpoint on {addr}: {e}"))?;
     let addr = listener.local_addr().map_err(|e| e.to_string())?;
 
     let service = StreamableHttpService::new(
@@ -871,9 +952,7 @@ pub async fn start(state: Arc<AppState>, port: u16) -> Result<McpHandle, String>
         // every client without buying anything. Host validation stays on (rmcp
         // defaults to loopback only), which is what blocks a browser page from
         // driving this endpoint via DNS rebinding.
-        StreamableHttpServerConfig::default()
-            .with_legacy_session_mode(false)
-            .with_json_response(true),
+        StreamableHttpServerConfig::default().with_legacy_session_mode(false).with_json_response(true),
     );
     let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -885,18 +964,21 @@ pub async fn start(state: Arc<AppState>, port: u16) -> Result<McpHandle, String>
             };
             let Ok((stream, _peer)) = accepted else { continue };
             let svc = service.clone();
+            let auth_state = auth_state.clone();
             tokio::spawn(async move {
                 let io = hyper_util::rt::TokioIo::new(stream);
-                let handler = hyper::service::service_fn(
-                    move |req: hyper::Request<hyper::body::Incoming>| {
-                        let mut svc = svc.clone();
-                        async move { tower_service::Service::call(&mut svc, req).await }
-                    },
-                );
-                if let Err(e) = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(io, handler)
-                    .await
-                {
+                let handler = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                    let mut svc = svc.clone();
+                    // Read per request, so a rotated token applies at once.
+                    let allowed = auth_state.mcp_token().is_ok_and(|t| authorized(req.headers(), &t));
+                    async move {
+                        if !allowed {
+                            return Ok(unauthorized());
+                        }
+                        tower_service::Service::call(&mut svc, req).await
+                    }
+                });
+                if let Err(e) = hyper::server::conn::http1::Builder::new().serve_connection(io, handler).await {
                     tracing::debug!("MCP connection ended: {e}");
                 }
             });
@@ -905,10 +987,7 @@ pub async fn start(state: Arc<AppState>, port: u16) -> Result<McpHandle, String>
     });
 
     tracing::info!("MCP endpoint listening on http://{addr}/");
-    Ok(McpHandle {
-        addr,
-        stop: Some(stop_tx),
-    })
+    Ok(McpHandle { addr, stop: Some(stop_tx) })
 }
 
 #[cfg(test)]
@@ -958,14 +1037,8 @@ mod tests {
     fn internal_flows_are_hidden_unless_asked_for() {
         let mut f = flow("f0");
         f.internal = true;
-        assert!(
-            !matches_filters(&f, &Filters::default()),
-            "an agent must not see its own traffic by default"
-        );
-        assert!(matches_filters(
-            &f,
-            &Filters { include_internal: true, ..Default::default() }
-        ));
+        assert!(!matches_filters(&f, &Filters::default()), "an agent must not see its own traffic by default");
+        assert!(matches_filters(&f, &Filters { include_internal: true, ..Default::default() }));
     }
 
     #[test]
@@ -982,10 +1055,7 @@ mod tests {
         let mut ours = mcp_flow("f2");
         ours.internal = true;
         assert!(!matches_filters(&ours, &Filters { mcp_only: true, ..Default::default() }));
-        assert!(matches_filters(
-            &ours,
-            &Filters { mcp_only: true, include_internal: true, ..Default::default() }
-        ));
+        assert!(matches_filters(&ours, &Filters { mcp_only: true, include_internal: true, ..Default::default() }));
     }
 
     #[test]
@@ -1003,10 +1073,7 @@ mod tests {
     fn app_filter_excludes_unattributed_flows() {
         // `process` is best-effort; a filter for one app must not sweep in flows
         // whose origin was never resolved.
-        assert!(!matches_filters(
-            &flow("f0"),
-            &Filters { app: Some("claude".into()), ..Default::default() }
-        ));
+        assert!(!matches_filters(&flow("f0"), &Filters { app: Some("claude".into()), ..Default::default() }));
     }
 
     #[test]
@@ -1022,10 +1089,7 @@ mod tests {
         let mut transport_error = flow("f2");
         transport_error.state = FlowState::Error;
         transport_error.error = Some("connection refused".into());
-        assert!(matches_filters(
-            &transport_error,
-            &Filters { errors_only: true, ..Default::default() }
-        ));
+        assert!(matches_filters(&transport_error, &Filters { errors_only: true, ..Default::default() }));
     }
 
     #[test]
@@ -1195,8 +1259,7 @@ mod tests {
             "Rewrite without a header name"
         );
         assert!(
-            validate_rule(&Rule { kind: RuleKind::Block, pattern: String::new(), ..base.clone() })
-                .is_err(),
+            validate_rule(&Rule { kind: RuleKind::Block, pattern: String::new(), ..base.clone() }).is_err(),
             "no pattern at all"
         );
         assert!(validate_rule(&Rule { kind: RuleKind::Block, ..base }).is_ok());

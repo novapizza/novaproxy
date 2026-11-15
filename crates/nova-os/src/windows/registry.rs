@@ -6,9 +6,9 @@
 use anyhow::{bail, Result};
 use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
 use windows_sys::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegGetValueW, RegOpenKeyExW, RegSetValueExW,
-    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE,
-    REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegGetValueW, RegOpenKeyExW, RegSetValueExW, HKEY,
+    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_DWORD,
+    RRF_RT_REG_SZ,
 };
 
 use super::wide;
@@ -106,16 +106,7 @@ pub fn set_user_string(key: &str, name: &str, value: &str) -> Result<()> {
     let name = wide(name);
     let data = wide(value);
     // SAFETY: `data` is the NUL-terminated value; its byte length includes the NUL.
-    let rc = unsafe {
-        RegSetValueExW(
-            h,
-            name.as_ptr(),
-            0,
-            REG_SZ,
-            data.as_ptr().cast(),
-            (data.len() * 2) as u32,
-        )
-    };
+    let rc = unsafe { RegSetValueExW(h, name.as_ptr(), 0, REG_SZ, data.as_ptr().cast(), (data.len() * 2) as u32) };
     unsafe { RegCloseKey(h) };
     if rc != ERROR_SUCCESS {
         bail!("cannot write registry value (error {rc})");
@@ -174,11 +165,7 @@ mod tests {
 
     #[test]
     fn reads_a_value_every_windows_machine_has() {
-        let build = read_string(
-            Hive::LocalMachine,
-            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
-            "CurrentBuild",
-        );
+        let build = read_string(Hive::LocalMachine, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentBuild");
         assert!(build.is_some_and(|b| b.parse::<u32>().is_ok()));
         assert!(read_string(Hive::CurrentUser, r"Software\NovaProxy-no-such-key", "x").is_none());
     }

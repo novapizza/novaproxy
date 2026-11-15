@@ -91,21 +91,19 @@ pub fn install() -> Option<crash_handler::CrashHandler> {
     // SAFETY: the callback allocates nothing, takes no locks, and calls only
     // `open`/`write`/`close` — see the module note on suspended threads.
     let handler = unsafe {
-        CrashHandler::attach(crash_handler::make_crash_event(
-            |cc: &crash_handler::CrashContext| {
-                let (kind, code) = match &cc.exception {
-                    Some(e) => (e.kind, e.code),
-                    // A crash with no exception info still happened.
-                    None => (0, 0),
-                };
-                write_marker(kind, code);
-                // `false` so the kernel forwards to the previous handler, which
-                // is the OS default: macOS still writes its own crash report,
-                // and the process still dies. Claiming to have handled it would
-                // suppress the one artifact a maintainer can symbolise.
-                CrashEventResult::Handled(false)
-            },
-        ))
+        CrashHandler::attach(crash_handler::make_crash_event(|cc: &crash_handler::CrashContext| {
+            let (kind, code) = match &cc.exception {
+                Some(e) => (e.kind, e.code),
+                // A crash with no exception info still happened.
+                None => (0, 0),
+            };
+            write_marker(kind, code);
+            // `false` so the kernel forwards to the previous handler, which
+            // is the OS default: macOS still writes its own crash report,
+            // and the process still dies. Claiming to have handled it would
+            // suppress the one artifact a maintainer can symbolise.
+            CrashEventResult::Handled(false)
+        }))
     };
     match handler {
         Ok(h) => Some(h),
@@ -132,14 +130,12 @@ pub fn install() -> Option<crash_handler::CrashHandler> {
     // module note. The record is the NTSTATUS (`0xC0000005` is an access
     // violation) as `kind`, with no `code`: Windows has no second level.
     let handler = unsafe {
-        CrashHandler::attach(crash_handler::make_crash_event(
-            |cc: &crash_handler::CrashContext| {
-                write_marker(cc.exception_code as u32, 0);
-                // `false` so Windows Error Reporting still records the crash
-                // and the process still dies — the same reasoning as macOS.
-                CrashEventResult::Handled(false)
-            },
-        ))
+        CrashHandler::attach(crash_handler::make_crash_event(|cc: &crash_handler::CrashContext| {
+            write_marker(cc.exception_code as u32, 0);
+            // `false` so Windows Error Reporting still records the crash
+            // and the process still dies — the same reasoning as macOS.
+            CrashEventResult::Handled(false)
+        }))
     };
     match handler {
         Ok(h) => Some(h),
@@ -200,11 +196,7 @@ fn write_marker(kind: u32, code: u64) {
     // SAFETY: `path` is a live NUL-terminated string for the call, and `buf` is
     // valid for `n` bytes. All three calls are async-signal-safe.
     unsafe {
-        let fd = libc::open(
-            path.as_ptr(),
-            libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
-            0o600 as libc::c_int,
-        );
+        let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC, 0o600 as libc::c_int);
         if fd < 0 {
             return;
         }

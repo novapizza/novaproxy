@@ -22,6 +22,7 @@
 
 use std::collections::VecDeque;
 use std::io::Write;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -85,24 +86,12 @@ impl BodyStore {
                 None
             }
         };
-        Self {
-            dir,
-            inline_cap,
-            per_body_cap,
-            disk_budget,
-            state: Mutex::new(DiskState::default()),
-        }
+        Self { dir, inline_cap, per_body_cap, disk_budget, state: Mutex::new(DiskState::default()) }
     }
 
     /// A store that never spills: bodies are capped at `inline_cap` bytes.
     pub fn memory_only(inline_cap: usize) -> Self {
-        Self {
-            dir: None,
-            inline_cap,
-            per_body_cap: 0,
-            disk_budget: 0,
-            state: Mutex::new(DiskState::default()),
-        }
+        Self { dir: None, inline_cap, per_body_cap: 0, disk_budget: 0, state: Mutex::new(DiskState::default()) }
     }
 
     /// Bytes retained inline per body.
@@ -129,13 +118,9 @@ impl BodyStore {
     pub fn path_for(&self, flow_id: &str, side: Side) -> Option<PathBuf> {
         // Flow ids are engine-generated (`f<seq>`), but sanitize anyway so a
         // future id scheme can never escape the bodies directory.
-        let safe: String = flow_id
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-            .collect();
-        self.dir
-            .as_ref()
-            .map(|d| d.join(format!("{safe}-{}.bin", side_tag(side))))
+        let safe: String =
+            flow_id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+        self.dir.as_ref().map(|d| d.join(format!("{safe}-{}.bin", side_tag(side))))
     }
 
     /// Record a finished spill file and evict oldest files until the total is
@@ -153,10 +138,8 @@ impl BodyStore {
 
     /// Delete both spill files belonging to `flow_id` (the flow was evicted).
     pub fn remove_flow(&self, flow_id: &str) {
-        let paths: Vec<PathBuf> = [Side::Request, Side::Response]
-            .into_iter()
-            .filter_map(|s| self.path_for(flow_id, s))
-            .collect();
+        let paths: Vec<PathBuf> =
+            [Side::Request, Side::Response].into_iter().filter_map(|s| self.path_for(flow_id, s)).collect();
         if paths.is_empty() {
             return;
         }
@@ -182,8 +165,7 @@ impl BodyStore {
         let Some(path) = self.path_for(flow_id, side) else {
             bail!("body spilling is disabled");
         };
-        let meta = std::fs::metadata(&path)
-            .with_context(|| format!("no stored body for flow {flow_id}"))?;
+        let meta = std::fs::metadata(&path).with_context(|| format!("no stored body for flow {flow_id}"))?;
         let total = meta.len();
         let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
         if bytes.len() as u64 > max_bytes {
@@ -222,8 +204,12 @@ pub struct Captured {
 /// memory for the preview, and the whole thing is mirrored to a spill file once
 /// it outgrows that preview. Forwarding is unaffected — this only bounds what we
 /// *retain*.
-pub struct BodyCapture<'a> {
-    store: &'a BodyStore,
+///
+/// `S` is how the capture holds its store: `&BodyStore` where it lives on one
+/// stack frame, `Arc<BodyStore>` where it has to move to a blocking thread for
+/// its disk writes.
+pub struct BodyCapture<S: Deref<Target = BodyStore>> {
+    store: S,
     path: Option<PathBuf>,
     file: Option<std::io::BufWriter<std::fs::File>>,
     written: u64,
@@ -232,8 +218,8 @@ pub struct BodyCapture<'a> {
     truncated: bool,
 }
 
-impl<'a> BodyCapture<'a> {
-    pub fn new(store: &'a BodyStore, flow_id: &str, side: Side) -> Self {
+impl<S: Deref<Target = BodyStore>> BodyCapture<S> {
+    pub fn new(store: S, flow_id: &str, side: Side) -> Self {
         Self {
             path: store.path_for(flow_id, side),
             store,
@@ -243,6 +229,28 @@ impl<'a> BodyCapture<'a> {
             total: 0,
             truncated: false,
         }
+    }
+
+    /// Whether taking in `incoming` more bytes touches the disk: the spill file
+    /// is open, or those bytes would open it. Callers on an async thread move
+    /// such pushes to a blocking one.
+    pub fn needs_disk(&self, incoming: usize) -> bool {
+        self.file.is_some()
+            || (self.path.is_some()
+                && self.store.spills()
+                && self.written < self.store.per_body_cap()
+                && self.total + incoming as u64 > self.store.inline_cap() as u64)
+    }
+
+    /// Give up on the rest of the body: keep the preview, delete the spill
+    /// file (it would be missing a stretch from the middle, and a spill file
+    /// promises the whole body), and report `total` as its real size.
+    pub fn abandon(mut self, total: u64) -> Captured {
+        self.file = None;
+        if let Some(path) = self.path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+        Captured { truncated: total > self.inline.len() as u64, inline: self.inline, total, spilled: false }
     }
 
     /// Take in one streamed chunk.
@@ -278,8 +286,7 @@ impl<'a> BodyCapture<'a> {
                     self.file = Some(w);
                     // The current chunk's already-inlined prefix is on disk; the
                     // remainder is written by the tail-write below.
-                    let inlined_from_this_chunk =
-                        chunk.len() - (self.total - self.inline.len() as u64) as usize;
+                    let inlined_from_this_chunk = chunk.len() - (self.total - self.inline.len() as u64) as usize;
                     self.write(&chunk[inlined_from_this_chunk..]);
                     return;
                 }
@@ -325,12 +332,7 @@ impl<'a> BodyCapture<'a> {
                 }
             }
         }
-        Captured {
-            inline: self.inline,
-            total: self.total,
-            truncated: self.truncated,
-            spilled,
-        }
+        Captured { inline: self.inline, total: self.total, truncated: self.truncated, spilled }
     }
 }
 
@@ -440,10 +442,7 @@ mod tests {
             c.finish();
         }
         assert!(s.used_bytes() <= 20, "used {} exceeds budget", s.used_bytes());
-        assert!(
-            !s.path_for("a", Side::Response).unwrap().exists(),
-            "oldest spill file is evicted"
-        );
+        assert!(!s.path_for("a", Side::Response).unwrap().exists(), "oldest spill file is evicted");
         assert!(s.path_for("c", Side::Response).unwrap().exists(), "newest survives");
     }
 
@@ -507,9 +506,6 @@ mod tests {
     #[test]
     fn request_and_response_spill_to_distinct_files() {
         let s = store("sides", 1, DEFAULT_PER_BODY_CAP, DEFAULT_DISK_BUDGET);
-        assert_ne!(
-            s.path_for("f9", Side::Request),
-            s.path_for("f9", Side::Response)
-        );
+        assert_ne!(s.path_for("f9", Side::Request), s.path_for("f9", Side::Response));
     }
 }

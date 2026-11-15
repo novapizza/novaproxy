@@ -7,9 +7,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nova_proto::{
-    BodyPreview, Edits, Flow, FlowState, Header, NetworkConditions, Rule, TlsScope, WsMessage,
-};
+use nova_proto::{BodyPreview, Edits, Flow, FlowState, Header, NetworkConditions, Rule, TlsScope, WsMessage};
 
 use crate::bodystore::BodyStore;
 use crate::breakpoint::Breakpoints;
@@ -48,6 +46,15 @@ impl WsSink for NoopWsSink {
 pub struct WsRoute {
     pub flow_id: String,
     pub seq: AtomicU64,
+    /// Directions of the socket still being relayed. The route is retired when
+    /// the last one ends, Close frame or not.
+    pub open_directions: std::sync::atomic::AtomicU8,
+}
+
+impl WsRoute {
+    pub fn new(flow_id: String) -> Self {
+        Self { flow_id, seq: AtomicU64::new(0), open_directions: std::sync::atomic::AtomicU8::new(2) }
+    }
 }
 
 /// State shared across every per-connection handler clone.
@@ -58,8 +65,7 @@ pub struct Shared {
     pub ws_sink: Arc<dyn WsSink>,
     /// Active WebSocket routes keyed by `host + path_and_query`, mapping the
     /// handshake URL to the flow its frames belong to. Best-effort correlation:
-    /// concurrent sockets to an identical URL fold into the latest flow (same
-    /// documented approximation as the HTTP/2 request↔response FIFO).
+    /// concurrent sockets to an identical URL fold into the latest flow.
     pub ws_routes: Mutex<HashMap<String, Arc<WsRoute>>>,
     /// Retained flows. Owned by the app (see [`FlowStore`]), so the UI, the
     /// commands and the MCP server share one truth across proxy restarts.
@@ -82,6 +88,8 @@ pub struct Shared {
     pub tls_scope: Arc<RwLock<TlsScope>>,
     /// Port of NovaProxy's own MCP endpoint (0 = not running).
     pub internal_port: Arc<std::sync::atomic::AtomicU16>,
+    /// Strip HTTP/3 advertisements from `Alt-Svc` (see [`crate::EngineHooks`]).
+    pub keep_on_tcp: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Shared {
@@ -100,6 +108,7 @@ impl Shared {
             net: hooks.net,
             tls_scope: hooks.tls_scope,
             internal_port: hooks.internal_port,
+            keep_on_tcp: hooks.keep_on_tcp,
         }
     }
 
@@ -130,10 +139,7 @@ impl Shared {
 
 /// Current epoch time in milliseconds (fractional).
 pub fn now_ms() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs_f64() * 1000.0)
-        .unwrap_or(0.0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64() * 1000.0).unwrap_or(0.0)
 }
 
 /// Collect headers preserving order and duplicates.
@@ -147,9 +153,7 @@ pub fn collect_headers(map: &hudsucker::hyper::HeaderMap) -> Vec<Header> {
 }
 
 pub fn header_value(map: &hudsucker::hyper::HeaderMap, name: &str) -> Option<String> {
-    map.get(name)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
+    map.get(name).and_then(|v| v.to_str().ok()).map(|s| s.to_string())
 }
 
 /// Build a [`BodyPreview`] from captured (still-encoded) bytes.
@@ -171,10 +175,7 @@ pub fn build_preview(
         (Some(String::from_utf8_lossy(&decoded).into_owned()), None)
     } else {
         use base64::Engine;
-        (
-            None,
-            Some(base64::engine::general_purpose::STANDARD.encode(&decoded)),
-        )
+        (None, Some(base64::engine::general_purpose::STANDARD.encode(&decoded)))
     };
 
     BodyPreview {
@@ -308,6 +309,7 @@ pub fn new_flow(
         mcp: None,
         internal: false,
         edits: Edits::default(),
+        alt_svc_h3_removed: false,
     }
 }
 
@@ -417,11 +419,7 @@ mod tests {
         map.append("x-a", "3".parse().unwrap());
         let headers = collect_headers(&map);
         // HeaderMap groups by name; both x-a values must survive.
-        let x_a: Vec<&str> = headers
-            .iter()
-            .filter(|h| h.name == "x-a")
-            .map(|h| h.value.as_str())
-            .collect();
+        let x_a: Vec<&str> = headers.iter().filter(|h| h.name == "x-a").map(|h| h.value.as_str()).collect();
         assert_eq!(x_a, vec!["1", "3"]);
         assert_eq!(headers.iter().filter(|h| h.name == "x-b").count(), 1);
     }
@@ -479,9 +477,9 @@ mod tests {
 
     /// A `Shared` over an in-memory store with a bounded retention window.
     fn shared_retaining(sink: Arc<CountingSink>, max_flows: usize) -> Shared {
-        let mut hooks = crate::EngineHooks::in_memory(Arc::new(crate::breakpoint::Breakpoints::new(
-            Arc::new(crate::breakpoint::NoopBreakpointSink),
-        )));
+        let mut hooks = crate::EngineHooks::in_memory(Arc::new(crate::breakpoint::Breakpoints::new(Arc::new(
+            crate::breakpoint::NoopBreakpointSink,
+        ))));
         hooks.flows = Arc::new(crate::flowstore::FlowStore::new(hooks.bodies.clone(), max_flows));
         Shared::new(sink, Arc::new(crate::flow::NoopWsSink), hooks)
     }

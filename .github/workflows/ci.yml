@@ -1,10 +1,14 @@
 # Tests on every push to main and every pull request, on both shipped
-# platforms.
+# platforms, plus lint and a Linux build.
 #
 # Windows is here because the release workflow builds it but nothing ever ran
 # its code: three tests failed on Windows for months and nobody could see it.
 # The Windows tests in `crates/nova-os/src/windows/` call the real Win32 APIs
 # (WinINet, Crypt32, the TCP table) read-only, so they need a real runner.
+#
+# Clippy runs on each platform rather than once: much of `nova-os` and parts of
+# `nova-core` and the app are behind `cfg(target_os = …)`, and a lint run only
+# sees the code compiled for the machine it runs on.
 name: CI
 
 on:
@@ -17,6 +21,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Formatting and the frontend linter need no platform and no Rust build.
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Errors fail the build; missing hook dependencies are warnings (see
+      # eslint.config.js for why).
+      - name: ESLint
+        run: npm run lint
+
   test:
     name: ${{ matrix.name }}
     strategy:
@@ -37,6 +68,8 @@ jobs:
           cache: 'npm'
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       # aws-lc-sys assembles with NASM on Windows; see release.yml.
       - uses: ilammy/setup-nasm@v1
@@ -60,6 +93,39 @@ jobs:
       - name: Build the privileged helper
         if: runner.os == 'macOS'
         run: cargo build --release -p nova-helper --locked
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --workspace --locked
+
+  # Linux is not a shipped platform yet. This job builds and tests the
+  # workspace there so the gaps show up, and does not block a merge until it
+  # has been green for a while: flip `continue-on-error` off then.
+  linux:
+    name: Linux (not yet required)
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      # What Tauri v2 needs to build on Linux.
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-linux
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Rust tests
         run: cargo test --workspace --locked

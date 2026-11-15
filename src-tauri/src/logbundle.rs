@@ -147,10 +147,9 @@ fn add_helper_logs<W: Write + std::io::Seek>(
                 zip.write_all(&body)?;
                 added += 1;
             }
-            Err(e) => tracing::warn!(
-                file = name,
-                "the daemon log exists but is not readable: {e}; the bundle is missing it"
-            ),
+            Err(e) => {
+                tracing::warn!(file = name, "the daemon log exists but is not readable: {e}; the bundle is missing it")
+            }
         }
     }
     Ok(added)
@@ -175,7 +174,7 @@ pub fn debug_information(state: &AppState, stamp: &str) -> String {
     let engine = state.engine.lock().unwrap();
     let rules = state.rules.read().unwrap();
     let scope = state.tls_scope.read().unwrap();
-    let net = state.net.read().unwrap().clone();
+    let net = *state.net.read().unwrap();
 
     let info = json!({
         "collected_at": stamp,
@@ -242,9 +241,7 @@ pub fn debug_information(state: &AppState, stamp: &str) -> String {
 fn os_version() -> String {
     #[cfg(target_os = "macos")]
     {
-        nova_core::oscmd::capture("/usr/bin/sw_vers", &["-productVersion"])
-            .trim()
-            .to_string()
+        nova_core::oscmd::capture("/usr/bin/sw_vers", &["-productVersion"]).trim().to_string()
     }
     #[cfg(windows)]
     {
@@ -272,9 +269,7 @@ pub fn reveal(path: &Path) -> anyhow::Result<()> {
         // verbatim — Rust's own argument quoting wraps the whole thing in
         // quotes when the path has a space, and explorer then opens Documents.
         use std::os::windows::process::CommandExt;
-        nova_core::oscmd::command("explorer")
-            .raw_arg(format!("/select,\"{file}\""))
-            .spawn()?;
+        nova_core::oscmd::command("explorer").raw_arg(format!("/select,\"{file}\"")).spawn()?;
         Ok(())
     }
     #[cfg(not(windows))]
@@ -283,10 +278,7 @@ pub fn reveal(path: &Path) -> anyhow::Result<()> {
             Step::with_args("/usr/bin/open", vec!["-R".into(), file])
         } else {
             // No Linux file manager reliably selects a file, so open the folder.
-            let dir = path
-                .parent()
-                .map(|p| p.display().to_string())
-                .unwrap_or(file);
+            let dir = path.parent().map(|p| p.display().to_string()).unwrap_or(file);
             Step::with_args("xdg-open", vec![dir])
         };
         Plan::new(vec![step], Elevation::None).run()
@@ -314,17 +306,11 @@ mod tests {
             std::fs::write(dir.join(name), b"x").unwrap();
         }
 
-        let names: Vec<String> = collectable(&dir)
-            .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-            .collect();
+        let names: Vec<String> =
+            collectable(&dir).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(
             names,
-            [
-                "novaproxy.2026-08-24.log",
-                "novaproxy.2026-08-25.log",
-                "usage.2026-08-25.jsonl"
-            ],
+            ["novaproxy.2026-08-24.log", "novaproxy.2026-08-25.log", "usage.2026-08-25.jsonl"],
             "by name is by date, and nothing else comes along"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -366,15 +352,10 @@ mod tests {
         let state = AppState::new(root.join("data"));
         let bundle = write(&state, &dest, "20260825-120000").unwrap();
 
-        assert_eq!(
-            bundle.path.file_name().unwrap(),
-            "novaproxy-20260825-120000-logs.zip"
-        );
+        assert_eq!(bundle.path.file_name().unwrap(), "novaproxy-20260825-120000-logs.zip");
         assert!(bundle.files >= 1, "the metadata file is always there");
         let mut zip = zip::ZipArchive::new(std::fs::File::open(&bundle.path).unwrap()).unwrap();
-        let names: Vec<String> = (0..zip.len())
-            .map(|i| zip.by_index(i).unwrap().name().to_string())
-            .collect();
+        let names: Vec<String> = (0..zip.len()).map(|i| zip.by_index(i).unwrap().name().to_string()).collect();
         assert!(names.contains(&INFO_NAME.to_string()), "{names:?}");
         // Nothing from the app's own state directory, whatever is in it.
         assert!(

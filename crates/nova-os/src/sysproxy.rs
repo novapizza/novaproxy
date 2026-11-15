@@ -173,7 +173,9 @@ pub mod macos {
         std::thread::scope(|scope| {
             let handles: Vec<_> = services
                 .chunks(per_thread)
-                .map(|group| scope.spawn(move || group.iter().map(read_service).collect::<Vec<_>>()))
+                .map(|group| {
+                    scope.spawn(move || group.iter().map(String::as_str).map(read_service).collect::<Vec<_>>())
+                })
                 .collect();
             for handle in handles {
                 match handle.join() {
@@ -181,9 +183,7 @@ pub mod macos {
                     // A dropped group is a service a later restore will not put
                     // back. Silence here would look like a machine that simply
                     // had fewer services, so it is said out loud.
-                    Err(_) => tracing::error!(
-                        "a proxy-read thread panicked; this snapshot is incomplete"
-                    ),
+                    Err(_) => tracing::error!("a proxy-read thread panicked; this snapshot is incomplete"),
                 }
             }
         });
@@ -191,11 +191,11 @@ pub mod macos {
     }
 
     /// Both proxy settings for one service, two `networksetup` reads.
-    fn read_service(service: &String) -> ServiceBackup {
+    fn read_service(service: &str) -> ServiceBackup {
         let (we, wh, wp) = parse_proxy(&capture("networksetup", &["-getwebproxy", service]));
         let (se, sh, sp) = parse_proxy(&capture("networksetup", &["-getsecurewebproxy", service]));
         ServiceBackup {
-            service: service.clone(),
+            service: service.to_string(),
             web_enabled: we,
             web_host: wh,
             web_port: wp,
@@ -267,18 +267,10 @@ pub mod macos {
             // `enable_plan`), so the `on` that used to follow it did nothing.
             vec![Step::with_args(
                 "networksetup",
-                vec![
-                    set_flag.to_string(),
-                    service.to_string(),
-                    host.to_string(),
-                    port.to_string(),
-                ],
+                vec![set_flag.to_string(), service.to_string(), host.to_string(), port.to_string()],
             )]
         } else {
-            vec![Step::with_args(
-                "networksetup",
-                vec![state_flag.to_string(), service.to_string(), "off".to_string()],
-            )]
+            vec![Step::with_args("networksetup", vec![state_flag.to_string(), service.to_string(), "off".to_string()])]
         }
     }
 }
@@ -341,11 +333,7 @@ pub mod windows {
             flags: DIRECT | PROXY,
             server: Some(format!("{host}:{port}")),
             bypass: Some(
-                prior
-                    .bypass
-                    .clone()
-                    .filter(|b| !b.trim().is_empty())
-                    .unwrap_or_else(|| DEFAULT_BYPASS.to_string()),
+                prior.bypass.clone().filter(|b| !b.trim().is_empty()).unwrap_or_else(|| DEFAULT_BYPASS.to_string()),
             ),
             autoconfig_url: prior.autoconfig_url.clone(),
         }
@@ -422,15 +410,7 @@ pub mod linux {
     }
 
     fn set(schema: &str, key: &str, value: &str) -> Step {
-        Step::with_args(
-            "gsettings",
-            vec![
-                "set".to_string(),
-                schema.to_string(),
-                key.to_string(),
-                value.to_string(),
-            ],
-        )
+        Step::with_args("gsettings", vec!["set".to_string(), schema.to_string(), key.to_string(), value.to_string()])
     }
 
     /// Switch GNOME to manual proxying at `host:port` for HTTP and HTTPS.
@@ -650,10 +630,7 @@ mod tests {
     #[test]
     fn macos_parses_a_proxy_readout() {
         let out = "Enabled: Yes\nServer: proxy.corp\nPort: 3128\nAuthenticated Proxy Enabled: 0\n";
-        assert_eq!(
-            macos::parse_proxy(out),
-            (true, "proxy.corp".to_string(), "3128".to_string())
-        );
+        assert_eq!(macos::parse_proxy(out), (true, "proxy.corp".to_string(), "3128".to_string()));
         let off = "Enabled: No\nServer: \nPort: 0\n";
         assert_eq!(macos::parse_proxy(off), (false, String::new(), "0".to_string()));
     }
@@ -673,18 +650,12 @@ mod tests {
         // The setter turns the proxy on by itself, so a separate `state on` is
         // a second `networksetup` process bought for nothing. Asserted as an
         // absence because that is the regression worth catching.
-        assert!(
-            !lines.iter().any(|l| l.contains("proxystate")),
-            "the setter already turns it on: {lines:?}"
-        );
+        assert!(!lines.iter().any(|l| l.contains("proxystate")), "the setter already turns it on: {lines:?}");
     }
 
     #[test]
     fn macos_disable_restores_a_previous_proxy_verbatim() {
-        let backup = Backup {
-            services: vec![service("Wi-Fi", true, "proxy.corp", "3128")],
-            ..Default::default()
-        };
+        let backup = Backup { services: vec![service("Wi-Fi", true, "proxy.corp", "3128")], ..Default::default() };
         let lines = shell_of(&macos::disable_plan(&backup));
         assert!(
             lines.iter().any(|l| l.contains("-setwebproxy Wi-Fi proxy.corp 3128")),
@@ -699,10 +670,7 @@ mod tests {
 
     #[test]
     fn macos_disable_turns_off_a_service_that_had_no_proxy() {
-        let backup = Backup {
-            services: vec![service("Wi-Fi", false, "", "")],
-            ..Default::default()
-        };
+        let backup = Backup { services: vec![service("Wi-Fi", false, "", "")], ..Default::default() };
         let lines = shell_of(&macos::disable_plan(&backup));
         assert!(lines.iter().any(|l| l.contains("-setwebproxystate Wi-Fi off")));
         assert!(
@@ -731,10 +699,7 @@ mod tests {
     #[test]
     fn macos_drops_services_that_no_longer_exist() {
         let backup = Backup {
-            services: vec![
-                service("Wi-Fi", false, "", ""),
-                service("35.157.114.18 [u-vpn-haht]", false, "", ""),
-            ],
+            services: vec![service("Wi-Fi", false, "", ""), service("35.157.114.18 [u-vpn-haht]", false, "", "")],
             ..Default::default()
         };
         let known = vec!["Wi-Fi".to_string(), "Thunderbolt Bridge".to_string()];
@@ -785,14 +750,8 @@ mod tests {
 
     #[test]
     fn windows_enable_keeps_the_users_bypass_list_or_defaults_to_local() {
-        let prior = windows::ConnectionSettings {
-            bypass: Some("*.corp.example;<local>".into()),
-            ..Default::default()
-        };
-        assert_eq!(
-            windows::enabled("127.0.0.1", 1, &prior).bypass.as_deref(),
-            Some("*.corp.example;<local>")
-        );
+        let prior = windows::ConnectionSettings { bypass: Some("*.corp.example;<local>".into()), ..Default::default() };
+        assert_eq!(windows::enabled("127.0.0.1", 1, &prior).bypass.as_deref(), Some("*.corp.example;<local>"));
         assert_eq!(windows::enabled("127.0.0.1", 1, &lan(1)).bypass.as_deref(), Some("<local>"));
         let blank = windows::ConnectionSettings { bypass: Some("  ".into()), ..Default::default() };
         assert_eq!(windows::enabled("127.0.0.1", 1, &blank).bypass.as_deref(), Some("<local>"));
@@ -808,10 +767,7 @@ mod tests {
     fn windows_restore_puts_every_connection_back_verbatim() {
         let backup = WindowsBackup {
             connections: vec![
-                windows::ConnectionSettings {
-                    flags: windows::DIRECT | windows::AUTO_DETECT,
-                    ..Default::default()
-                },
+                windows::ConnectionSettings { flags: windows::DIRECT | windows::AUTO_DETECT, ..Default::default() },
                 windows::ConnectionSettings {
                     name: Some("Corp VPN".into()),
                     flags: windows::DIRECT | windows::PROXY,
@@ -842,11 +798,8 @@ mod tests {
 
     #[test]
     fn windows_old_snapshot_with_a_manual_proxy_comes_back_on() {
-        let old = WindowsBackup {
-            proxy_enable: Some(1),
-            proxy_server: Some("proxy.corp:3128".into()),
-            ..Default::default()
-        };
+        let old =
+            WindowsBackup { proxy_enable: Some(1), proxy_server: Some("proxy.corp:3128".into()), ..Default::default() };
         let lan = &windows::to_restore(&old)[0];
         assert_eq!(lan.flags, windows::DIRECT | windows::PROXY);
         assert_eq!(lan.server.as_deref(), Some("proxy.corp:3128"));
@@ -862,10 +815,7 @@ mod tests {
     #[test]
     fn windows_run_once_command_quotes_the_path() {
         let cmd = windows::run_once_command(std::path::Path::new(r"C:\Program Files\NovaProxy\NovaProxy.exe"));
-        assert_eq!(
-            cmd,
-            r#""C:\Program Files\NovaProxy\NovaProxy.exe" --restore-system-proxy"#
-        );
+        assert_eq!(cmd, r#""C:\Program Files\NovaProxy\NovaProxy.exe" --restore-system-proxy"#);
     }
 
     /* -------------------------------- Linux -------------------------------- */
@@ -961,7 +911,10 @@ mod tests {
         // The contract that matters: a partial failure must never stop a restore
         // halfway, on any platform. (Windows applies connections one at a time in
         // `windows::inet::disable`, which carries on past a failing one.)
-        assert!(macos::disable_plan(&Backup { services: vec![service("Wi-Fi", false, "", "")], ..Default::default() }).best_effort);
+        assert!(
+            macos::disable_plan(&Backup { services: vec![service("Wi-Fi", false, "", "")], ..Default::default() })
+                .best_effort
+        );
         assert!(linux::disable_plan(&GnomeBackup::default()).best_effort);
     }
 

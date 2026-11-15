@@ -483,6 +483,8 @@ input, textarea, select { font-family: inherit; }
 .ws-op { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
 .ws-payload { color: var(--text2); overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
 .ws-meta { color: var(--faint); font-size: 11px; white-space: nowrap; }
+.ws-frame.expandable { cursor: pointer; }
+.ws-frame.expandable:hover { border-color: var(--border-strong, var(--border)); }
 
 /* What the frame window and the retention cap are hiding, and how to see it. */
 .ws-note {

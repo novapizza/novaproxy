@@ -16,10 +16,10 @@
 //! the machine store needs a UAC-elevated process anyway.
 
 use windows_sys::Win32::Security::Cryptography::{
-    CertCloseStore, CertFindCertificateInStore, CertFreeCertificateContext, CertOpenStore,
-    CERT_FIND_SHA1_HASH, CERT_STORE_OPEN_EXISTING_FLAG, CERT_STORE_PROV_SYSTEM_REGISTRY_W,
-    CERT_STORE_PROV_SYSTEM_W, CERT_STORE_READONLY_FLAG, CERT_SYSTEM_STORE_CURRENT_USER,
-    CERT_SYSTEM_STORE_LOCAL_MACHINE, CRYPT_INTEGER_BLOB, PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
+    CertCloseStore, CertFindCertificateInStore, CertFreeCertificateContext, CertOpenStore, CERT_FIND_SHA1_HASH,
+    CERT_STORE_OPEN_EXISTING_FLAG, CERT_STORE_PROV_SYSTEM_REGISTRY_W, CERT_STORE_PROV_SYSTEM_W,
+    CERT_STORE_READONLY_FLAG, CERT_SYSTEM_STORE_CURRENT_USER, CERT_SYSTEM_STORE_LOCAL_MACHINE, CRYPT_INTEGER_BLOB,
+    PKCS_7_ASN_ENCODING, X509_ASN_ENCODING,
 };
 
 use super::wide;
@@ -92,8 +92,8 @@ mod tests {
         // supported Windows' LocalMachine ROOT. Proves the store opens and the
         // hash lookup is wired up, without touching any store.
         let ms_2011: [u8; 20] = [
-            0x8f, 0x43, 0x28, 0x8a, 0xd2, 0x72, 0xf3, 0x10, 0x3b, 0x6f, 0xb1, 0x42, 0x84, 0x85,
-            0xea, 0x30, 0x14, 0xc0, 0xbc, 0xfe,
+            0x8f, 0x43, 0x28, 0x8a, 0xd2, 0x72, 0xf3, 0x10, 0x3b, 0x6f, 0xb1, 0x42, 0x84, 0x85, 0xea, 0x30, 0x14, 0xc0,
+            0xbc, 0xfe,
         ];
         assert!(in_machine_root(&ms_2011));
         assert!(

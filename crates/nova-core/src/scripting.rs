@@ -42,11 +42,7 @@ pub struct ScriptResult {
 
 enum Job {
     SetScript(String),
-    Run {
-        hook: Hook,
-        flow: ScriptFlow,
-        reply: oneshot::Sender<Option<ScriptResult>>,
-    },
+    Run { hook: Hook, flow: ScriptFlow, reply: oneshot::Sender<Option<ScriptResult>> },
 }
 
 #[derive(Default)]
@@ -92,11 +88,7 @@ impl ScriptEngine {
             })
             .expect("spawn scripting thread");
 
-        Arc::new(Self {
-            tx,
-            enabled: AtomicBool::new(false),
-            flags,
-        })
+        Arc::new(Self { tx, enabled: AtomicBool::new(false), flags })
     }
 
     pub fn set_script(&self, source: String) {
@@ -141,14 +133,8 @@ fn set_script(ctx: &Ctx<'_>, flags: &Flags, source: &str) {
     flags.ok.store(ok, Ordering::Relaxed);
 
     let g = ctx.globals();
-    flags.has_request.store(
-        g.get::<_, Function>("onRequest").is_ok(),
-        Ordering::Relaxed,
-    );
-    flags.has_response.store(
-        g.get::<_, Function>("onResponse").is_ok(),
-        Ordering::Relaxed,
-    );
+    flags.has_request.store(g.get::<_, Function>("onRequest").is_ok(), Ordering::Relaxed);
+    flags.has_response.store(g.get::<_, Function>("onResponse").is_ok(), Ordering::Relaxed);
 }
 
 fn run_hook(ctx: &Ctx<'_>, hook: Hook, flow: ScriptFlow) -> Option<ScriptResult> {
@@ -185,15 +171,10 @@ fn run_hook(ctx: &Ctx<'_>, hook: Hook, flow: ScriptFlow) -> Option<ScriptResult>
 
     let aborted: bool = obj.get("__aborted").unwrap_or(false);
     let headers_obj: Object = obj.get("headers").ok()?;
-    let headers_out: Vec<(String, String)> = headers_obj
-        .props::<String, String>()
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap_or_default();
+    let headers_out: Vec<(String, String)> =
+        headers_obj.props::<String, String>().collect::<Result<Vec<_>, _>>().unwrap_or_default();
 
-    Some(ScriptResult {
-        headers: headers_out,
-        abort: aborted,
-    })
+    Some(ScriptResult { headers: headers_out, abort: aborted })
 }
 
 #[cfg(test)]
@@ -251,9 +232,7 @@ mod tests {
     #[tokio::test]
     async fn response_hook_sees_status() {
         let engine = ScriptEngine::new();
-        engine.set_script(
-            "export function onResponse(f){ f.headers['x-status'] = String(f.status); }".into(),
-        );
+        engine.set_script("export function onResponse(f){ f.headers['x-status'] = String(f.status); }".into());
         let result = engine.run(Hook::Response, flow(Some(404))).await.expect("result");
         let map: std::collections::HashMap<_, _> = result.headers.into_iter().collect();
         assert_eq!(map.get("x-status").map(String::as_str), Some("404"));

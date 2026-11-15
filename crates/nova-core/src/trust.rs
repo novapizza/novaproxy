@@ -55,11 +55,7 @@ impl CaId {
 
     /// Identity of a loaded CA.
     pub fn of(ca: &crate::ca::CaMaterial) -> Self {
-        Self {
-            cert_path: ca.cert_path.clone(),
-            sha256: ca.fingerprint(),
-            sha1: ca.thumbprint_sha1(),
-        }
+        Self { cert_path: ca.cert_path.clone(), sha256: ca.fingerprint(), sha1: ca.thumbprint_sha1() }
     }
 
     /// Identity of the certificate at `cert_path`, read from disk.
@@ -270,10 +266,7 @@ fn confirm(ran: Result<()>, reached_goal: bool, action: &str) -> Result<()> {
 /// stray hex letters behind, which is harmless: needles are 40–64 hex characters
 /// long, far beyond what label noise can spell.
 pub fn hex_only(text: &str) -> String {
-    text.chars()
-        .filter(|c| c.is_ascii_hexdigit())
-        .flat_map(|c| c.to_lowercase())
-        .collect()
+    text.chars().filter(|c| c.is_ascii_hexdigit()).flat_map(|c| c.to_lowercase()).collect()
 }
 
 /// Does `haystack` (a tool's output) contain this certificate digest?
@@ -291,11 +284,7 @@ pub mod macos {
 
     /// Absolute path of the current user's login keychain.
     pub fn login_keychain() -> Option<PathBuf> {
-        std::env::var_os("HOME").map(|home| {
-            PathBuf::from(home)
-                .join("Library/Keychains")
-                .join("login.keychain-db")
-        })
+        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Keychains").join("login.keychain-db"))
     }
 
     /// `add-trusted-cert` args. The user domain omits `-d`, which is exactly what
@@ -346,18 +335,16 @@ pub mod macos {
 
     pub fn keychain_for(domain: TrustDomain) -> Result<PathBuf> {
         match domain {
-            TrustDomain::User => login_keychain()
-                .ok_or_else(|| anyhow::anyhow!("cannot locate the login keychain ($HOME unset)")),
+            TrustDomain::User => {
+                login_keychain().ok_or_else(|| anyhow::anyhow!("cannot locate the login keychain ($HOME unset)"))
+            }
             TrustDomain::System => Ok(PathBuf::from(SYSTEM_KEYCHAIN)),
         }
     }
 
     pub fn install_plan(cert_path: &Path, domain: TrustDomain) -> Result<Plan> {
         let keychain = keychain_for(domain)?;
-        let steps = vec![Step::with_args(
-            "security",
-            install_args(cert_path, &keychain, domain),
-        )];
+        let steps = vec![Step::with_args("security", install_args(cert_path, &keychain, domain))];
         Ok(Plan::new(steps, elevation(domain)))
     }
 
@@ -393,24 +380,17 @@ pub mod macos {
     pub fn trust_state(ca: &CaId) -> TrustState {
         TrustState {
             user: present(&ca.sha256, TrustDomain::User) && has_trust_setting(TrustDomain::User),
-            system: present(&ca.sha256, TrustDomain::System)
-                && has_trust_setting(TrustDomain::System),
+            system: present(&ca.sha256, TrustDomain::System) && has_trust_setting(TrustDomain::System),
         }
     }
 
     pub fn present_state(ca: &CaId) -> TrustState {
-        TrustState {
-            user: present(&ca.sha256, TrustDomain::User),
-            system: present(&ca.sha256, TrustDomain::System),
-        }
+        TrustState { user: present(&ca.sha256, TrustDomain::User), system: present(&ca.sha256, TrustDomain::System) }
     }
 
     fn present(fingerprint: &str, domain: TrustDomain) -> bool {
         let Ok(keychain) = keychain_for(domain) else { return false };
-        let out = capture(
-            "security",
-            &["find-certificate", "-a", "-Z", &keychain.display().to_string()],
-        );
+        let out = capture("security", &["find-certificate", "-a", "-Z", &keychain.display().to_string()]);
         contains_digest(&out, fingerprint)
     }
 
@@ -459,11 +439,7 @@ pub mod windows {
         if domain == TrustDomain::User {
             args.push("-user".to_string());
         }
-        args.extend([
-            "-delstore".to_string(),
-            ROOT_STORE.to_string(),
-            hex_only(thumbprint),
-        ]);
+        args.extend(["-delstore".to_string(), ROOT_STORE.to_string(), hex_only(thumbprint)]);
         args
     }
 
@@ -476,17 +452,11 @@ pub mod windows {
     }
 
     pub fn install_plan(cert_path: &Path, domain: TrustDomain) -> Plan {
-        Plan::new(
-            vec![Step::with_args("certutil", install_args(cert_path, domain))],
-            elevation(domain),
-        )
+        Plan::new(vec![Step::with_args("certutil", install_args(cert_path, domain))], elevation(domain))
     }
 
     pub fn uninstall_plan(thumbprint: &str, domain: TrustDomain) -> Plan {
-        Plan::new(
-            vec![Step::with_args("certutil", uninstall_args(thumbprint, domain))],
-            elevation(domain),
-        )
+        Plan::new(vec![Step::with_args("certutil", uninstall_args(thumbprint, domain))], elevation(domain))
     }
 
     /// On Windows, being in the ROOT store *is* the trust — there is no separate
@@ -510,7 +480,7 @@ pub mod windows {
     /// store lookup treats as "not found".
     pub fn thumbprint_bytes(thumbprint: &str) -> Vec<u8> {
         let hex = hex_only(thumbprint);
-        if hex.len() % 2 != 0 {
+        if !hex.len().is_multiple_of(2) {
             return Vec::new();
         }
         (0..hex.len())
@@ -598,10 +568,7 @@ pub mod linux {
         // already gone, or the CA stays trusted until the next rebuild.
         Plan::best_effort(
             vec![
-                Step::with_args(
-                    "rm",
-                    vec!["-f".to_string(), layout.anchor_path().display().to_string()],
-                ),
+                Step::with_args("rm", vec!["-f".to_string(), layout.anchor_path().display().to_string()]),
                 Step::new(layout.update_command, &[]),
             ],
             Elevation::LinuxPkexec,
@@ -667,42 +634,26 @@ pub mod linux {
     }
 
     pub fn nss_delete_args(db: &str) -> Vec<String> {
-        vec![
-            "-d".to_string(),
-            db.to_string(),
-            "-D".to_string(),
-            "-n".to_string(),
-            CA_COMMON_NAME.to_string(),
-        ]
+        vec!["-d".to_string(), db.to_string(), "-D".to_string(), "-n".to_string(), CA_COMMON_NAME.to_string()]
     }
 
     /// `certutil -d <db> -L -n "<name>"` — print our cert, for a presence check.
     pub fn nss_query_args(db: &str) -> Vec<String> {
-        vec![
-            "-d".to_string(),
-            db.to_string(),
-            "-L".to_string(),
-            "-n".to_string(),
-            CA_COMMON_NAME.to_string(),
-        ]
+        vec!["-d".to_string(), db.to_string(), "-L".to_string(), "-n".to_string(), CA_COMMON_NAME.to_string()]
     }
 
     /// Add the CA to every NSS database found. No elevation: these are the user's
     /// own files.
     pub fn user_install_plan(cert_path: &Path, dbs: &[String]) -> Plan {
         Plan::best_effort(
-            dbs.iter()
-                .map(|db| Step::with_args("certutil", nss_add_args(db, cert_path)))
-                .collect(),
+            dbs.iter().map(|db| Step::with_args("certutil", nss_add_args(db, cert_path))).collect(),
             Elevation::None,
         )
     }
 
     pub fn user_uninstall_plan(dbs: &[String]) -> Plan {
         Plan::best_effort(
-            dbs.iter()
-                .map(|db| Step::with_args("certutil", nss_delete_args(db)))
-                .collect(),
+            dbs.iter().map(|db| Step::with_args("certutil", nss_delete_args(db))).collect(),
             Elevation::None,
         )
     }
@@ -751,8 +702,7 @@ pub mod linux {
                 Ok(user_uninstall_plan(&nss_databases(&home)))
             }
             TrustDomain::System => {
-                let layout = detect_layout()
-                    .ok_or_else(|| anyhow::anyhow!("unrecognised distribution"))?;
+                let layout = detect_layout().ok_or_else(|| anyhow::anyhow!("unrecognised distribution"))?;
                 Ok(system_uninstall_plan(&layout))
             }
         }
@@ -761,9 +711,7 @@ pub mod linux {
     /// Is the installed anchor *our* certificate? Compared by fingerprint, so a
     /// leftover anchor from a regenerated CA does not read as installed.
     pub fn anchor_is_ours(anchor_pem: &str, fingerprint: &str) -> bool {
-        crate::ca::fingerprint_pem(anchor_pem)
-            .map(|fp| hex_only(&fp) == hex_only(fingerprint))
-            .unwrap_or(false)
+        crate::ca::fingerprint_pem(anchor_pem).map(|fp| hex_only(&fp) == hex_only(fingerprint)).unwrap_or(false)
     }
 
     pub fn trust_state(ca: &CaId) -> TrustState {
@@ -849,11 +797,8 @@ mod tests {
 
     #[test]
     fn macos_system_install_uses_the_admin_domain_and_one_prompt() {
-        let args = macos::install_args(
-            Path::new("/tmp/ca.pem"),
-            Path::new(macos::SYSTEM_KEYCHAIN),
-            TrustDomain::System,
-        );
+        let args =
+            macos::install_args(Path::new("/tmp/ca.pem"), Path::new(macos::SYSTEM_KEYCHAIN), TrustDomain::System);
         let args = args_of(&args);
         assert!(args.contains(&"-d"));
         assert!(args.contains(&macos::SYSTEM_KEYCHAIN));
@@ -877,14 +822,8 @@ mod tests {
 
     #[test]
     fn macos_dump_trust_settings_selects_the_domain() {
-        assert_eq!(
-            args_of(&macos::dump_trust_args(TrustDomain::User)),
-            vec!["dump-trust-settings"]
-        );
-        assert_eq!(
-            args_of(&macos::dump_trust_args(TrustDomain::System)),
-            vec!["dump-trust-settings", "-d"]
-        );
+        assert_eq!(args_of(&macos::dump_trust_args(TrustDomain::User)), vec!["dump-trust-settings"]);
+        assert_eq!(args_of(&macos::dump_trust_args(TrustDomain::System)), vec!["dump-trust-settings", "-d"]);
     }
 
     #[test]
@@ -913,10 +852,7 @@ mod tests {
     #[test]
     fn windows_user_install_needs_no_elevation() {
         let args = windows::install_args(Path::new(r"C:\ca.pem"), TrustDomain::User);
-        assert_eq!(
-            args_of(&args),
-            vec!["-user", "-addstore", "-f", "ROOT", r"C:\ca.pem"]
-        );
+        assert_eq!(args_of(&args), vec!["-user", "-addstore", "-f", "ROOT", r"C:\ca.pem"]);
         assert_eq!(
             windows::elevation(TrustDomain::User),
             Elevation::None,
@@ -968,19 +904,18 @@ mod tests {
 
     #[test]
     fn linux_layout_detection_prefers_the_family_that_exists() {
-        let debian = linux::detect_layout_with(|p| p == Path::new("/usr/local/share/ca-certificates"))
-            .expect("debian layout");
+        let debian =
+            linux::detect_layout_with(|p| p == Path::new("/usr/local/share/ca-certificates")).expect("debian layout");
         assert_eq!(debian.family, "debian");
         assert_eq!(debian.update_command, "update-ca-certificates");
 
-        let fedora = linux::detect_layout_with(|p| p == Path::new("/etc/pki/ca-trust/source/anchors"))
-            .expect("fedora layout");
+        let fedora =
+            linux::detect_layout_with(|p| p == Path::new("/etc/pki/ca-trust/source/anchors")).expect("fedora layout");
         assert_eq!(fedora.family, "fedora");
         assert_eq!(fedora.update_command, "update-ca-trust");
 
-        let arch =
-            linux::detect_layout_with(|p| p == Path::new("/etc/ca-certificates/trust-source/anchors"))
-                .expect("arch layout");
+        let arch = linux::detect_layout_with(|p| p == Path::new("/etc/ca-certificates/trust-source/anchors"))
+            .expect("arch layout");
         assert_eq!(arch.family, "arch");
 
         assert!(
@@ -992,14 +927,8 @@ mod tests {
     #[test]
     fn linux_anchor_path_is_inside_the_family_directory() {
         let layout = linux::known_layouts().remove(0);
-        assert_eq!(
-            layout.anchor_path(),
-            Path::new("/usr/local/share/ca-certificates/novaproxy-root-ca.crt")
-        );
-        assert!(
-            layout.anchor_path().extension().unwrap() == "crt",
-            "update-ca-certificates only picks up .crt files"
-        );
+        assert_eq!(layout.anchor_path(), Path::new("/usr/local/share/ca-certificates/novaproxy-root-ca.crt"));
+        assert!(layout.anchor_path().extension().unwrap() == "crt", "update-ca-certificates only picks up .crt files");
     }
 
     #[test]
@@ -1036,14 +965,8 @@ mod tests {
 
     #[test]
     fn linux_nss_delete_and_query_target_our_nickname() {
-        assert_eq!(
-            args_of(&linux::nss_delete_args("sql:/db")),
-            vec!["-d", "sql:/db", "-D", "-n", CA_COMMON_NAME]
-        );
-        assert_eq!(
-            args_of(&linux::nss_query_args("sql:/db")),
-            vec!["-d", "sql:/db", "-L", "-n", CA_COMMON_NAME]
-        );
+        assert_eq!(args_of(&linux::nss_delete_args("sql:/db")), vec!["-d", "sql:/db", "-D", "-n", CA_COMMON_NAME]);
+        assert_eq!(args_of(&linux::nss_query_args("sql:/db")), vec!["-d", "sql:/db", "-L", "-n", CA_COMMON_NAME]);
     }
 
     #[test]
@@ -1052,10 +975,7 @@ mod tests {
         let plan = linux::user_install_plan(Path::new("/tmp/ca.pem"), &dbs);
         assert_eq!(plan.elevation, Elevation::None, "NSS databases are the user's own files");
         assert_eq!(plan.steps.len(), 2);
-        assert!(
-            plan.best_effort,
-            "one locked profile must not stop the others from being trusted"
-        );
+        assert!(plan.best_effort, "one locked profile must not stop the others from being trusted");
     }
 
     #[test]

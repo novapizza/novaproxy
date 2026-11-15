@@ -60,13 +60,7 @@ fn spawned(program: &str, args: &[String]) -> std::io::Result<std::process::Outp
     let ms = t.elapsed().as_millis() as u64;
     EXEC_COUNT.fetch_add(1, Ordering::Relaxed);
     EXEC_MS.fetch_add(ms, Ordering::Relaxed);
-    tracing::debug!(
-        program,
-        arg = args.first().map(String::as_str).unwrap_or(""),
-        ms,
-        ok = out.is_ok(),
-        "spawned"
-    );
+    tracing::debug!(program, arg = args.first().map(String::as_str).unwrap_or(""), ms, ok = out.is_ok(), "spawned");
     out
 }
 
@@ -80,10 +74,7 @@ pub struct Step {
 
 impl Step {
     pub fn new<P: Into<String>>(program: P, args: &[&str]) -> Self {
-        Self {
-            program: program.into(),
-            args: args.iter().map(|a| a.to_string()).collect(),
-        }
+        Self { program: program.into(), args: args.iter().map(|a| a.to_string()).collect() }
     }
 
     pub fn with_args<P: Into<String>>(program: P, args: Vec<String>) -> Self {
@@ -230,11 +221,7 @@ impl Plan {
     /// because one service was already in the wanted state.
     fn joined_shell(&self) -> String {
         let sep = if self.best_effort { " ; " } else { " && " };
-        self.steps
-            .iter()
-            .map(|s| s.to_shell())
-            .collect::<Vec<_>>()
-            .join(sep)
+        self.steps.iter().map(|s| s.to_shell()).collect::<Vec<_>>().join(sep)
     }
 }
 
@@ -272,8 +259,7 @@ pub fn command(program: &str) -> Command {
 
 /// Run one command, mapping a non-zero exit into an error carrying its stderr.
 fn run_one(step: &Step) -> Result<()> {
-    let out = spawned(&step.program, &step.args)
-        .map_err(|e| anyhow::anyhow!("cannot run {}: {e}", step.program))?;
+    let out = spawned(&step.program, &step.args).map_err(|e| anyhow::anyhow!("cannot run {}: {e}", step.program))?;
     if out.status.success() {
         return Ok(());
     }
@@ -302,11 +288,7 @@ pub fn capture(program: &str, args: &[&str]) -> String {
 /// tool (NSS `certutil`, `gsettings`) is not installed.
 pub fn have_tool(program: &str) -> bool {
     let probe = if cfg!(windows) { "where" } else { "which" };
-    command(probe)
-        .arg(program)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    command(probe).arg(program).output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 fn first_line(s: &str) -> &str {
@@ -322,19 +304,13 @@ pub fn mac_admin_step(shell_line: &str) -> Step {
     let escaped = shell_line.replace('\\', "\\\\").replace('"', "\\\"");
     Step::with_args(
         "osascript",
-        vec![
-            "-e".to_string(),
-            format!("do shell script \"{escaped}\" with administrator privileges"),
-        ],
+        vec!["-e".to_string(), format!("do shell script \"{escaped}\" with administrator privileges")],
     )
 }
 
 /// `pkexec sh -c '…'` — one polkit prompt for the whole line.
 pub fn pkexec_step(shell_line: &str) -> Step {
-    Step::with_args(
-        "pkexec",
-        vec!["sh".to_string(), "-c".to_string(), shell_line.to_string()],
-    )
+    Step::with_args("pkexec", vec!["sh".to_string(), "-c".to_string(), shell_line.to_string()])
 }
 
 /// One UAC-elevated `Start-Process`, waited on so the caller sees the outcome.
@@ -349,12 +325,7 @@ pub fn windows_uac_step(steps: &[Step]) -> Result<Step> {
     };
     let mut ps = format!("Start-Process -FilePath {}", ps_quote(&step.program));
     if !step.args.is_empty() {
-        let list = step
-            .args
-            .iter()
-            .map(|a| ps_quote(a))
-            .collect::<Vec<_>>()
-            .join(",");
+        let list = step.args.iter().map(|a| ps_quote(a)).collect::<Vec<_>>().join(",");
         ps.push_str(&format!(" -ArgumentList {list}"));
     }
     // `-Wait` so the outcome is ours to report; `-WindowStyle Hidden` keeps the
@@ -366,22 +337,13 @@ pub fn windows_uac_step(steps: &[Step]) -> Result<Step> {
     ps = format!("$p = {ps}; exit $p.ExitCode");
     Ok(Step::with_args(
         "powershell",
-        vec![
-            "-NoProfile".to_string(),
-            "-NonInteractive".to_string(),
-            "-Command".to_string(),
-            ps,
-        ],
+        vec!["-NoProfile".to_string(), "-NonInteractive".to_string(), "-Command".to_string(), ps],
     ))
 }
 
 /// Single-quote a word for a POSIX shell, escaping embedded single quotes.
 pub fn shell_quote(word: &str) -> String {
-    if !word.is_empty()
-        && word
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-_./:=@".contains(&b))
-    {
+    if !word.is_empty() && word.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./:=@".contains(&b)) {
         return word.to_string();
     }
     format!("'{}'", word.replace('\'', r"'\''"))
@@ -461,11 +423,8 @@ mod tests {
 
     #[test]
     fn windows_uac_builds_a_runas_start_process() {
-        let step = windows_uac_step(&[Step::new(
-            "certutil",
-            &["-addstore", "-f", "ROOT", r"C:\Users\me\ca.pem"],
-        )])
-        .unwrap();
+        let step =
+            windows_uac_step(&[Step::new("certutil", &["-addstore", "-f", "ROOT", r"C:\Users\me\ca.pem"])]).unwrap();
         assert_eq!(step.program, "powershell");
         let ps = step.args.last().unwrap();
         assert!(ps.starts_with("$p = Start-Process -FilePath 'certutil'"));
@@ -503,10 +462,7 @@ mod tests {
     fn direct_plans_report_a_failing_step() {
         // A program that cannot exist: the error names it, rather than being
         // silently swallowed.
-        let plan = Plan::new(
-            vec![Step::new("novaproxy-no-such-program", &[])],
-            Elevation::None,
-        );
+        let plan = Plan::new(vec![Step::new("novaproxy-no-such-program", &[])], Elevation::None);
         let err = plan.run().unwrap_err();
         assert!(err.to_string().contains("novaproxy-no-such-program"));
     }
@@ -534,11 +490,7 @@ mod tests {
     #[test]
     fn capture_returns_stdout() {
         // `echo` is a shell builtin on Windows, not a program.
-        let echoed = if cfg!(windows) {
-            capture("cmd", &["/c", "echo", "hello"])
-        } else {
-            capture("echo", &["hello"])
-        };
+        let echoed = if cfg!(windows) { capture("cmd", &["/c", "echo", "hello"]) } else { capture("echo", &["hello"]) };
         assert_eq!(echoed.trim(), "hello");
         assert_eq!(capture("novaproxy-no-such-program", &[]), "");
     }

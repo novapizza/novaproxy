@@ -73,17 +73,9 @@ const CONNECT_MIN_SAMPLES: usize = 2;
 const CDN_MIN_SAMPLES: usize = 10;
 const CDN_MISS_SHARE: f64 = 0.5;
 
-/// What the analysis needs to know that the flows do not carry.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Options {
-    /// Latency NovaProxy itself adds (Network Conditions), subtracted before a
-    /// server is called slow — otherwise throttling makes every endpoint "slow".
-    pub added_latency_ms: f64,
-}
-
 /// Run every check over `flows` (any order). `generation` is left at zero for
 /// the caller to fill in.
-pub fn analyze(flows: &[Flow], opts: &Options) -> InsightReport {
+pub fn analyze(flows: &[Flow]) -> InsightReport {
     let mut judged: Vec<&Flow> = flows.iter().filter(|f| judgeable(f)).collect();
     judged.sort_by(|a, b| a.started_at.total_cmp(&b.started_at));
 
@@ -97,7 +89,7 @@ pub fn analyze(flows: &[Flow], opts: &Options) -> InsightReport {
     large_payload(&judged, &mut out);
     static_uncacheable(&judged, &mut out);
     redirect_chain(&judged, &mut out);
-    slow_endpoint(&judged, opts, &mut out);
+    slow_endpoint(&judged, &mut out);
     cors_preflight(&judged, &mut out);
     token_in_url(&judged, &mut out);
     insecure_cookies(&judged, &mut out);
@@ -165,11 +157,7 @@ fn headers_named<'a>(headers: &'a [Header], name: &'a str) -> impl Iterator<Item
 
 /// Lowercase media type without parameters.
 fn media_type(f: &Flow) -> String {
-    let raw = f
-        .content_type
-        .as_deref()
-        .or_else(|| header(&f.response_headers, "content-type"))
-        .unwrap_or("");
+    let raw = f.content_type.as_deref().or_else(|| header(&f.response_headers, "content-type")).unwrap_or("");
     raw.split(';').next().unwrap_or("").trim().to_ascii_lowercase()
 }
 
@@ -231,7 +219,11 @@ pub fn normalize_path(path: &str) -> String {
     let path = path_only(path);
     let segs: Vec<String> = path.split('/').map(normalize_segment).collect();
     let joined = segs.join("/");
-    if joined.is_empty() { "/".into() } else { joined }
+    if joined.is_empty() {
+        "/".into()
+    } else {
+        joined
+    }
 }
 
 fn normalize_segment(seg: &str) -> String {
@@ -288,10 +280,7 @@ fn endpoint(f: &Flow) -> Option<String> {
 }
 
 fn query_params(path: &str) -> impl Iterator<Item = (&str, &str)> {
-    query_of(path)
-        .split('&')
-        .filter(|p| !p.is_empty())
-        .map(|p| p.split_once('=').unwrap_or((p, "")))
+    query_of(path).split('&').filter(|p| !p.is_empty()).map(|p| p.split_once('=').unwrap_or((p, "")))
 }
 
 fn query_param(path: &str, name: &str) -> Option<String> {
@@ -424,9 +413,8 @@ fn burst(flows: &[&Flow], out: &mut Vec<Insight>) {
         let run = &group[best];
         // One after another — each waited for the last to finish — is the
         // expensive shape: the wall-clock cost is the sum, not the slowest.
-        let serial = run.windows(2).all(|w| {
-            w[0].duration_ms.is_some_and(|d| w[1].started_at + 1.0 >= w[0].started_at + d)
-        });
+        let serial =
+            run.windows(2).all(|w| w[0].duration_ms.is_some_and(|d| w[1].started_at + 1.0 >= w[0].started_at + d));
         let distinct: BTreeSet<&str> = run.iter().map(|f| f.url.as_str()).collect();
         let what = if distinct.len() == 1 {
             "the identical URL".to_string()
@@ -441,15 +429,18 @@ fn burst(flows: &[&Flow], out: &mut Vec<Insight>) {
         } else {
             "Many calls to one endpoint at once. A batch endpoint (or a list call with the ids) usually replaces this fan-out."
         };
-        push(out, Finding {
-            rule: "burst",
-            key: key3(&key),
-            severity: if max >= 20 { InsightSeverity::High } else { InsightSeverity::Warning },
-            title: format!("{} called {max}× within {} s", key.2, BURST_WINDOW_MS / 1000.0),
-            detail: format!("{max} calls to {what}, {shape}; {} calls in bursts overall.", members.len()),
-            advice,
-            flows: members.iter().map(|&i| group[i]).collect(),
-        });
+        push(
+            out,
+            Finding {
+                rule: "burst",
+                key: key3(&key),
+                severity: if max >= 20 { InsightSeverity::High } else { InsightSeverity::Warning },
+                title: format!("{} called {max}× within {} s", key.2, BURST_WINDOW_MS / 1000.0),
+                detail: format!("{max} calls to {what}, {shape}; {} calls in bursts overall.", members.len()),
+                advice,
+                flows: members.iter().map(|&i| group[i]).collect(),
+            },
+        );
     }
 }
 
@@ -514,9 +505,15 @@ fn rate_limited(flows: &[&Flow], out: &mut Vec<Insight>) {
     for (key, group) in by_host(flows, |f| f.status == Some(429)) {
         let without = group.iter().filter(|f| header(&f.response_headers, "retry-after").is_none()).count();
         let detail = match without {
-            0 => format!("{} responses were 429 Too Many Requests, each with Retry-After.", group.len()),
+            0 => format!(
+                "{} 429 Too Many Requests, each with Retry-After.",
+                plural(group.len(), "response was", "responses were")
+            ),
             n if n == group.len() => {
-                format!("{n} responses were 429 Too Many Requests, none with Retry-After — the client has to guess when to retry.")
+                format!(
+                    "{} 429 Too Many Requests, none with Retry-After — the client has to guess when to retry.",
+                    plural(n, "response was", "responses were")
+                )
             }
             n => format!("{} responses were 429 Too Many Requests; {n} without Retry-After.", group.len()),
         };
@@ -541,6 +538,27 @@ fn error_rate(flows: &[&Flow], out: &mut Vec<Insight>) {
         let bad: Vec<&Flow> = group.iter().copied().filter(|f| failed(f)).collect();
         let share = bad.len() as f64 / group.len() as f64;
         if share < ERROR_RATE_SHARE {
+            continue;
+        }
+        // Not one answer came back: the server never saw these, so this is the
+        // network path (a blocker, a DNS filter, a VPN, an unreachable host, or
+        // NovaProxy failing upstream), not an API that errors. Blocked
+        // telemetry looks exactly like this and is usually expected.
+        if bad.iter().all(|f| f.status.is_none()) {
+            push(out, Finding {
+                rule: "error-rate",
+                key: key2(&key),
+                severity: InsightSeverity::Warning,
+                title: format!("{:.0}% of requests to {} get no response", share * 100.0, key.1),
+                detail: format!(
+                    "{} of {} requests ended without any response from the server. {}",
+                    bad.len(),
+                    group.len(),
+                    common_error(&bad)
+                ),
+                advice: "Nothing came back, so look at the path rather than the API: an ad or tracker blocker, a DNS filter, VPN or firewall blocking the host (expected for telemetry), or the host being unreachable. The error on each flow names the cause; one that starts with NovaProxy's upstream error is worth reporting.",
+                flows: bad,
+            });
             continue;
         }
         push(out, Finding {
@@ -572,15 +590,26 @@ fn uncompressed(flows: &[&Flow], out: &mut Vec<Insight>) {
     }) {
         let total: u64 = group.iter().map(|f| f.response_size).sum();
         let largest = group.iter().map(|f| f.response_size).max().unwrap_or(0);
-        push(out, Finding {
-            rule: "uncompressed",
-            key: key2(&key),
-            severity: if total >= LARGE_PAYLOAD_BYTES { InsightSeverity::Warning } else { InsightSeverity::Info },
-            title: format!("{} text responses from {} sent uncompressed", group.len(), key.1),
-            detail: format!("{} in total, largest {}. Text like this typically shrinks 70–90% with gzip or brotli.", fmt_bytes(total), fmt_bytes(largest)),
-            advice: "Enable gzip or brotli on the server or CDN for text types (JSON, HTML, JS, CSS, SVG).",
-            flows: group,
-        });
+        push(
+            out,
+            Finding {
+                rule: "uncompressed",
+                key: key2(&key),
+                severity: if total >= LARGE_PAYLOAD_BYTES { InsightSeverity::Warning } else { InsightSeverity::Info },
+                title: format!(
+                    "{} from {} sent uncompressed",
+                    plural(group.len(), "text response", "text responses"),
+                    key.1
+                ),
+                detail: format!(
+                    "{} in total, largest {}. Text like this typically shrinks 70–90% with gzip or brotli.",
+                    fmt_bytes(total),
+                    fmt_bytes(largest)
+                ),
+                advice: "Enable gzip or brotli on the server or CDN for text types (JSON, HTML, JS, CSS, SVG).",
+                flows: group,
+            },
+        );
     }
 }
 
@@ -594,27 +623,33 @@ fn large_payload(flows: &[&Flow], out: &mut Vec<Insight>) {
     }) {
         let largest = group.iter().map(|f| decoded_size(f)).max().unwrap_or(0);
         let is_html = group.iter().all(|f| html(f));
-        push(out, Finding {
-            rule: "large-payload",
-            key: key3(&key),
-            severity: InsightSeverity::Info,
-            title: if is_html {
-                format!("{} returns up to {} of HTML", key.2, fmt_bytes(largest))
-            } else {
-                format!("{} returns up to {} of data", key.2, fmt_bytes(largest))
+        push(
+            out,
+            Finding {
+                rule: "large-payload",
+                key: key3(&key),
+                severity: InsightSeverity::Info,
+                title: if is_html {
+                    format!("{} returns up to {} of HTML", key.2, fmt_bytes(largest))
+                } else {
+                    format!("{} returns up to {} of data", key.2, fmt_bytes(largest))
+                },
+                detail: if is_html {
+                    format!("{} of 500 KB or more. The browser parses all of it before the page settles; inlined data and scripts are the usual cause.", plural(group.len(), "page", "pages"))
+                } else {
+                    format!(
+                        "{} of 1 MB or more. Parsing that much JSON blocks the client, too.",
+                        plural(group.len(), "response", "responses")
+                    )
+                },
+                advice: if is_html {
+                    "Move inlined JSON state, SVG sprites and scripts out into cacheable files, paginate long lists, or stream the page."
+                } else {
+                    "Paginate, let the client pick the fields it needs, or stream the result."
+                },
+                flows: group,
             },
-            detail: if is_html {
-                format!("{} pages of 500 KB or more. The browser parses all of it before the page settles; inlined data and scripts are the usual cause.", group.len())
-            } else {
-                format!("{} responses of 1 MB or more. Parsing that much JSON blocks the client, too.", group.len())
-            },
-            advice: if is_html {
-                "Move inlined JSON state, SVG sprites and scripts out into cacheable files, paginate long lists, or stream the page."
-            } else {
-                "Paginate, let the client pick the fields it needs, or stream the result."
-            },
-            flows: group,
-        });
+        );
     }
 }
 
@@ -626,7 +661,11 @@ fn decoded_size(f: &Flow) -> u64 {
 /// Static assets the browser cannot keep.
 fn static_uncacheable(flows: &[&Flow], out: &mut Vec<Insight>) {
     for (key, group) in by_host(flows, |f| {
-        origin_response(f) && f.method == "GET" && f.status == Some(200) && !is_loopback(&f.host) && is_static(f, &media_type(f))
+        origin_response(f)
+            && f.method == "GET"
+            && f.status == Some(200)
+            && !is_loopback(&f.host)
+            && is_static(f, &media_type(f))
     }) {
         let mut no_store = Vec::new();
         let mut no_headers = Vec::new();
@@ -663,7 +702,7 @@ fn static_uncacheable(flows: &[&Flow], out: &mut Vec<Insight>) {
             rule: "static-uncacheable",
             key: key2(&key),
             severity: InsightSeverity::Info,
-            title: format!("{n} static assets from {} can't be cached", key.1),
+            title: format!("{} from {} can't be cached", plural(n, "static asset", "static assets"), key.1),
             detail: format!("{}. Every page load downloads them again.", parts.join("; ")),
             advice: "Serve fingerprinted assets with `Cache-Control: public, max-age=31536000, immutable`, and give the rest an ETag so revisits cost a 304.",
             flows: all,
@@ -687,14 +726,19 @@ fn redirect_chain(flows: &[&Flow], out: &mut Vec<Insight>) {
         let mut looped = false;
         let mut cur = start;
         while is_redirect(flows[cur]) {
-            let Some(next_url) = header(&flows[cur].response_headers, "location").and_then(|l| resolve(&flows[cur].url, l)) else {
+            let Some(next_url) =
+                header(&flows[cur].response_headers, "location").and_then(|l| resolve(&flows[cur].url, l))
+            else {
                 break;
             };
             let (from, app) = (flows[cur].started_at, &flows[cur].process);
             let next = by_url.get(&next_url).and_then(|ids| {
                 ids.iter().copied().find(|&i| {
-                    !used[i] && !chain.contains(&i) && flows[i].process == *app
-                        && flows[i].started_at >= from && flows[i].started_at - from <= REDIRECT_FOLLOW_MS
+                    !used[i]
+                        && !chain.contains(&i)
+                        && flows[i].process == *app
+                        && flows[i].started_at >= from
+                        && flows[i].started_at - from <= REDIRECT_FOLLOW_MS
                 })
             });
             let Some(next) = next else { break };
@@ -718,23 +762,26 @@ fn redirect_chain(flows: &[&Flow], out: &mut Vec<Insight>) {
             .map(|&i| format!("{} {}", flows[i].status.unwrap_or(0), short_url(&flows[i].url)))
             .collect::<Vec<_>>()
             .join(" → ");
-        push(out, Finding {
-            rule: if looped { "redirect-loop" } else { "redirect-chain" },
-            key: format!("{}|{}", app_of(first), canonical_url(&first.url)),
-            severity: if looped { InsightSeverity::High } else { InsightSeverity::Warning },
-            title: if looped {
-                format!("Redirect loop starting at {}", short_url(&first.url))
-            } else {
-                format!("{hops} redirects before {} answers", short_url(&first.url))
+        push(
+            out,
+            Finding {
+                rule: if looped { "redirect-loop" } else { "redirect-chain" },
+                key: format!("{}|{}", app_of(first), canonical_url(&first.url)),
+                severity: if looped { InsightSeverity::High } else { InsightSeverity::Warning },
+                title: if looped {
+                    format!("Redirect loop starting at {}", short_url(&first.url))
+                } else {
+                    format!("{hops} redirects before {} answers", short_url(&first.url))
+                },
+                detail,
+                advice: if looped {
+                    "The redirects come back to a URL already visited, so the client never gets an answer. Check the conditions each hop redirects on (often a cookie or auth check that never succeeds)."
+                } else {
+                    "Each hop is a full round trip. Link to the final URL directly, and collapse http→https / www / trailing-slash redirects into one."
+                },
+                flows: chain.iter().map(|&i| flows[i]).collect(),
             },
-            detail,
-            advice: if looped {
-                "The redirects come back to a URL already visited, so the client never gets an answer. Check the conditions each hop redirects on (often a cookie or auth check that never succeeds)."
-            } else {
-                "Each hop is a full round trip. Link to the final URL directly, and collapse http→https / www / trailing-slash redirects into one."
-            },
-            flows: chain.iter().map(|&i| flows[i]).collect(),
-        });
+        );
     }
 }
 
@@ -777,12 +824,8 @@ fn resolve(base: &str, location: &str) -> Option<String> {
 }
 
 /// The server, not the network, is what takes the time.
-fn slow_endpoint(flows: &[&Flow], opts: &Options, out: &mut Vec<Insight>) {
-    let wait = |f: &Flow| {
-        let t = &f.timings;
-        let setup = t.dns_ms.unwrap_or(0.0) + t.connect_ms.unwrap_or(0.0) + t.tls_ms.unwrap_or(0.0) + t.request_ms.unwrap_or(0.0);
-        t.ttfb_ms.map(|ttfb| (ttfb - setup - opts.added_latency_ms).max(0.0))
-    };
+fn slow_endpoint(flows: &[&Flow], out: &mut Vec<Insight>) {
+    let wait = |f: &Flow| crate::timing::server_wait_ms(&f.timings);
     for (key, group) in by_endpoint(flows, |f| origin_response(f) && !f.edits.script && f.timings.ttfb_ms.is_some()) {
         let mut waits: Vec<f64> = group.iter().filter_map(|f| wait(f)).collect();
         waits.sort_by(f64::total_cmp);
@@ -792,7 +835,8 @@ fn slow_endpoint(flows: &[&Flow], opts: &Options, out: &mut Vec<Insight>) {
             // Too few calls for a median, but one that hung this long is a
             // finding by itself (a timeout waiting to happen).
             if max >= LONE_SLOW_WAIT_MS {
-                let slow: Vec<&Flow> = group.iter().copied().filter(|f| wait(f).is_some_and(|w| w >= LONE_SLOW_WAIT_MS)).collect();
+                let slow: Vec<&Flow> =
+                    group.iter().copied().filter(|f| wait(f).is_some_and(|w| w >= LONE_SLOW_WAIT_MS)).collect();
                 push(out, Finding {
                     rule: "slow-endpoint",
                     key: key3(&key),
@@ -863,43 +907,85 @@ fn cors_preflight(flows: &[&Flow], out: &mut Vec<Insight>) {
 }
 
 /// Credentials in query strings end up in logs, history and Referer headers.
+///
+/// Two kinds of name: ones that are a secret whatever their value (High), and
+/// ones that are often an API key meant to be public — browser keys for Maps or
+/// analytics, restricted by referrer — which are worth a look, not an alarm.
 fn token_in_url(flows: &[&Flow], out: &mut Vec<Insight>) {
-    const NAMES: [&str; 17] = [
-        "access_token", "id_token", "refresh_token", "token", "auth", "auth_token", "api_key", "apikey",
-        "api-key", "key", "client_secret", "secret", "password", "passwd", "pwd", "session", "sessionid",
+    const SECRET: [&str; 12] = [
+        "access_token",
+        "id_token",
+        "refresh_token",
+        "auth_token",
+        "client_secret",
+        "secret",
+        "password",
+        "passwd",
+        "pwd",
+        "session",
+        "sessionid",
+        "session_id",
     ];
-    let leaked = |f: &Flow| -> Option<Vec<String>> {
+    const KEYISH: [&str; 6] = ["token", "auth", "api_key", "apikey", "api-key", "key"];
+    // `(name, is_secret)` per parameter that looks like a credential.
+    let leaked = |f: &Flow| -> Option<Vec<(String, bool)>> {
         if is_loopback(&f.host) {
             return None;
         }
-        let names: Vec<String> = query_params(&f.path)
-            .filter(|(k, v)| (v.len() >= 8 && NAMES.iter().any(|n| k.eq_ignore_ascii_case(n))) || looks_like_jwt(v))
-            .map(|(k, _)| k.to_ascii_lowercase())
+        let names: Vec<(String, bool)> = query_params(&f.path)
+            .filter_map(|(k, v)| {
+                let named = |list: &[&str]| v.len() >= 8 && list.iter().any(|n| k.eq_ignore_ascii_case(n));
+                if looks_like_jwt(v) || named(&SECRET) {
+                    Some((k.to_ascii_lowercase(), true))
+                } else if named(&KEYISH) && !is_public_browser_key(v) {
+                    Some((k.to_ascii_lowercase(), false))
+                } else {
+                    None
+                }
+            })
             .collect();
         (!names.is_empty()).then_some(names)
     };
     for (key, hits) in by_host_with(flows, leaked) {
-        let names: BTreeSet<&str> = hits.iter().flat_map(|(_, n)| n.iter().map(String::as_str)).collect();
+        let names: BTreeSet<&str> = hits.iter().flat_map(|(_, n)| n.iter().map(|(n, _)| n.as_str())).collect();
+        let secret = hits.iter().any(|(_, n)| n.iter().any(|(_, s)| *s));
         let group: Vec<&Flow> = hits.iter().map(|(f, _)| *f).collect();
+        let listed = names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ");
         push(out, Finding {
             rule: "token-in-url",
             key: key2(&key),
-            severity: InsightSeverity::High,
-            title: format!("Credentials in URLs sent to {}", key.1),
-            detail: format!(
-                "{} requests carry {} in the query string.",
-                group.len(),
-                names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
-            ),
+            severity: if secret { InsightSeverity::High } else { InsightSeverity::Info },
+            title: if secret {
+                format!("Credentials in URLs sent to {}", key.1)
+            } else {
+                format!("API keys in URLs sent to {}", key.1)
+            },
+            detail: if secret {
+                format!("{} {listed} in the query string.", plural(group.len(), "request carries", "requests carry"))
+            } else {
+                format!(
+                    "{} {listed} in the query string. Keys a browser sends are often public by design (restricted by referrer or app), so this matters only if the key works on its own.",
+                    plural(group.len(), "request carries", "requests carry")
+                )
+            },
             advice: "Send credentials in the Authorization header or the request body. URLs are written to server and proxy logs, browser history and Referer headers.",
             flows: group,
         });
     }
 }
 
+/// Google's browser API keys (`AIza…`): public by design, locked to a referrer
+/// or an app, and on every Maps, Firebase and logging call.
+fn is_public_browser_key(v: &str) -> bool {
+    v.starts_with("AIza")
+}
+
 fn looks_like_jwt(v: &str) -> bool {
     v.starts_with("eyJ") && v.len() > 30 && v.matches('.').count() == 2
 }
+
+/// A flow and the cookies it set without Secure or HttpOnly, with what each lacks.
+type CookieHit<'a> = (&'a Flow, Vec<(String, Vec<&'static str>)>);
 
 /// Cookies set over HTTPS without the attributes that keep them there.
 fn insecure_cookies(flows: &[&Flow], out: &mut Vec<Insight>) {
@@ -932,7 +1018,15 @@ fn insecure_cookies(flows: &[&Flow], out: &mut Vec<Insight>) {
             .collect();
         (!found.is_empty()).then_some(found)
     };
-    for (key, hits) in by_host_with(flows, problems) {
+    // Grouped by site, not host: one vendor's subdomains (accounts., mail.,
+    // play. …) set the same cookies, and one finding per subdomain is noise.
+    let mut by_site: BTreeMap<(String, String), Vec<CookieHit>> = BTreeMap::new();
+    for f in flows.iter().copied() {
+        if let Some(found) = problems(f) {
+            by_site.entry((app_of(f), registrable_domain(&f.host))).or_default().push((f, found));
+        }
+    }
+    for (key, hits) in by_site {
         let mut cookies: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for (_, found) in &hits {
             for (name, missing) in found {
@@ -945,16 +1039,17 @@ fn insecure_cookies(flows: &[&Flow], out: &mut Vec<Insight>) {
             }
         }
         let group: Vec<&Flow> = hits.iter().map(|(f, _)| *f).collect();
-        let list = cookies
-            .iter()
-            .map(|(n, m)| format!("`{n}` (no {})", m.join(", no ")))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let list =
+            cookies.iter().map(|(n, m)| format!("`{n}` (no {})", m.join(", no "))).collect::<Vec<_>>().join(", ");
+        let hosts: BTreeSet<&str> = group.iter().map(|f| f.host.as_str()).collect();
+        let lack = if cookies.len() == 1 { "lacks" } else { "lack" };
+        let from =
+            if hosts.len() == 1 { hosts.iter().next().copied().unwrap_or(&key.1).to_string() } else { key.1.clone() };
         push(out, Finding {
             rule: "insecure-cookie",
             key: key2(&key),
             severity: InsightSeverity::Warning,
-            title: format!("{} cookies from {} lack Secure or HttpOnly", cookies.len(), key.1),
+            title: format!("{} from {from} {lack} Secure or HttpOnly", plural(cookies.len(), "cookie", "cookies")),
             detail: format!("{list}."),
             advice: "Mark cookies Secure so they never travel over plain HTTP, and HttpOnly when scripts don't need to read them (session and auth cookies).",
             flows: group,
@@ -964,7 +1059,8 @@ fn insecure_cookies(flows: &[&Flow], out: &mut Vec<Insight>) {
 
 /// Credentials over plain HTTP, readable by anyone on the path.
 fn plaintext_credentials(flows: &[&Flow], out: &mut Vec<Insight>) {
-    const REQUEST: [&str; 6] = ["authorization", "proxy-authorization", "cookie", "x-api-key", "api-key", "x-auth-token"];
+    const REQUEST: [&str; 6] =
+        ["authorization", "proxy-authorization", "cookie", "x-api-key", "api-key", "x-auth-token"];
     let carried = |f: &Flow| -> BTreeSet<String> {
         let mut names: BTreeSet<String> = f
             .request_headers
@@ -985,8 +1081,8 @@ fn plaintext_credentials(flows: &[&Flow], out: &mut Vec<Insight>) {
             severity: InsightSeverity::High,
             title: format!("Credentials sent over plain HTTP to {}", key.1),
             detail: format!(
-                "{} unencrypted requests carry {}.",
-                group.len(),
+                "{} {}.",
+                plural(group.len(), "unencrypted request carries", "unencrypted requests carry"),
                 names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
             ),
             advice: "Use HTTPS for anything that carries a credential or a session, and send HSTS so clients stop trying plain HTTP.",
@@ -1002,7 +1098,10 @@ fn image_unoptimized(flows: &[&Flow], out: &mut Vec<Insight>) {
             return false;
         }
         let media = media_type(f);
-        let legacy = matches!(media.as_str(), "image/jpeg" | "image/jpg" | "image/png" | "image/gif" | "image/bmp" | "image/tiff");
+        let legacy = matches!(
+            media.as_str(),
+            "image/jpeg" | "image/jpg" | "image/png" | "image/gif" | "image/bmp" | "image/tiff"
+        );
         media.starts_with("image/")
             && media != "image/svg+xml"
             && ((legacy && f.response_size >= IMAGE_LEGACY_BYTES) || f.response_size >= IMAGE_HEAVY_BYTES)
@@ -1013,7 +1112,7 @@ fn image_unoptimized(flows: &[&Flow], out: &mut Vec<Insight>) {
             rule: "image-unoptimized",
             key: key2(&key),
             severity: if total >= 2 * LARGE_PAYLOAD_BYTES { InsightSeverity::Warning } else { InsightSeverity::Info },
-            title: format!("{} heavy images from {}", group.len(), key.1),
+            title: format!("{} from {}", plural(group.len(), "heavy image", "heavy images"), key.1),
             detail: format!(
                 "{} in total, largest {}. JPEG/PNG/GIF of 100 KB or more, or any image of 500 KB or more.",
                 fmt_bytes(total),
@@ -1046,7 +1145,7 @@ fn short_cache(flows: &[&Flow], out: &mut Vec<Insight>) {
             rule: "short-cache",
             key: key2(&key),
             severity: InsightSeverity::Info,
-            title: format!("{} fingerprinted assets from {} expire within a week", group.len(), key.1),
+            title: format!("{} from {} {} within a week", plural(group.len(), "fingerprinted asset", "fingerprinted assets"), key.1, if group.len() == 1 { "expires" } else { "expire" }),
             detail: format!(
                 "Their file names carry a content hash, so they can never go stale, yet the shortest max-age is {}. Returning visitors download them again.",
                 fmt_ms(shortest as f64 * 1000.0)
@@ -1092,8 +1191,8 @@ fn mixed_content(flows: &[&Flow], out: &mut Vec<Insight>) {
             severity: InsightSeverity::Warning,
             title: format!("HTTPS pages load {} over plain HTTP", key.1),
             detail: format!(
-                "{} requests to http://{} came from HTTPS pages. Browsers block scripts and styles loaded this way and warn about images; anyone on the network can read or change them.",
-                group.len(),
+                "{} to http://{} came from HTTPS pages. Browsers block scripts and styles loaded this way and warn about images; anyone on the network can read or change them.",
+                plural(group.len(), "request", "requests"),
                 key.1
             ),
             advice: "Load the resource over HTTPS (or a protocol-relative URL), and add `Content-Security-Policy: upgrade-insecure-requests` to catch the rest.",
@@ -1105,7 +1204,12 @@ fn mixed_content(flows: &[&Flow], out: &mut Vec<Insight>) {
 /// HTML documents served without the headers that protect the page.
 fn missing_security_headers(flows: &[&Flow], out: &mut Vec<Insight>) {
     let missing = |f: &Flow| -> Option<Vec<&'static str>> {
-        if f.scheme != "https" || f.method != "GET" || f.status != Some(200) || is_loopback(&f.host) || !origin_response(f) {
+        if f.scheme != "https"
+            || f.method != "GET"
+            || f.status != Some(200)
+            || is_loopback(&f.host)
+            || !origin_response(f)
+        {
             return None;
         }
         let dest = header(&f.request_headers, "sec-fetch-dest");
@@ -1124,7 +1228,9 @@ fn missing_security_headers(flows: &[&Flow], out: &mut Vec<Insight>) {
         if header(h, "x-content-type-options").is_none_or(|v| !v.trim().eq_ignore_ascii_case("nosniff")) {
             gaps.push("X-Content-Type-Options: nosniff");
         }
-        if header(h, "x-frame-options").is_none() && !csp.is_some_and(|c| c.to_ascii_lowercase().contains("frame-ancestors")) {
+        if header(h, "x-frame-options").is_none()
+            && !csp.is_some_and(|c| c.to_ascii_lowercase().contains("frame-ancestors"))
+        {
             gaps.push("framing protection (X-Frame-Options or CSP frame-ancestors)");
         }
         (!gaps.is_empty()).then_some(gaps)
@@ -1143,8 +1249,11 @@ fn missing_security_headers(flows: &[&Flow], out: &mut Vec<Insight>) {
             rule: "missing-security-headers",
             key: key2(&key),
             severity: InsightSeverity::Info,
-            title: format!("Pages from {} lack {} security {}", key.1, gaps.len(), if gaps.len() == 1 { "header" } else { "headers" }),
-            detail: format!("{} HTML documents without: {}.", group.len(), gaps.join(", ")),
+            title: match gaps.as_slice() {
+                [only] => format!("Pages from {} lack {}", key.1, only.split(':').next().unwrap_or(only)),
+                _ => format!("Pages from {} lack {} security headers", key.1, gaps.len()),
+            },
+            detail: format!("{} without: {}.", plural(group.len(), "HTML document", "HTML documents"), gaps.join(", ")),
             advice: "Send HSTS so browsers stop trying plain HTTP, a Content-Security-Policy to limit what the page may load, `nosniff`, and frame-ancestors (or X-Frame-Options) against clickjacking.",
             flows: group,
         });
@@ -1160,9 +1269,12 @@ fn broken_asset(flows: &[&Flow], out: &mut Vec<Insight>) {
             return matches!(dest, "script" | "style" | "image" | "font" | "audio" | "video" | "track" | "manifest");
         }
         let path = path_only(&f.path).to_ascii_lowercase();
-        [".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif", ".woff", ".woff2", ".ttf", ".ico"]
-            .iter()
-            .any(|e| path.ends_with(e))
+        [
+            ".js", ".mjs", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif", ".woff", ".woff2",
+            ".ttf", ".ico",
+        ]
+        .iter()
+        .any(|e| path.ends_with(e))
     };
     for (key, group) in by_host(flows, |f| {
         origin_response(f) && f.method == "GET" && matches!(f.status, Some(404 | 410)) && wanted_asset(f)
@@ -1180,7 +1292,7 @@ fn broken_asset(flows: &[&Flow], out: &mut Vec<Insight>) {
             rule: "broken-asset",
             key: key2(&key),
             severity: InsightSeverity::Warning,
-            title: format!("{} missing {} on {}", paths.len(), if paths.len() == 1 { "asset" } else { "assets" }, key.1),
+            title: format!("{} on {}", plural(paths.len(), "missing asset", "missing assets"), key.1),
             detail: format!("404/410 for {shown}{more}. A missing script or stylesheet changes how the page works, not just how it looks."),
             advice: "Fix the reference or deploy the file; after a release, stale HTML pointing at old hashed bundles is the usual cause, so keep the previous build's assets for a while.",
             flows: group,
@@ -1197,7 +1309,11 @@ fn empty_response(flows: &[&Flow], out: &mut Vec<Insight>) {
         size == 0 || (size <= 4 && is_data(&media_type(f)))
     };
     for (key, group) in by_endpoint(flows, |f| {
-        origin_response(f) && f.status == Some(200) && f.mcp.is_none() && !matches!(f.method.as_str(), "HEAD" | "OPTIONS") && empty(f)
+        origin_response(f)
+            && f.status == Some(200)
+            && f.mcp.is_none()
+            && !matches!(f.method.as_str(), "HEAD" | "OPTIONS")
+            && empty(f)
     }) {
         if group.len() < EMPTY_MIN {
             continue;
@@ -1224,7 +1340,8 @@ fn slow_connect(flows: &[&Flow], out: &mut Vec<Insight>) {
         Some(v[v.len() / 2])
     };
     for (key, group) in by_host(flows, |f| {
-        !f.timings.connection_reused && (f.timings.dns_ms.is_some() || f.timings.connect_ms.is_some() || f.timings.tls_ms.is_some())
+        !f.timings.connection_reused
+            && (f.timings.dns_ms.is_some() || f.timings.connect_ms.is_some() || f.timings.tls_ms.is_some())
     }) {
         let phase = |get: fn(&Flow) -> Option<f64>| median(group.iter().filter_map(|f| get(f)).collect());
         let checks = [
@@ -1265,7 +1382,8 @@ fn cdn_miss(flows: &[&Flow], out: &mut Vec<Insight>) {
         let last = raw.rsplit(',').next().unwrap_or(raw).trim().to_ascii_uppercase();
         let hit = ["HIT", "REVALIDATED", "STALE", "UPDATING"].iter().any(|w| last.contains(w));
         let miss = ["MISS", "EXPIRED", "BYPASS", "DYNAMIC"].iter().any(|w| last.contains(w));
-        (hit || miss).then(|| (hit, last.split_whitespace().next().unwrap_or("").trim_start_matches("TCP_").to_string()))
+        (hit || miss)
+            .then(|| (hit, last.split_whitespace().next().unwrap_or("").trim_start_matches("TCP_").to_string()))
     };
     for (key, hits) in by_host_with(flows, |f| {
         let eligible = origin_response(f) && f.method == "GET" && f.status == Some(200) && is_static(f, &media_type(f));
@@ -1297,6 +1415,52 @@ fn cdn_miss(flows: &[&Flow], out: &mut Vec<Insight>) {
 }
 
 /* --------------------------------- wording --------------------------------- */
+
+/// `1 cookie`, `3 cookies`: a count with the right form of the noun after it.
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// The most common error among `flows`, as a sentence, or `""` when none
+/// carries one. Only the first line: upstream errors carry a whole cause chain.
+fn common_error(flows: &[&Flow]) -> String {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for f in flows {
+        if let Some(e) = f.error.as_deref() {
+            let line = e.lines().next().unwrap_or(e).trim();
+            let short: String = if line.chars().count() > 120 {
+                format!("{}…", line.chars().take(119).collect::<String>())
+            } else {
+                line.to_string()
+            };
+            *counts.entry(short).or_default() += 1;
+        }
+    }
+    match counts.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0))) {
+        Some((e, n)) => format!("Most common error ({n}×): {e}"),
+        None => String::new(),
+    }
+}
+
+/// The site a host belongs to: `mail.google.com` → `google.com`,
+/// `www.bbc.co.uk` → `bbc.co.uk`. A heuristic, not the Public Suffix List: a
+/// two-letter country code under a common second-level label (`co`, `com`,
+/// `ac` …) keeps three labels. IP addresses are their own site.
+fn registrable_domain(host: &str) -> String {
+    let h = bare_host(host).trim_end_matches('.').to_ascii_lowercase();
+    if h.contains(':') || h.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return h;
+    }
+    let labels: Vec<&str> = h.split('.').collect();
+    if labels.len() <= 2 {
+        return h;
+    }
+    const SECOND_LEVEL: [&str; 13] =
+        ["co", "com", "net", "org", "gov", "edu", "ac", "ne", "or", "go", "gob", "mil", "nic"];
+    let n = labels.len();
+    let keep = if labels[n - 1].len() == 2 && SECOND_LEVEL.contains(&labels[n - 2]) { 3 } else { 2 };
+    labels[n.saturating_sub(keep)..].join(".")
+}
 
 fn status_breakdown<'a>(flows: impl Iterator<Item = &'a Flow>) -> String {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
@@ -1379,7 +1543,7 @@ mod tests {
     }
 
     fn run(flows: &[Flow]) -> Vec<Insight> {
-        analyze(flows, &Options::default()).insights
+        analyze(flows).insights
     }
 
     fn rules(flows: &[Flow]) -> Vec<String> {
@@ -1403,9 +1567,20 @@ mod tests {
         assert_eq!(normalize_path("/"), "/");
     }
 
+    /// `src/report.ts` has a copy of `normalize_path`; both run these cases so
+    /// "Most called" keeps grouping the way the findings do.
+    #[test]
+    fn normalize_path_matches_the_shared_cases() {
+        let cases: Vec<(String, String)> = serde_json::from_str(include_str!("normalize_path_cases.json")).unwrap();
+        for (input, want) in cases {
+            assert_eq!(normalize_path(&input), want, "input {input:?}");
+        }
+    }
+
     #[test]
     fn a_burst_of_different_ids_run_serially_reads_as_n_plus_one() {
-        let flows: Vec<Flow> = (0..6).map(|i| flow(&format!("f{i}"), 1000.0 + i as f64 * 60.0, &format!("/users/{i}"))).collect();
+        let flows: Vec<Flow> =
+            (0..6).map(|i| flow(&format!("f{i}"), 1000.0 + i as f64 * 60.0, &format!("/users/{i}"))).collect();
         let i = only(&flows, "burst");
         assert_eq!(i.count, 6);
         assert!(i.title.contains("GET /users/:id"), "{}", i.title);
@@ -1613,15 +1788,112 @@ mod tests {
     }
 
     #[test]
-    fn slow_server_wait_excludes_connection_setup_and_added_latency() {
+    fn slow_server_wait_excludes_connection_setup_and_upload_once() {
         let slow = vec![timed("a", 0.0, 1_500.0, None), timed("b", 1.0, 1_600.0, None), timed("c", 2.0, 1_700.0, None)];
         assert!(only(&slow, "slow-endpoint").title.contains("~1.6 s"));
 
-        let setup = vec![timed("a", 0.0, 1_500.0, Some(900.0)), timed("b", 1.0, 1_600.0, Some(900.0)), timed("c", 2.0, 1_700.0, Some(900.0))];
+        let setup = vec![
+            timed("a", 0.0, 1_500.0, Some(900.0)),
+            timed("b", 1.0, 1_600.0, Some(900.0)),
+            timed("c", 2.0, 1_700.0, Some(900.0)),
+        ];
         assert!(!rules(&setup).contains(&"slow-endpoint".to_string()), "the wait was mostly connecting");
 
-        let throttled = analyze(&slow, &Options { added_latency_ms: 1_000.0 });
-        assert!(throttled.insights.iter().all(|i| i.rule != "slow-endpoint"), "NovaProxy added that delay itself");
+        // `request_ms` is when the upload ended, counted from the start: it
+        // already holds the 900 ms connect, so the wait is 1.6 s − 1.0 s.
+        let uploaded: Vec<Flow> = setup
+            .into_iter()
+            .map(|mut f| {
+                f.timings.request_ms = Some(1_000.0);
+                f.timings.ttfb_ms = f.timings.ttfb_ms.map(|t| t + 1_000.0);
+                f
+            })
+            .collect();
+        let i = only(&uploaded, "slow-endpoint");
+        assert!(i.title.contains("~1.6 s"), "{}", i.title);
+    }
+
+    #[test]
+    fn api_keys_are_info_and_public_browser_keys_are_skipped() {
+        let flows = vec![
+            flow("maps", 0.0, "/log?key=AIzaSyA1b2C3d4E5f6G7h8"),
+            flow("k", 1.0, "/v1/data?api_key=0123456789abcdef"),
+        ];
+        let i = only(&flows, "token-in-url");
+        assert_eq!(i.severity, InsightSeverity::Info);
+        assert_eq!(i.flow_ids, vec!["k"]);
+        assert!(i.title.starts_with("API keys"), "{}", i.title);
+        assert!(i.detail.starts_with("1 request carries `api_key`"), "{}", i.detail);
+
+        // A real secret next to it lifts the host's finding to High.
+        let mut both = flows.clone();
+        both.push(flow("t", 2.0, "/cb?refresh_token=abcdefgh12345"));
+        assert_eq!(only(&both, "token-in-url").severity, InsightSeverity::High);
+    }
+
+    #[test]
+    fn one_vendors_cookies_make_one_finding() {
+        let cookie = |id: &str, host: &str| {
+            let mut f = flow(id, 0.0, "/");
+            f.host = host.into();
+            f.response_headers.push(h("Set-Cookie", "NID=abc; Path=/; SameSite=Lax"));
+            f
+        };
+        let i = only(&[cookie("a", "accounts.google.com"), cookie("m", "mail.google.com")], "insecure-cookie");
+        assert_eq!(i.count, 2);
+        assert_eq!(i.title, "1 cookie from google.com lacks Secure or HttpOnly");
+        assert!(i.id.ends_with("|google.com"), "{}", i.id);
+    }
+
+    #[test]
+    fn registrable_domains_keep_country_second_levels() {
+        assert_eq!(registrable_domain("mail.google.com"), "google.com");
+        assert_eq!(registrable_domain("www.bbc.co.uk:443"), "bbc.co.uk");
+        assert_eq!(registrable_domain("example.com"), "example.com");
+        assert_eq!(registrable_domain("10.0.0.1:8080"), "10.0.0.1");
+        assert_eq!(registrable_domain("[::1]:80"), "::1");
+    }
+
+    #[test]
+    fn a_host_that_never_answers_reads_as_blocked_not_failing() {
+        let flows: Vec<Flow> = (0..11)
+            .map(|i| {
+                let mut f = flow(&format!("f{i}"), i as f64 * 20_000.0, &format!("/log{i}"));
+                if i > 0 {
+                    f.state = FlowState::Error;
+                    f.status = None;
+                    f.error = Some(
+                        "upstream error: connection reset
+caused by: os error 10054"
+                            .into(),
+                    );
+                }
+                f
+            })
+            .collect();
+        let i = only(&flows, "error-rate");
+        assert_eq!(i.severity, InsightSeverity::Warning);
+        assert!(i.title.contains("get no response"), "{}", i.title);
+        assert!(i.detail.contains("(10×): upstream error: connection reset"), "{}", i.detail);
+        assert!(!i.detail.contains("caused by"), "{}", i.detail);
+    }
+
+    #[test]
+    fn titles_use_the_singular_for_one() {
+        let i = only(&[sized("plain", 0.0, "application/json", 50_000)], "uncompressed");
+        assert!(i.title.starts_with("1 text response from"), "{}", i.title);
+        let i = only(&[image("big.jpg", "image/jpeg", 300 * 1024)], "image-unoptimized");
+        assert!(i.title.starts_with("1 heavy image from"), "{}", i.title);
+        let mut one_gap = page(
+            "p",
+            vec![
+                h("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'"),
+                h("X-Content-Type-Options", "nosniff"),
+            ],
+        );
+        one_gap.id = "p".into();
+        let i = only(&[one_gap], "missing-security-headers");
+        assert_eq!(i.title, "Pages from api.test lack Strict-Transport-Security");
     }
 
     #[test]
@@ -1754,11 +2026,14 @@ mod tests {
         assert!(i.title.contains("4 security headers"), "{}", i.title);
         assert!(i.detail.contains("Strict-Transport-Security") && i.detail.contains("frame-ancestors"), "{}", i.detail);
 
-        let hardened = page("ok", vec![
-            h("Strict-Transport-Security", "max-age=63072000"),
-            h("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'"),
-            h("X-Content-Type-Options", "nosniff"),
-        ]);
+        let hardened = page(
+            "ok",
+            vec![
+                h("Strict-Transport-Security", "max-age=63072000"),
+                h("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'"),
+                h("X-Content-Type-Options", "nosniff"),
+            ],
+        );
         assert!(!rules(&[hardened]).contains(&"missing-security-headers".to_string()));
 
         // Fetching HTML from script is not a page load.
@@ -1800,7 +2075,13 @@ mod tests {
             f.status = Some(status);
             f
         };
-        let flows = vec![mk("a", "GET", 200, 0), mk("b", "GET", 200, 2), mk("c", "GET", 200, 4), mk("d", "GET", 204, 0), mk("e", "HEAD", 200, 0)];
+        let flows = vec![
+            mk("a", "GET", 200, 0),
+            mk("b", "GET", 200, 2),
+            mk("c", "GET", 200, 4),
+            mk("d", "GET", 204, 0),
+            mk("e", "HEAD", 200, 0),
+        ];
         let i = only(&flows, "empty-response");
         assert_eq!(i.flow_ids, vec!["a", "b", "c"]);
 
@@ -1833,7 +2114,10 @@ mod tests {
 
     #[test]
     fn slow_dns_tcp_or_tls_medians_are_reported_per_host() {
-        let flows = vec![connect("a", Some(350.0), Some(20.0), Some(600.0)), connect("b", Some(300.0), Some(30.0), Some(700.0))];
+        let flows = vec![
+            connect("a", Some(350.0), Some(20.0), Some(600.0)),
+            connect("b", Some(300.0), Some(30.0), Some(700.0)),
+        ];
         let i = only(&flows, "slow-connect");
         assert!(i.detail.contains("DNS lookup") && i.detail.contains("TLS handshake"), "{}", i.detail);
         assert!(!i.detail.contains("TCP connect"), "{}", i.detail);
@@ -1886,14 +2170,17 @@ mod tests {
 
     #[test]
     fn unnamed_graphql_is_not_one_giant_endpoint() {
-        let flows: Vec<Flow> = (0..6).map(|i| {
-            let mut f = flow(&format!("g{i}"), i as f64 * 10.0, "/graphql");
-            f.method = "POST".into();
-            f
-        }).collect();
+        let flows: Vec<Flow> = (0..6)
+            .map(|i| {
+                let mut f = flow(&format!("g{i}"), i as f64 * 10.0, "/graphql");
+                f.method = "POST".into();
+                f
+            })
+            .collect();
         assert!(run(&flows).is_empty());
 
-        let named: Vec<Flow> = (0..6).map(|i| flow(&format!("g{i}"), i as f64 * 10.0, "/graphql?operationName=Feed")).collect();
+        let named: Vec<Flow> =
+            (0..6).map(|i| flow(&format!("g{i}"), i as f64 * 10.0, "/graphql?operationName=Feed")).collect();
         assert!(only(&named, "burst").title.starts_with("GraphQL Feed"));
     }
 
@@ -1905,7 +2192,7 @@ mod tests {
         flows[2].resent = true;
         flows[3].is_websocket = true;
         flows[4].state = FlowState::Started;
-        let report = analyze(&flows, &Options::default());
+        let report = analyze(&flows);
         assert_eq!(report.analyzed, 1);
         assert!(report.insights.is_empty());
     }
@@ -1913,7 +2200,7 @@ mod tests {
     #[test]
     fn ids_are_stable_and_results_sorted_by_severity() {
         let mut flows: Vec<Flow> = (0..8).map(|i| flow(&format!("f{i}"), i as f64 * 5_000.0, "/status")).collect();
-        flows.push(flow("t", 50_000.0, "/cb?token=abcdefgh1234"));
+        flows.push(flow("t", 50_000.0, "/cb?access_token=abcdefgh1234"));
         let a = run(&flows);
         let b = run(&flows);
         assert_eq!(a.iter().map(|i| &i.id).collect::<Vec<_>>(), b.iter().map(|i| &i.id).collect::<Vec<_>>());

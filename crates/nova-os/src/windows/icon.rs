@@ -8,8 +8,8 @@
 use std::mem::size_of;
 
 use windows_sys::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    DIB_RGB_COLORS, HBITMAP,
+    CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+    HBITMAP,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, PrivateExtractIconsW, HICON, ICONINFO};
 
@@ -21,9 +21,7 @@ pub fn png_for(exe: &str, px: u32) -> Option<Vec<u8>> {
     let mut icon: HICON = std::ptr::null_mut();
     let mut id = 0u32;
     // SAFETY: one HICON slot, one id slot; the icon is destroyed below.
-    let n = unsafe {
-        PrivateExtractIconsW(path.as_ptr(), 0, px as i32, px as i32, &mut icon, &mut id, 1, 0)
-    };
+    let n = unsafe { PrivateExtractIconsW(path.as_ptr(), 0, px as i32, px as i32, &mut icon, &mut id, 1, 0) };
     // 0 = no icons in the file; 0xFFFFFFFF = file not found or not a PE.
     if n == 0 || n == u32::MAX || icon.is_null() {
         return None;

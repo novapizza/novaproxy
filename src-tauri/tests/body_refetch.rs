@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use nova_proto::{BodyPreview, Flow};
-use novaproxy_lib::commands::{hydrate_request_body, read_body_from, retained_flows_from};
+use novaproxy_lib::commands::{hydrate_request_body, read_body_from};
 use novaproxy_lib::state::AppState;
 
 fn state(tag: &str) -> Arc<AppState> {
@@ -45,11 +45,7 @@ fn body(text: &str) -> BodyPreview {
 /// What the UI sends back for a flow whose preview it dropped: the metadata, but
 /// neither the text nor the base64.
 fn stripped(of: &BodyPreview) -> BodyPreview {
-    BodyPreview {
-        text: None,
-        base64: None,
-        ..of.clone()
-    }
+    BodyPreview { text: None, base64: None, ..of.clone() }
 }
 
 #[test]
@@ -105,10 +101,7 @@ fn replaying_a_flow_the_ui_stripped_still_sends_its_body() {
     sent.request_body = Some(stripped(&full));
     hydrate_request_body(&st, &mut sent);
 
-    assert_eq!(
-        sent.request_body.as_ref().and_then(|b| b.text.as_deref()),
-        Some(r#"{"replay":"me"}"#),
-    );
+    assert_eq!(sent.request_body.as_ref().and_then(|b| b.text.as_deref()), Some(r#"{"replay":"me"}"#),);
 }
 
 #[test]
@@ -122,10 +115,7 @@ fn hydrating_leaves_a_body_the_ui_already_has_alone() {
     sent.request_body = Some(body("edited by hand"));
     hydrate_request_body(&st, &mut sent);
 
-    assert_eq!(
-        sent.request_body.as_ref().and_then(|b| b.text.as_deref()),
-        Some("edited by hand"),
-    );
+    assert_eq!(sent.request_body.as_ref().and_then(|b| b.text.as_deref()), Some("edited by hand"),);
 }
 
 #[test]
@@ -155,17 +145,12 @@ fn hydrating_a_flow_that_captured_no_body_is_a_noop() {
 /// Capture `bytes` as the request body of `id` the way the engine does: a preview
 /// capped at the inline size, the whole body spilled to disk.
 fn spill_request(st: &AppState, id: &str, bytes: &[u8]) -> BodyPreview {
-    let mut cap = nova_core::bodystore::BodyCapture::new(&st.bodies, id, nova_core::flow::Side::Request);
+    let mut cap = nova_core::bodystore::BodyCapture::new(&*st.bodies, id, nova_core::flow::Side::Request);
     cap.push(bytes);
     let out = cap.finish();
     assert!(out.spilled && out.truncated, "the body outgrows the preview");
-    let mut preview = nova_core::flow::build_preview(
-        out.inline,
-        out.total,
-        out.truncated,
-        Some("application/json".into()),
-        None,
-    );
+    let mut preview =
+        nova_core::flow::build_preview(out.inline, out.total, out.truncated, Some("application/json".into()), None);
     preview.spilled = true;
     preview
 }
@@ -196,8 +181,13 @@ fn an_export_carries_spilled_bodies_rather_than_their_previews() {
     small.request_body = Some(body("tiny"));
     st.flows.insert(small);
 
-    let out = retained_flows_from(&st);
-    let by_id = |id: &str| out.iter().find(|f| f.id == id).unwrap().request_body.clone().unwrap();
-    assert_eq!(by_id("f1").text.as_deref(), Some(big.as_str()));
-    assert_eq!(by_id("f2").text.as_deref(), Some("tiny"));
+    let path = st.data_dir.join("export.nova");
+    let ids = ["f1".to_string(), "f2".to_string()];
+    let n = novaproxy_lib::export::export(&st, &path, novaproxy_lib::export::Format::Nova, &ids, Vec::new(), false)
+        .unwrap();
+    assert_eq!(n, 2);
+    let doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let text = |i: usize| doc["flows"][i]["request_body"]["text"].as_str().map(str::to_string);
+    assert_eq!(text(0).as_deref(), Some(big.as_str()));
+    assert_eq!(text(1).as_deref(), Some("tiny"));
 }

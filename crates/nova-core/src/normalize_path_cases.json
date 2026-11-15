@@ -1,0 +1,16 @@
+[
+  ["/users/42/posts?x=1", "/users/:id/posts"],
+  ["/o/3fa85f64-5717-4562-b3fc-2c963f66afa6", "/o/:uuid"],
+  ["/o/3FA85F64-5717-4562-B3FC-2C963F66AFA6/x", "/o/:uuid/x"],
+  ["/blob/9f86d081884c7d65", "/blob/:hash"],
+  ["/blob/abcdefabcdef", "/blob/abcdefabcdef"],
+  ["/s/AbC123xyz789QweRty45", "/s/:token"],
+  ["/s/abc_def-123456789012345", "/s/:token"],
+  ["/s/abcdefghijklmnopqrstu", "/s/abcdefghijklmnopqrstu"],
+  ["/v2/search/deadbeef", "/v2/search/deadbeef"],
+  ["/a/b/#frag", "/a/b/"],
+  ["/", "/"],
+  ["", "/"],
+  ["?q=1", "/"],
+  ["/x//7", "/x//:id"]
+]

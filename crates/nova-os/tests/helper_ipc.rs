@@ -87,10 +87,7 @@ fn the_helper_answers_pings_and_refuses_everything_dangerous() {
 
     // A snapshot naming a service this machine does not have is refused too, so
     // a tampered backup file cannot steer `networksetup`.
-    let bogus = Backup {
-        services: vec![service("Not A Real Network Service")],
-        ..Default::default()
-    };
+    let bogus = Backup { services: vec![service("Not A Real Network Service")], ..Default::default() };
     let err = helper::disable(&bogus).unwrap_err().to_string();
     assert!(err.contains("not a network service"), "got {err}");
 

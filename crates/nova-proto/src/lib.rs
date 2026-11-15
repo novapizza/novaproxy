@@ -139,11 +139,7 @@ pub struct TlsScope {
 impl Default for TlsScope {
     /// Decrypt everything, exclude nothing — the least-surprising default.
     fn default() -> Self {
-        Self {
-            intercept_all: true,
-            include: Vec::new(),
-            exclude: Vec::new(),
-        }
+        Self { intercept_all: true, include: Vec::new(), exclude: Vec::new() }
     }
 }
 
@@ -178,6 +174,8 @@ pub struct Flow {
     /// Name of the originating process (e.g. "Google Chrome"), if resolved.
     /// Best-effort; `None` when attribution failed or on unsupported platforms.
     pub process: Option<String>,
+    /// HTTP version: the request's until a response arrives, then the one
+    /// spoken with the server (which can be HTTP/2 when the app used HTTP/1.1).
     pub http_version: String,
     pub state: FlowState,
     pub status: Option<u16>,
@@ -218,6 +216,12 @@ pub struct Flow {
     pub internal: bool,
     /// What NovaProxy changed about this exchange on its way through.
     pub edits: Edits,
+    /// NovaProxy took the HTTP/3 entries out of the response's `Alt-Svc`
+    /// before passing it on, so the app keeps using TCP (where NovaProxy can
+    /// see it) instead of switching to QUIC. `response_headers` still shows
+    /// what the server sent.
+    #[serde(default)]
+    pub alt_svc_h3_removed: bool,
 }
 
 /// What changed an exchange after it left the client.
@@ -330,7 +334,7 @@ pub struct HelperStatus {
 }
 
 /// State of the MCP endpoint that exposes captured traffic to AI tooling.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../src/bindings/")]
 pub struct McpStatus {
     pub running: bool,
@@ -338,6 +342,23 @@ pub struct McpStatus {
     pub port: u16,
     /// Endpoint URL to hand an MCP client, when running.
     pub url: Option<String>,
+    /// Bearer token a client must send (`Authorization: Bearer …`). Never
+    /// written to `mcp.json`; it lives in its own user-only file.
+    #[serde(default)]
+    pub token: Option<String>,
+    /// Whether credentials are hidden in what the endpoint returns.
+    #[serde(default = "default_true")]
+    pub redact: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for McpStatus {
+    fn default() -> Self {
+        Self { running: false, port: 0, url: None, token: None, redact: true }
+    }
 }
 
 /// A traffic-control rule. The action is selected by [`RuleKind`]; the relevant
