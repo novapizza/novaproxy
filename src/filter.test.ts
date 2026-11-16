@@ -14,6 +14,8 @@ import {
   mcpLabel,
   toastDuration,
   toggleIn,
+  isNarrowing,
+  withFilterEdit,
   type FlowFilter,
 } from "./filter";
 
@@ -385,5 +387,36 @@ describe("suggestFilterName", () => {
       ),
     ).toBe("conditions");
     expect(suggestFilterName(EMPTY_FILTER)).toBe("Filter");
+  });
+});
+
+describe("withFilterEdit", () => {
+  const off: FlowFilter = { ...EMPTY_FILTER, status: new Set(["4xx"]), enabled: false };
+
+  it("switches the filter back on when what it filters changes", () => {
+    expect(withFilterEdit(off, { query: "api" }).enabled).toBe(true);
+    expect(withFilterEdit(off, { status: new Set(["5xx"]) }).enabled).toBe(true);
+    expect(withFilterEdit(off, { scope: { kind: "pinned" } as FlowFilter["scope"] }).enabled).toBe(true);
+    expect(withFilterEdit(off, { clauses: [] }).enabled).toBe(true);
+  });
+
+  it("leaves the switch alone for the switch itself and for includeInternal", () => {
+    expect(withFilterEdit(off, { enabled: false }).enabled).toBe(false);
+    expect(withFilterEdit({ ...off, enabled: true }, { enabled: false }).enabled).toBe(false);
+    expect(withFilterEdit(off, { includeInternal: true }).enabled).toBe(false);
+  });
+
+  it("keeps the rest of the filter", () => {
+    const next = withFilterEdit(off, { query: "x" });
+    expect(next.status).toEqual(new Set(["4xx"]));
+    expect(next.query).toBe("x");
+  });
+});
+
+describe("isNarrowing", () => {
+  it("is false when off, even with settings kept", () => {
+    expect(isNarrowing({ ...EMPTY_FILTER, query: "a", enabled: false })).toBe(false);
+    expect(isNarrowing({ ...EMPTY_FILTER, query: "a" })).toBe(true);
+    expect(isNarrowing(EMPTY_FILTER)).toBe(false);
   });
 });

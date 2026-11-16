@@ -70,6 +70,7 @@ const CHECK_UPDATES: &str = "app.check-updates";
 
 /// Menu id of the keyboard-shortcuts item. Matched in [`on_event`].
 const SHORTCUTS: &str = "help.shortcuts";
+const WHATS_NEW: &str = "help.whats-new";
 
 /// Ours rather than the predefined Quit, which ends the process from the
 /// platform side; see `quit` for why the app has to go first.
@@ -83,6 +84,10 @@ pub const CHECK_UPDATES_EVENT: &str = "menu://check-updates";
 /// shortcut registry (`src/shortcuts.ts`), which is the only place that knows
 /// what the chords are — so the menu asks for it rather than describing it.
 pub const SHORTCUTS_EVENT: &str = "menu://shortcuts";
+
+/// Event the What's New item emits. The dialog and the changelog it shows live
+/// in the frontend (`src/changelog.ts`).
+pub const WHATS_NEW_EVENT: &str = "menu://whats-new";
 
 /// Whether this platform implements window controls and Quit as menu items.
 ///
@@ -157,6 +162,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     // Enabled even in a build that cannot update itself: the honest answer to
     // "am I current?" is a sentence in the card, and an item greyed out for
     // reasons the user cannot see reads as a bug.
+    let whats_new = MenuItem::with_id(app, WHATS_NEW, "What's New", true, None::<&str>)?;
     let check_updates = MenuItem::with_id(app, CHECK_UPDATES, "Check for Updates…", true, None::<&str>)?;
 
     // The app submenu: macOS's, and macOS's alone.
@@ -211,6 +217,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     if !PLATFORM_HAS_APP_MENU {
         help_items.extend([&check_updates as &dyn IsMenuItem<R>, &seps[7]]);
     }
+    help_items.push(&whats_new);
     help_items.push(&shortcuts);
     help_items.push(&show_logs);
     if !PLATFORM_HAS_APP_MENU {
@@ -258,6 +265,7 @@ enum Action {
     ShowLogs,
     CheckUpdates,
     Shortcuts,
+    WhatsNew,
     Quit,
 }
 
@@ -266,6 +274,7 @@ fn action_for(id: &str) -> Option<Action> {
         SHOW_LOGS => Some(Action::ShowLogs),
         CHECK_UPDATES => Some(Action::CheckUpdates),
         SHORTCUTS => Some(Action::Shortcuts),
+        WHATS_NEW => Some(Action::WhatsNew),
         QUIT => Some(Action::Quit),
         // Every predefined item — About, the clipboard — is handled by the
         // platform, so anything unrecognised here is not a failure.
@@ -285,6 +294,7 @@ pub fn on_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
         }
         Some(Action::CheckUpdates) => check_updates(app),
         Some(Action::Shortcuts) => show_shortcuts(app),
+        Some(Action::WhatsNew) => show_whats_new(app),
         Some(Action::Quit) => crate::quit::request(app),
         None => {}
     }
@@ -325,6 +335,19 @@ fn show_shortcuts<R: Runtime>(app: &AppHandle<R>) {
     }
     if let Err(e) = app.emit(SHORTCUTS_EVENT, ()) {
         tracing::warn!("could not ask the window to show the shortcuts: {e}");
+    }
+}
+
+/// Ask the window to open What's New. Same shape as `show_shortcuts`.
+fn show_whats_new<R: Runtime>(app: &AppHandle<R>) {
+    crate::usage!("whats_new.menu");
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    if let Err(e) = app.emit(WHATS_NEW_EVENT, ()) {
+        tracing::warn!("could not ask the window to show what's new: {e}");
     }
 }
 
@@ -388,8 +411,9 @@ mod tests {
         assert_eq!(action_for(SHOW_LOGS), Some(Action::ShowLogs));
         assert_eq!(action_for(CHECK_UPDATES), Some(Action::CheckUpdates));
         assert_eq!(action_for(SHORTCUTS), Some(Action::Shortcuts));
+        assert_eq!(action_for(WHATS_NEW), Some(Action::WhatsNew));
         // They must stay distinct, or one item would run another's code.
-        let ids = [SHOW_LOGS, CHECK_UPDATES, SHORTCUTS];
+        let ids = [SHOW_LOGS, CHECK_UPDATES, SHORTCUTS, WHATS_NEW, QUIT];
         assert_eq!(ids.iter().collect::<std::collections::HashSet<_>>().len(), ids.len());
         // Predefined items and typos alike: no action, no panic.
         assert_eq!(action_for("app.check-update"), None);

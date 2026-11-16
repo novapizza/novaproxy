@@ -1,9 +1,13 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import pkg from "./package.json" with { type: "json" };
 
 // Tauri drives this dev server; keep the port fixed and don't clobber Rust logs.
 export default defineConfig({
   plugins: [react()],
+  // The app's own version, for What's New. `package.json` is one of the files
+  // the release bumps, so this cannot drift from the installer.
+  define: { __APP_VERSION__: JSON.stringify(pkg.version) },
   clearScreen: false,
   server: {
     port: 5173,

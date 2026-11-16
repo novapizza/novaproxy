@@ -111,6 +111,11 @@ export interface Prefs {
    * see them. On by default; pushed to the engine at launch and on change.
    */
   keepOnTcp: boolean;
+  /**
+   * The version that last ran here. A launch on a newer one opens What's New
+   * once, then records the new version. Null until a build with the check runs.
+   */
+  lastSeenVersion: string | null;
 }
 
 export const DEFAULT_PREFS: Prefs = {
@@ -130,6 +135,7 @@ export const DEFAULT_PREFS: Prefs = {
   mutedInsights: [],
   redactHar: true,
   keepOnTcp: true,
+  lastSeenVersion: null,
 };
 
 const KEY = "novaproxy.prefs";
@@ -220,6 +226,7 @@ export function normalizePrefs(raw: unknown): Prefs {
     // Like `autoCheckUpdates`: only an explicit `false` opts out.
     redactHar: v.redactHar !== false,
     keepOnTcp: v.keepOnTcp !== false,
+    lastSeenVersion: typeof v.lastSeenVersion === "string" && v.lastSeenVersion ? v.lastSeenVersion : null,
   };
 }
 

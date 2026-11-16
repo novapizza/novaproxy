@@ -5,6 +5,7 @@ import { activeFilterCount, toggleIn, type FlowFilter, type SavedFilter } from "
 import { usePopover } from "../usePopover";
 import { ChipMenu } from "./ChipMenu";
 import { FilterBuilder } from "./FilterBuilder";
+import { formatChord, shortcut } from "../shortcuts";
 
 /**
  * One row: search box, the three axes as menus, saved filters, and the
@@ -56,8 +57,22 @@ export function FilterBar({
   const rows = filter.clauses.filter(clauseActive).length;
 
   return (
-    <div className="fbar">
+    <div className={`fbar ${filter.enabled ? "" : "off"}`}>
       <div className="fbar-row">
+        {/* ⌘B keeps every setting below but stops applying them. Said here,
+            where the settings are, or they look applied while the table shows
+            everything. Any edit below switches them back on (`withFilterEdit`). */}
+        {!filter.enabled && (
+          <span
+            className="fb-off"
+            role="button"
+            title="The filters below are kept but not applied. Click to apply them."
+            onClick={() => patch({ enabled: true })}
+          >
+            Filters off
+            <span className="kbd">{formatChord(shortcut("filter.toggle").chord).join("")}</span>
+          </span>
+        )}
         <div className="fbar-search">
           <span className="mag"><Icon name="search" /></span>
           <input

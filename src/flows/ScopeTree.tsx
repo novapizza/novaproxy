@@ -34,6 +34,7 @@ export function ScopeTree({
   setSaved,
   filterRef,
   width,
+  filtersOff = false,
 }: {
   tree: Tree;
   scope: Scope;
@@ -46,6 +47,8 @@ export function ScopeTree({
   filterRef?: React.RefObject<HTMLInputElement | null>;
   /** Set by the divider; the CSS token is only the first-paint fallback. */
   width: number;
+  /** ⌘B: the scope is kept but not applied, so its row is drawn dimmed. */
+  filtersOff?: boolean;
 }) {
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const [needle, setNeedle] = useState("");
@@ -90,7 +93,7 @@ export function ScopeTree({
   });
 
   return (
-    <div className="tree" style={{ width }}>
+    <div className={`tree ${filtersOff ? "filters-off" : ""}`} style={{ width }}>
       <div className="tree-body">
         {/* Favourites and Saved appear only once there is something in them: a
             permanent empty section is a heading that does nothing. */}

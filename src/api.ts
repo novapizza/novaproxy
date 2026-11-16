@@ -225,6 +225,10 @@ export const api = {
   onMenuShortcuts: (run: () => void): Promise<UnlistenFn> =>
     listen<null>("menu://shortcuts", () => run()),
 
+  /** Subscribe to the native menu's "What's New" item. */
+  onMenuWhatsNew: (run: () => void): Promise<UnlistenFn> =>
+    listen<null>("menu://whats-new", () => run()),
+
   /**
    * The app is quitting and is turning the system proxy off first
    * (`src-tauri/src/quit.rs`). It exits by itself when that is done; the
