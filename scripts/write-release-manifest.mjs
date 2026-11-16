@@ -45,6 +45,8 @@ const PLATFORMS = [
   { re: /_x64-setup\.exe$/i, key: "windows-x86_64", kind: "nsis" },
   { re: /_arm64-setup\.exe$/i, key: "windows-aarch64", kind: "nsis" },
   { re: /_x64(_[a-z]{2}-[A-Z]{2})?\.msi$/, key: "windows-x86_64-msi", kind: "msi" },
+  { re: /_amd64\.AppImage$/, key: "linux-x86_64", kind: "appimage" },
+  { re: /_amd64\.deb$/, key: "linux-x86_64-deb", kind: "deb" },
 ];
 
 // What the updater downloads, which is not always what a human downloads: on
@@ -56,6 +58,9 @@ const UPDATER_PLATFORMS = [
   { re: /_x64\.app\.tar\.gz$/i, key: "darwin-x86_64" },
   { re: /_x64-setup\.exe$/i, key: "windows-x86_64" },
   { re: /_arm64-setup\.exe$/i, key: "windows-aarch64" },
+  // The AppImage replaces itself in place. A .deb belongs to the package
+  // manager, so it is never offered as an update.
+  { re: /_amd64\.AppImage$/, key: "linux-x86_64" },
 ];
 
 // Recursive: upload-artifact roots an artifact at the least-common-ancestor of
@@ -68,7 +73,7 @@ const all = readdirSync(dir, { recursive: true, withFileTypes: true })
       ? e.name
       : join(e.parentPath ?? e.path, e.name).slice(dir.length + 1),
   );
-const files = all.filter((f) => /\.(dmg|exe|msi)$/i.test(f));
+const files = all.filter((f) => /\.(dmg|exe|msi|AppImage|deb)$/i.test(f));
 if (files.length === 0) {
   console.error(`no installers found in ${dir}`);
   process.exit(1);
@@ -177,7 +182,7 @@ for (const rel of all.sort()) {
 // pattern above, so two releases went out offering Windows updates only and
 // nothing said so. The unmatched-installer case warns; this one has to as well.
 for (const e of entries) {
-  if (e.kind === "msi") continue; // never an update source, by design
+  if (e.kind === "msi" || e.kind === "deb") continue; // never an update source, by design
   if (!updater[e.key]) {
     console.warn(
       `::warning::${e.key} ships an installer but no update — is the updater artifact named _<arch>.app.tar.gz?`,

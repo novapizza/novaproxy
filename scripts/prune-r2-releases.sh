@@ -12,6 +12,7 @@
 #   NovaProxy_<ver>_aarch64.dmg / _x64.dmg        (macOS)
 #   NovaProxy_<ver>_x64-setup.exe                 (Windows NSIS)
 #   NovaProxy_<ver>_x64_en-US.msi                 (Windows MSI)
+#   NovaProxy_<ver>_amd64.AppImage / _amd64.deb   (Linux)
 # Keys with no extractable X.Y.Z are NEVER touched. That is the safety net, and
 # it is what keeps latest.yml — the release manifest, whose key never carries a
 # version — from being swept up by a version-based rule.

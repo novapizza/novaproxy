@@ -140,6 +140,8 @@ Expect all of:
 
 - `NovaProxy_<version>_aarch64.dmg`
 - `NovaProxy_<version>_x64-setup.exe` and `NovaProxy_<version>_x64_en-US.msi`
+- `NovaProxy_<version>_amd64.AppImage` (the Linux updater artifact) and
+  `NovaProxy_<version>_amd64.deb`
 - a `.sig` next to each updater artifact
 - `NovaProxy_<version>_aarch64.app.tar.gz` — the macOS updater bundle
 - `latest.json` (updater manifest) and `latest.yml`
@@ -156,7 +158,9 @@ gh release download v<version> -p latest.json -D /tmp/rel --clobber
 python3 -c "import json;print(list(json.load(open('/tmp/rel/latest.json'))['platforms']))"
 ```
 
-Every platform with an installer needs an entry. `v0.1.1` and `v0.2.0` both
+Every platform with an installer needs an entry: today `darwin-aarch64`,
+`windows-x86_64` and `linux-x86_64` (the `.deb` and `.msi` are never update
+sources). `v0.1.1` and `v0.2.0` both
 published `windows-x86_64` alone: the macOS updater artifact was being renamed
 out of the `_<arch>.app.tar.gz` pattern the manifest writer matches on, so macOS
 was silently skipped and never offered an update. The writer now emits a

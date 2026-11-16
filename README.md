@@ -6,7 +6,8 @@ traffic, lets you change it on the way through, finds anti-patterns in it, and
 hands it to AI agents over MCP.
 
 Platforms: **macOS (Apple Silicon)** and **Windows**, both signed and
-auto-updating. Linux builds in CI but is not shipped yet.
+auto-updating, and **Linux (x64)** as an AppImage (auto-updating) or a `.deb`.
+On Linux the system proxy switch drives GNOME's settings.
 
 The original design and roadmap are in [NovaProxy.md](./NovaProxy.md); review
 notes and plans are in [notes/](./notes/).
@@ -136,8 +137,7 @@ npx tsc --noEmit
 npx vitest run
 ```
 
-Tests and clippy run on Windows and macOS; a Linux job builds and tests too
-but does not block a merge yet. For a headless engine to try by hand:
+Tests and clippy run on Windows, macOS and Linux. For a headless engine to try by hand:
 
 ```bash
 cargo run -p nova-core --example serve    # proxy on :39190, prints each flow

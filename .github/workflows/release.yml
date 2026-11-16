@@ -59,6 +59,14 @@ jobs:
             os: windows-latest
             target: x86_64-pc-windows-msvc
             bundles: nsis,msi
+          # 22.04 rather than latest: an AppImage runs on distributions whose
+          # glibc is at least the build machine's, so the oldest supported
+          # runner reaches the most desktops. The AppImage is the update source;
+          # the .deb is for people who want a package manager to own it.
+          - name: Linux (x64)
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -81,6 +89,13 @@ jobs:
       # on Windows. Without it the build fails in the build script.
       - uses: ilammy/setup-nasm@v1
         if: runner.os == 'Windows'
+
+      # What Tauri v2 needs to build and bundle on Linux; same list as CI.
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev patchelf
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -225,6 +240,7 @@ jobs:
 
             - macOS: `.dmg` (Apple silicon only)
             - Windows: `.exe` (NSIS installer) or `.msi`
+            - Linux (x64): `.AppImage` (updates itself) or `.deb`
 
             See the [changelog](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}).
           # Stays a draft until every matrix leg has uploaded and R2 is in sync,
@@ -275,6 +291,9 @@ jobs:
             target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
             target/${{ matrix.target }}/release/bundle/nsis/*.sig
             target/${{ matrix.target }}/release/bundle/msi/*.sig
+            target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            target/${{ matrix.target }}/release/bundle/appimage/*.AppImage.sig
+            target/${{ matrix.target }}/release/bundle/deb/*.deb
 
   # R2 is the download host: mirror every installer there, then keep only the
   # newest two versions. Runs on ubuntu because that image has the AWS CLI, and
@@ -314,12 +333,14 @@ jobs:
         run: |
           find installers -mindepth 2 -type f \
             \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \
+               -o -name '*.AppImage' -o -name '*.deb' \
                -o -name '*.tar.gz' -o -name '*.sig' \) \
             -exec mv -f -t installers/ {} +
           find installers -mindepth 1 -type d -empty -delete
           ls -lh installers
           COUNT=$(find installers -maxdepth 1 -type f \
-            \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \) | wc -l)
+            \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' \
+               -o -name '*.AppImage' -o -name '*.deb' \) | wc -l)
           [ "$COUNT" -gt 0 ] || { echo "::error::no installers were downloaded"; exit 1; }
           echo "$COUNT installer(s) ready to publish."
 

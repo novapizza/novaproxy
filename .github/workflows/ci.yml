@@ -107,13 +107,11 @@ jobs:
       - name: Rust tests
         run: cargo test --workspace --locked
 
-  # Linux is not a shipped platform yet. This job builds and tests the
-  # workspace there so the gaps show up, and does not block a merge until it
-  # has been green for a while: flip `continue-on-error` off then.
+  # Linux ships (AppImage and .deb), so its build and tests block like the
+  # others. 22.04 to match the release build.
   linux:
-    name: Linux (not yet required)
+    name: Linux
     runs-on: ubuntu-22.04
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 

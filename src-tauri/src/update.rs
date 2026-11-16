@@ -34,6 +34,24 @@ pub struct UpdaterConfigured(pub bool);
 #[derive(Default)]
 pub struct PendingUpdate(Mutex<Option<Update>>);
 
+/// Whether this install can replace itself.
+///
+/// On Linux only the AppImage can: the release's `linux-x86_64` update is an
+/// AppImage, and laying it over a `.deb` install would put a file the package
+/// manager does not own where it expects its own. A `.deb` install answers
+/// "download new versions manually" instead, like an unconfigured build. The
+/// AppImage runtime sets `APPIMAGE` to the image's path for the process.
+pub fn install_can_self_update() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var_os("APPIMAGE").is_some_and(|p| !p.is_empty())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
 fn current_version(app: &AppHandle) -> String {
     app.package_info().version.to_string()
 }

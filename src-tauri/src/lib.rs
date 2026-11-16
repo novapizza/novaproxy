@@ -249,7 +249,8 @@ pub fn run() {
     // down every build without that injection, dev and unsigned release alike —
     // so registration follows the configuration.
     let context = tauri::generate_context!();
-    let updater_configured = context.config().plugins.0.contains_key("updater");
+    let updater_configured =
+        context.config().plugins.0.contains_key("updater") && update::install_can_self_update();
 
     let mut builder =
         tauri::Builder::default().plugin(tauri_plugin_dialog::init()).plugin(tauri_plugin_clipboard_manager::init());
