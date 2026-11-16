@@ -37,8 +37,11 @@ import type { StatusClass } from "./classify";
 import {
   buildPredicate,
   describeFilter,
+  applyFilter,
   EMPTY_FILTER,
   isFiltering,
+  isNarrowing,
+  withFilterEdit,
   toastDuration,
   type FlowFilter,
   type ShowToast,
@@ -52,6 +55,8 @@ import { buildCurl, withRequestBody } from "./inspector/curl";
 import { FlowsSection, type FlowsHandle } from "./flows/FlowsSection";
 import { useShortcuts } from "./useShortcuts";
 import { ShortcutsDialog } from "./ShortcutsDialog";
+import { WhatsNewDialog } from "./WhatsNewDialog";
+import { shouldShowWhatsNew } from "./changelog";
 import { formatChord, shortcut } from "./shortcuts";
 import { trustHint, trustLabel } from "./trust";
 import { launchDecision } from "./onboarding";
@@ -145,7 +150,7 @@ export function App() {
    * remember to clear five setters is a bug waiting to happen.
    */
   const [filter, setFilter] = useState<FlowFilter>(EMPTY_FILTER);
-  const patchFilter = (p: Partial<FlowFilter>) => setFilter((f) => ({ ...f, ...p }));
+  const patchFilter = (p: Partial<FlowFilter>) => setFilter((f) => withFilterEdit(f, p));
   /**
    * The table's own persisted view choices. Held in prefs rather than in state
    * because both outlive the session, and `Auto Select` is reachable from two
@@ -190,6 +195,8 @@ export function App() {
   const [net, setNet] = useState<NetworkConditions>({ enabled: false, latency_ms: 0, down_kbps: 0 });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  /** What's New, open; `since` is the version that ran before an update. */
+  const [whatsNew, setWhatsNew] = useState<{ since: string | null } | null>(null);
   const [mcp, setMcp] = useState<McpStatus | null>(null);
   const [helper, setHelper] = useState<HelperStatus | null>(null);
   const [update, setUpdate] = useState<UpdateState>(INITIAL_UPDATE_STATE);
@@ -251,25 +258,33 @@ export function App() {
    * so its flows travel along whole — the list keeps those with their bodies.
    */
   function exportSet(only?: ReadonlySet<string>): ExportSet {
-    const { flows, imported } = useStore.getState();
-    const listed = only ? flows.filter((f) => only.has(f.id)) : flows;
+    const { flows, imported, pinned } = useStore.getState();
+    // Marked rows first; otherwise what the table shows. Exporting all 900
+    // flows while the table shows Chrome's 40 is not what "export" meant.
+    const listed = only
+      ? flows.filter((f) => only.has(f.id))
+      : isNarrowing(filter)
+      ? applyFilter(flows, filter, { pinned })
+      : flows;
     return { ids: listed.map((f) => f.id), extra: imported ? listed : [] };
   }
+  /** How an export's count is worded: marked rows, the shown rows, or everything. */
+  const exportWhat = (n: number, marked: boolean) => {
+    const kind = marked ? "marked " : isNarrowing(filter) ? "shown " : "";
+    return `${n} ${kind}flow${n === 1 ? "" : "s"}`;
+  };
   async function doExportSession() {
     try {
       const n = await exportSession(exportSet());
-      if (n != null) showToast(`Session saved (${n} flows)`);
+      if (n != null) showToast(`Session saved (${exportWhat(n, false)})`);
     } catch (e) { showToast(String(e), { kind: "error" }); }
   }
   async function doExportHar() {
     try {
-      // Marked rows narrow the export; nothing marked exports the capture, which
-      // is what the command did before there was a way to mark anything.
       const wanted = markedIds.length > 0 ? new Set(markedIds) : undefined;
       const n = await exportHar(exportSet(wanted), prefs.redactHar);
       if (n != null) {
-        const what = wanted ? `${n} marked flows` : `${n} flows`;
-        showToast(`HAR exported (${what}${prefs.redactHar ? ", credentials hidden" : ""})`);
+        showToast(`HAR exported (${exportWhat(n, wanted != null)}${prefs.redactHar ? ", credentials hidden" : ""})`);
       }
     } catch (e) { showToast(String(e), { kind: "error" }); }
   }
@@ -638,9 +653,9 @@ export function App() {
       { id: "proxy", icon: "power", label: proxy.system_proxy ? "Disable system proxy" : "Enable system proxy", run: () => void toggleProxy() },
       { id: "resend", icon: "repeat", label: "Resend selected flow", run: () => void resendSelected() },
       { id: "curl", icon: "copy", label: "Copy selected as cURL", kbd: "↵", run: () => void copyCurl() },
-      { id: "save", icon: "download", label: "Save session (.nova)", run: () => void doExportSession() },
+      { id: "save", icon: "download", label: isNarrowing(filter) ? "Save shown flows as a session (.nova)" : "Save session (.nova)", run: () => void doExportSession() },
       { id: "open", icon: "upload", label: "Open session (.nova)", run: () => void doImportSession() },
-      { id: "har", icon: "file-down", label: "Export as HAR", run: () => void doExportHar() },
+      { id: "har", icon: "file-down", label: markedIds.length > 0 ? "Export marked flows as HAR" : isNarrowing(filter) ? "Export shown flows as HAR" : "Export as HAR", run: () => void doExportHar() },
       { id: "mcponly", icon: "plug", label: mcpOnly ? "Show all traffic (clear MCP filter)" : "Show only MCP traffic", run: () => { patchFilter({ type: mcpOnly ? new Set() : new Set(["mcp"]) }); goSection("flows"); } },
       { id: "bp", icon: "circle-pause", label: "Arm breakpoint on next request", run: () => { armBreakpoint(true); goSection("break"); showToast("Breakpoint armed"); } },
       { id: "insights", icon: "lightbulb", label: "Open Insights", run: () => goSection("insights") },
@@ -648,8 +663,9 @@ export function App() {
       { id: "scripts", icon: "braces", label: "Open Scripts", run: () => goSection("scripts") },
       { id: "certs", icon: "shield-check", label: "Open Certificate", run: () => goSection("certs") },
       { id: "walkthrough", icon: "play", label: "Show the getting-started walkthrough", run: () => { setSettingsOpen(false); setCoach(null); openOnboarding(); } },
+      { id: "whats-new", icon: "info", label: "What's new in NovaProxy", run: () => setWhatsNew({ since: null }) },
     ],
-    [recording, proxy.running, proxy.system_proxy, mcpOnly, selected],
+    [recording, proxy.running, proxy.system_proxy, mcpOnly, selected, filter, markedIds, pinned],
   );
   const palFiltered = useMemo(() => {
     const q = paletteQuery.toLowerCase();
@@ -719,7 +735,7 @@ export function App() {
       "pane.switch": () => flowsRef.current?.switchPane(),
       "pane.collapse": () => flowsRef.current?.toggleCollapse(),
     },
-    { modalOpen: paletteOpen || settingsOpen || shortcutsOpen || onboardingOpen || intercept != null },
+    { modalOpen: paletteOpen || settingsOpen || shortcutsOpen || whatsNew != null || onboardingOpen || intercept != null },
   );
 
   /**
@@ -730,21 +746,42 @@ export function App() {
    * this is the one exception to it.
    */
   useEffect(() => {
-    if (!(settingsOpen || shortcutsOpen)) return;
+    if (!(settingsOpen || shortcutsOpen || whatsNew)) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
-      if (shortcutsOpen) setShortcutsOpen(false);
+      if (whatsNew) setWhatsNew(null);
+      else if (shortcutsOpen) setShortcutsOpen(false);
       else setSettingsOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [settingsOpen, shortcutsOpen]);
+  }, [settingsOpen, shortcutsOpen, whatsNew]);
 
   /** The menu's ⌘/ item, which the OS consumes before the webview sees it. */
   useEffect(() => {
     const un = api.onMenuShortcuts(() => setShortcutsOpen(true));
     return () => void un.then((f) => f());
+  }, []);
+
+  /** Help › What's New. */
+  useEffect(() => {
+    const un = api.onMenuWhatsNew(() => setWhatsNew({ since: null }));
+    return () => void un.then((f) => f());
+  }, []);
+
+  /**
+   * The first launch after an update opens What's New by itself, once. The
+   * version is recorded on every launch, so a fresh install (which gets the
+   * walkthrough instead) does not see it on its second run.
+   */
+  useEffect(() => {
+    const before = prefs.lastSeenVersion;
+    if (before === __APP_VERSION__) return;
+    if (shouldShowWhatsNew(before, __APP_VERSION__, prefs.onboardingDone)) setWhatsNew({ since: before });
+    setPrefs({ ...prefs, lastSeenVersion: __APP_VERSION__ });
+    // Launch only: `prefs` is read once here on purpose.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /**
@@ -1099,6 +1136,11 @@ export function App() {
 
       {/* keyboard shortcuts */}
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
+
+      {/* what's new */}
+      {whatsNew && (
+        <WhatsNewDialog current={__APP_VERSION__} since={whatsNew.since} onClose={() => setWhatsNew(null)} />
+      )}
       {quitting && (
         <div className="scrim modal-scrim quit-scrim">
           <div className="modal quit-modal" role="alertdialog" aria-busy="true" aria-labelledby="quit-title">

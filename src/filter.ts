@@ -178,6 +178,26 @@ export function buildPredicate(f: FlowFilter, ctx: ScopeContext = {}): (flow: Fl
   };
 }
 
+/**
+ * Apply an edit to the filter.
+ *
+ * Any edit that narrows — a chip, the search, a scope, a row — switches the
+ * filter back on: after ⌘B, changing what is filtered and seeing nothing happen
+ * reads as a broken filter. Two edits leave the switch alone: the switch
+ * itself, and `includeInternal`, which applies whether or not it is on.
+ */
+export function withFilterEdit(f: FlowFilter, p: Partial<FlowFilter>): FlowFilter {
+  const next = { ...f, ...p };
+  if (p.enabled !== undefined) return next;
+  const keys = Object.keys(p).filter((k) => k !== "includeInternal");
+  return keys.length > 0 ? { ...next, enabled: true } : next;
+}
+
+/** Whether `f` is on and narrowing anything — what an export or a count follows. */
+export function isNarrowing(f: FlowFilter): boolean {
+  return f.enabled && isFiltering(f);
+}
+
 /** Apply a whole filter. */
 export function applyFilter(flows: Flow[], f: FlowFilter, ctx: ScopeContext = {}): Flow[] {
   return flows.filter(buildPredicate(f, ctx));

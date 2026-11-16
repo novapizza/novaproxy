@@ -10,7 +10,7 @@ import "./styles.css";
 import type { Flow } from "./api";
 import { FlowsSection } from "./flows/FlowsSection";
 import { DEFAULT_COLUMNS, normalizeColumns, type ColumnId } from "./flows/columns";
-import { EMPTY_FILTER, type FlowFilter, type SavedFilter } from "./filter";
+import { EMPTY_FILTER, withFilterEdit, type FlowFilter, type SavedFilter } from "./filter";
 import { DEFAULT_PREFS } from "./prefs";
 import { KeyValueTable } from "./inspector/KeyValueTable";
 import { TreeviewPanel } from "./inspector/TreeviewPanel";
@@ -102,7 +102,7 @@ function Harness() {
           <FlowsSection
             flows={ROWS}
             filter={filter}
-            patch={(p) => setFilter((f) => ({ ...f, ...p }))}
+            patch={(p) => setFilter((f) => withFilterEdit(f, p))}
             reset={() => setFilter(EMPTY_FILTER)}
             columns={columns}
             setColumns={setColumns}

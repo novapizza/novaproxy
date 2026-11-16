@@ -48,6 +48,17 @@ git diff --stat
 git diff Cargo.lock package-lock.json | grep '^[+-].*version'
 ```
 
+## 2b. Write the What's New entry
+
+Add the release at the top of `CHANGELOG` in `src/changelog.ts`: version, the
+date you will tag, and one line per change a user would notice, under
+`added` / `improved` / `fixed`. Read it off `git log <last tag>..main`; leave
+out CI, refactors and version bumps. The app opens this dialog by itself on the
+first launch after an update, so write it for the people using NovaProxy.
+
+`src/changelog.test.ts` fails while the newest entry does not match
+`package.json`, so `npm test` catches a forgotten entry.
+
 ## 3. Verify locally before the PR
 
 ```sh

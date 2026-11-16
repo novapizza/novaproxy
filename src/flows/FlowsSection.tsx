@@ -184,6 +184,15 @@ export const FlowsSection = forwardRef<FlowsHandle, {
   // it is membership the flow does not carry, and the scope only reads it.
   const filtered = useMemo(() => applyFilter(flows, filter, { pinned }), [flows, filter, pinned]);
   const rows = useMemo(() => sortFlows(filtered, sort), [filtered, sort]);
+  /**
+   * The current row, hidden by the filter. Kept in the inspector — switching a
+   * chip should not throw away what you were reading — but said, because Resend
+   * and cURL still act on it while the table no longer shows it.
+   */
+  const selectedHidden = useMemo(
+    () => selected != null && !filtered.some((f) => f.id === selected.id),
+    [selected, filtered],
+  );
 
   // Marks follow the rows: a row the filter hides is not a row a bulk action
   // should still act on, and holding its id would surprise the next Export.
@@ -250,6 +259,7 @@ export const FlowsSection = forwardRef<FlowsHandle, {
         setSaved={props.setSavedScopes}
         filterRef={props.treeFilterRef}
         width={props.treeWidth}
+        filtersOff={!filter.enabled}
       />
       </Profiler>
       <Splitter
@@ -350,6 +360,11 @@ export const FlowsSection = forwardRef<FlowsHandle, {
                 <span className="host">{selected.host}</span>
                 {selected.url.slice(selected.url.indexOf(selected.host) + selected.host.length)}
               </span>
+              {selectedHidden && (
+                <span className="hidden-note" title="This flow does not match the current filter. Resend and cURL still act on it.">
+                  <Icon name="filter" size={11} /> Hidden by filter
+                </span>
+              )}
               <span className="spacer" />
               <span className="act" onClick={props.onResend}>
                 <Icon name="repeat" size={12} /> Resend
@@ -385,7 +400,7 @@ export const FlowsSection = forwardRef<FlowsHandle, {
             {marked.size > 0
               ? ` · ${marked.size} marked`
               : selected
-              ? " · 1 selected"
+              ? selectedHidden ? " · 1 selected, hidden" : " · 1 selected"
               : ""}
           </span>
         </div>
