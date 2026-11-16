@@ -19,6 +19,28 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: "0.9.0",
+    date: "2026-11-16",
+    added: [
+      "Help › What's New lists what changed in each release, and opens by itself after an update.",
+      "A \"Filters off ⌘B\" label shows when the filters are switched off, and dims the settings it is not applying.",
+      "MCP: clients sign in with a token, and three new tools — summarize_session, diff_flows and explain_failure.",
+      "WebSocket messages show a preview, with the full frame on demand.",
+    ],
+    improved: [
+      "Export HAR and Save session write the rows the table shows when a filter is on.",
+      "Export can hide credentials, and runs in the background without holding up the app.",
+      "HTTP/2 to upstream servers, and apps are kept on TCP (no HTTP/3) so their traffic stays visible.",
+      "Insights: clearer wording for transport errors, and cookie findings grouped per site.",
+      "Credentials are hidden from what MCP clients read, by default.",
+    ],
+    fixed: [
+      "Changing a filter after ⌘B now applies it, instead of leaving the table unchanged.",
+      "A selected flow hidden by the filter is marked as hidden, since Resend and cURL still act on it.",
+      "Status codes in the flow table were unreadable on macOS.",
+    ],
+  },
+  {
     version: "0.8.0",
     date: "2026-11-12",
     added: [
