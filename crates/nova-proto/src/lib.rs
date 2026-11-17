@@ -241,12 +241,16 @@ pub struct Edits {
     pub script: bool,
     /// A person edited it while it was paused at a breakpoint.
     pub breakpoint: bool,
+    /// A Fault rule injected this failure (`rule` is set too). Lets the table
+    /// tell a simulated failure from a real one.
+    #[serde(default)]
+    pub fault: Option<FaultMode>,
 }
 
 impl Edits {
     /// True when anything at all touched the exchange.
     pub fn any(&self) -> bool {
-        self.rule || self.script || self.breakpoint
+        self.rule || self.script || self.breakpoint || self.fault.is_some()
     }
 }
 
@@ -363,7 +367,7 @@ impl Default for McpStatus {
 
 /// A traffic-control rule. The action is selected by [`RuleKind`]; the relevant
 /// optional fields are interpreted per kind (documented on each variant).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../src/bindings/")]
 pub struct Rule {
     pub id: String,
@@ -378,13 +382,97 @@ pub struct Rule {
     pub header_name: Option<String>,
     /// Rewrite: header value to set.
     pub header_value: Option<String>,
+    /// HTTP method to match as well (`GET`, `POST`…); `None` = any method.
+    #[serde(default)]
+    pub method: Option<String>,
+    /// Scenario the rule belongs to. The Rules page groups rules by it so a
+    /// whole scenario can be switched, reset and exported at once.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// Act on at most this many matching requests (`1` = first only), counted
+    /// by the engine's hit counter; `None` = every match.
+    #[serde(default)]
+    pub times: Option<u32>,
+    /// Fault: the failure to inject.
+    #[serde(default)]
+    pub fault: Option<Fault>,
+}
+
+/// The failure a [`RuleKind::Fault`] rule injects. Fields are read per mode.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub struct Fault {
+    pub mode: FaultMode,
+    /// HoldClose / HoldStatus / Delay: how long to hold, in ms (capped at
+    /// [`FAULT_MAX_DELAY_MS`]).
+    #[serde(default)]
+    pub delay_ms: Option<u32>,
+    /// HoldStatus (default 504) / FakeResponse (default 200): status to answer.
+    #[serde(default)]
+    pub status: Option<u16>,
+    /// HoldStatus / FakeResponse: response body.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// HoldStatus / FakeResponse: `Content-Type` of `body`.
+    #[serde(default)]
+    pub content_type: Option<String>,
+    /// CutBody: bytes of the real body to pass before the connection drops.
+    #[serde(default)]
+    pub cut_after_bytes: Option<u32>,
+}
+
+/// Longest hold a Fault rule may ask for: 10 minutes.
+pub const FAULT_MAX_DELAY_MS: u32 = 600_000;
+
+/// How a [`Fault`] fails the request. "Drops" close the client connection with
+/// no response at all, which an app sees as a network error (status 0).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub enum FaultMode {
+    /// Drop the connection without forwarding: the server never sees it.
+    #[default]
+    DropBefore,
+    /// Hold `delay_ms`, then drop without forwarding.
+    HoldClose,
+    /// Hold `delay_ms`, then answer `status` (default 504) without forwarding.
+    HoldStatus,
+    /// Answer `status` / `body` / `content_type` at once, without forwarding.
+    FakeResponse,
+    /// Answer 403 with an HTML page like a web application firewall's.
+    Waf403,
+    /// Answer 407 Proxy Authentication Required (to the CONNECT for HTTPS).
+    ProxyAuth407,
+    /// Forward (the server acts on it), then drop its response.
+    PassCut,
+    /// Forward, pass the head and `cut_after_bytes` of the body, then drop.
+    CutBody,
+    /// Forward, hold the response `delay_ms`, then pass it on intact.
+    Delay,
+}
+
+/// Engine-side settings shared by every Fault rule.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub struct FaultSettings {
+    /// Host globs Fault rules may act on (`*.example.com`). Empty = Fault rules
+    /// act nowhere: a safety net against failing real traffic by accident.
+    pub allow_hosts: Vec<String>,
+}
+
+/// How many requests one rule has acted on since the last reset.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../src/bindings/")]
+pub struct RuleHit {
+    pub rule_id: String,
+    pub hits: u32,
 }
 
 /// What a matching [`Rule`] does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../src/bindings/")]
 pub enum RuleKind {
     /// Rewrite the request's destination host/scheme to `target`.
+    #[default]
     MapRemote,
     /// Short-circuit the request, serving the file at `target` as the response.
     MapLocal,
@@ -392,6 +480,8 @@ pub enum RuleKind {
     Block,
     /// Set `header_name: header_value` on the request before forwarding.
     Rewrite,
+    /// Inject the failure in `fault`, on hosts allowed by [`FaultSettings`].
+    Fault,
 }
 
 /// Status of NovaProxy's root CA and its trust in the OS store.

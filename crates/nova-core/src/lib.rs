@@ -5,6 +5,7 @@
 pub mod bodystore;
 pub mod breakpoint;
 pub mod ca;
+pub mod fault;
 pub mod fdlimit;
 pub mod flow;
 pub mod flowstore;
@@ -36,7 +37,9 @@ use hudsucker::hyper_util::rt::{TokioExecutor, TokioTimer};
 use hudsucker::hyper_util::server::conn::auto::Builder as ServerBuilder;
 use hudsucker::rustls::crypto::aws_lc_rs;
 use hudsucker::Proxy;
-use nova_proto::{NetworkConditions, Rule, TlsScope};
+use nova_proto::{FaultSettings, NetworkConditions, Rule, TlsScope};
+
+use crate::rules::RuleHits;
 use tokio::sync::oneshot;
 
 pub use flow::{FlowSink, NoopWsSink, Shared, WsSink};
@@ -77,6 +80,11 @@ pub struct EngineHooks {
     /// learns a host speaks HTTP/3 can connect to it directly later and drop
     /// out of the capture. On by default.
     pub keep_on_tcp: Arc<std::sync::atomic::AtomicBool>,
+    /// How often each rule acted (also what enforces a rule's `times`). Owned
+    /// by the app so counts survive a proxy restart and the UI can reset them.
+    pub hits: Arc<RuleHits>,
+    /// Settings for Fault rules, chiefly the hosts they may act on.
+    pub fault: Arc<RwLock<FaultSettings>>,
 }
 
 impl EngineHooks {
@@ -95,6 +103,8 @@ impl EngineHooks {
             connects: Arc::new(ConnectLog::default()),
             internal_port: Arc::new(AtomicU16::new(0)),
             keep_on_tcp: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            hits: Arc::new(RuleHits::default()),
+            fault: Arc::new(RwLock::new(FaultSettings::default())),
         }
     }
 }

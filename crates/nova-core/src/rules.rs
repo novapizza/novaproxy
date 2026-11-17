@@ -4,7 +4,9 @@
 use hudsucker::hyper::header::{HeaderName, HeaderValue};
 use hudsucker::hyper::http::request::Parts;
 use hudsucker::hyper::Uri;
-use nova_proto::{Rule, RuleKind};
+use nova_proto::{Fault, FaultMode, Rule, RuleHit, RuleKind};
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 /// The decision produced by evaluating the rule set against a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +20,103 @@ pub enum Outcome {
     Block,
     /// Short-circuit by serving a local file.
     MapLocal(String),
+    /// Inject a failure. Request-phase modes answer instead of forwarding;
+    /// response-phase ones (PassCut, CutBody, Delay) forward the (possibly
+    /// edited) request and act on its response. `mapped_from` / `rewritten`
+    /// as for `Forward`, from rules that ran before this one.
+    Fault { rule_id: String, fault: Fault, mapped_from: Option<String>, rewritten: bool },
+}
+
+/// How many requests each rule acted on since the last reset. Lives in the
+/// engine, not in `rules.json`: counts are about a test run, not the rule.
+#[derive(Debug, Default)]
+pub struct RuleHits(Mutex<HashMap<String, u32>>);
+
+impl RuleHits {
+    /// Count one action of `rule`, unless it already used up its `times`.
+    /// Returns whether the rule may act.
+    pub fn take(&self, rule: &Rule) -> bool {
+        let mut map = self.0.lock().unwrap();
+        let n = map.entry(rule.id.clone()).or_insert(0);
+        if rule.times.is_some_and(|t| *n >= t) {
+            return false;
+        }
+        *n += 1;
+        true
+    }
+
+    pub fn get(&self, rule_id: &str) -> u32 {
+        self.0.lock().unwrap().get(rule_id).copied().unwrap_or(0)
+    }
+
+    /// Every rule that acted at least once, by id.
+    pub fn snapshot(&self) -> Vec<RuleHit> {
+        let mut out: Vec<RuleHit> =
+            self.0.lock().unwrap().iter().map(|(id, n)| RuleHit { rule_id: id.clone(), hits: *n }).collect();
+        out.sort_by(|a, b| a.rule_id.cmp(&b.rule_id));
+        out
+    }
+
+    /// Zero the given rules' counts (all rules when `ids` is `None`), which
+    /// also re-arms rules limited by `times`.
+    pub fn reset(&self, ids: Option<&[String]>) {
+        let mut map = self.0.lock().unwrap();
+        match ids {
+            Some(ids) => ids.iter().for_each(|id| {
+                map.remove(id);
+            }),
+            None => map.clear(),
+        }
+    }
+}
+
+/// What a request is matched on, beyond its URL.
+pub struct MatchCtx<'a> {
+    /// `scheme://host/path`, as for [`apply_request`].
+    pub url: &'a str,
+    /// Request method; an empty string matches only rules without a method.
+    pub method: &'a str,
+    /// Hit counter: counts actions and enforces `times`. `None` = neither.
+    pub hits: Option<&'a RuleHits>,
+    /// Host globs Fault rules may act on ([`nova_proto::FaultSettings`]).
+    pub fault_hosts: &'a [String],
+}
+
+/// Whether a Fault rule may act on `host`: it must match one allowlist glob.
+pub fn fault_host_allowed(allow: &[String], host: &str) -> bool {
+    let host = host.trim_end_matches('.');
+    !host.is_empty() && allow.iter().any(|g| !g.trim().is_empty() && glob_match(g.trim(), host))
+}
+
+fn method_matches(rule: &Rule, method: &str) -> bool {
+    match rule.method.as_deref().map(str::trim) {
+        None | Some("") | Some("*") => true,
+        Some(m) => m.eq_ignore_ascii_case(method),
+    }
+}
+
+/// Count an action when a counter is attached; without one every match acts.
+fn take(ctx: &MatchCtx, rule: &Rule) -> bool {
+    ctx.hits.is_none_or(|h| h.take(rule))
+}
+
+/// The Fault rule answering the CONNECT for `host` with 407, if any. CONNECT
+/// carries no path, so patterns are tested against `https://host/`.
+pub fn connect_fault(
+    rules: &[Rule],
+    host: &str,
+    hits: Option<&RuleHits>,
+    fault_hosts: &[String],
+) -> Option<(String, Fault)> {
+    let url = format!("https://{host}/");
+    rules
+        .iter()
+        .filter(|r| r.enabled && r.kind == RuleKind::Fault)
+        .filter(|r| r.fault.as_ref().is_some_and(|f| f.mode == FaultMode::ProxyAuth407))
+        .filter(|r| method_matches(r, "CONNECT") && glob_match(&r.pattern, &url))
+        .filter(|_| fault_host_allowed(fault_hosts, host))
+        .find(|r| hits.is_none_or(|h| h.take(r)))
+        .map(|r| (r.id.clone(), r.fault.clone().unwrap_or_default()))
 }
 
 /// Glob match where `*` matches any run of characters. Case-insensitive on host.
@@ -56,24 +155,49 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
 /// Evaluate `rules` against a request, mutating `parts` for Rewrite / Map Remote.
 /// `url` is the reconstructed `scheme://host/path` used for matching.
 pub fn apply_request(rules: &[Rule], url: &str, parts: &mut Parts) -> Outcome {
+    let method = parts.method.to_string();
+    apply_request_with(rules, &MatchCtx { url, method: &method, hits: None, fault_hosts: &[] }, parts)
+}
+
+/// [`apply_request`] with method matching, hit counting and the Fault host
+/// allowlist. Rules run in order; the first one that answers (Block, Map
+/// Local, Fault) ends the pass, after the edits of the rules before it.
+pub fn apply_request_with(rules: &[Rule], ctx: &MatchCtx, parts: &mut Parts) -> Outcome {
     let mut mapped_from: Option<String> = None;
     let mut rewritten = false;
+    let url = ctx.url;
 
     for rule in rules.iter().filter(|r| r.enabled) {
-        if !glob_match(&rule.pattern, url) {
+        if !glob_match(&rule.pattern, url) || !method_matches(rule, ctx.method) {
             continue;
         }
         match rule.kind {
-            RuleKind::Block => return Outcome::Block,
+            RuleKind::Block => {
+                if take(ctx, rule) {
+                    return Outcome::Block;
+                }
+            }
             RuleKind::MapLocal => {
                 if let Some(path) = rule.target.clone().filter(|s| !s.is_empty()) {
-                    return Outcome::MapLocal(path);
+                    if take(ctx, rule) {
+                        return Outcome::MapLocal(path);
+                    }
+                }
+            }
+            RuleKind::Fault => {
+                let Some(fault) = rule.fault.clone() else { continue };
+                let host = url.parse::<Uri>().ok().and_then(|u| u.host().map(str::to_string)).unwrap_or_default();
+                if fault_host_allowed(ctx.fault_hosts, &host) && take(ctx, rule) {
+                    return Outcome::Fault { rule_id: rule.id.clone(), fault, mapped_from, rewritten };
                 }
             }
             RuleKind::Rewrite => {
                 if let (Some(name), Some(value)) = (&rule.header_name, &rule.header_value) {
                     if let (Ok(n), Ok(v)) = (HeaderName::try_from(name.as_str()), HeaderValue::try_from(value.as_str()))
                     {
+                        if !take(ctx, rule) {
+                            continue;
+                        }
                         // Only a header that actually changed counts as a
                         // rewrite: re-setting the value that was already there
                         // is not an edit the user needs told about.
@@ -85,6 +209,9 @@ pub fn apply_request(rules: &[Rule], url: &str, parts: &mut Parts) -> Outcome {
             }
             RuleKind::MapRemote => {
                 if let Some(target) = rule.target.as_deref().filter(|s| !s.is_empty()) {
+                    if !take(ctx, rule) {
+                        continue;
+                    }
                     if let Some(orig) = remap(parts, target) {
                         mapped_from = Some(orig);
                     }
@@ -196,6 +323,7 @@ mod tests {
             target: None,
             header_name: None,
             header_value: None,
+            ..Default::default()
         }
     }
 
@@ -330,6 +458,130 @@ mod tests {
         assert_eq!(outcome, Outcome::Block);
         // The earlier rewrite still applied before the block short-circuited.
         assert_eq!(parts.headers.get("x-a").unwrap(), "1");
+    }
+
+    fn fault_rule(mode: FaultMode) -> Rule {
+        Rule { kind: RuleKind::Fault, fault: Some(Fault { mode, ..Default::default() }), ..rule(RuleKind::Fault) }
+    }
+
+    fn ctx<'a>(url: &'a str, method: &'a str, hits: Option<&'a RuleHits>, allow: &'a [String]) -> MatchCtx<'a> {
+        MatchCtx { url, method, hits, fault_hosts: allow }
+    }
+
+    #[test]
+    fn method_narrows_the_match() {
+        let mut r = rule(RuleKind::Block);
+        r.method = Some("post".into());
+        let mut parts = parts_for("http://x.com/a");
+        let fwd = Outcome::Forward { mapped_from: None, rewritten: false };
+        assert_eq!(apply_request_with(&[r.clone()], &ctx("http://x.com/a", "GET", None, &[]), &mut parts), fwd);
+        assert_eq!(apply_request_with(&[r], &ctx("http://x.com/a", "POST", None, &[]), &mut parts), Outcome::Block);
+    }
+
+    #[test]
+    fn times_limits_actions_and_reset_rearms() {
+        let mut r = rule(RuleKind::Block);
+        r.times = Some(1);
+        let hits = RuleHits::default();
+        let mut parts = parts_for("http://x.com/a");
+        let c = ctx("http://x.com/a", "GET", Some(&hits), &[]);
+        assert_eq!(apply_request_with(&[r.clone()], &c, &mut parts), Outcome::Block);
+        assert_eq!(
+            apply_request_with(&[r.clone()], &c, &mut parts),
+            Outcome::Forward { mapped_from: None, rewritten: false },
+            "first only: the second request passes"
+        );
+        assert_eq!(hits.get("r1"), 1);
+        hits.reset(None);
+        assert_eq!(apply_request_with(&[r], &c, &mut parts), Outcome::Block);
+    }
+
+    #[test]
+    fn hits_count_every_action_without_a_limit() {
+        let r = rule(RuleKind::Block);
+        let hits = RuleHits::default();
+        let mut parts = parts_for("http://x.com/a");
+        for _ in 0..3 {
+            apply_request_with(std::slice::from_ref(&r), &ctx("http://x.com/a", "GET", Some(&hits), &[]), &mut parts);
+        }
+        assert_eq!(hits.snapshot(), vec![RuleHit { rule_id: "r1".into(), hits: 3 }]);
+    }
+
+    #[test]
+    fn fault_acts_only_on_allowed_hosts() {
+        let r = fault_rule(FaultMode::DropBefore);
+        let hits = RuleHits::default();
+        let mut parts = parts_for("https://api.dev.example.com/v1");
+        let url = "https://api.dev.example.com/v1";
+        let fwd = Outcome::Forward { mapped_from: None, rewritten: false };
+        assert_eq!(
+            apply_request_with(std::slice::from_ref(&r), &ctx(url, "GET", Some(&hits), &[]), &mut parts),
+            fwd,
+            "empty allowlist"
+        );
+        let other = vec!["*.prod.example.com".to_string()];
+        assert_eq!(
+            apply_request_with(std::slice::from_ref(&r), &ctx(url, "GET", Some(&hits), &other), &mut parts),
+            fwd
+        );
+        assert_eq!(hits.get("r1"), 0, "a rule that did not act is not counted");
+        let allow = vec!["*.dev.example.com".to_string()];
+        match apply_request_with(&[r], &ctx(url, "GET", Some(&hits), &allow), &mut parts) {
+            Outcome::Fault { rule_id, fault, .. } => {
+                assert_eq!(rule_id, "r1");
+                assert_eq!(fault.mode, FaultMode::DropBefore);
+            }
+            other => panic!("expected a fault, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fault_without_a_fault_body_does_nothing() {
+        let r = Rule { fault: None, ..fault_rule(FaultMode::DropBefore) };
+        let mut parts = parts_for("http://x.com/a");
+        let allow = vec!["*".to_string()];
+        assert_eq!(
+            apply_request_with(&[r], &ctx("http://x.com/a", "GET", None, &allow), &mut parts),
+            Outcome::Forward { mapped_from: None, rewritten: false }
+        );
+    }
+
+    #[test]
+    fn fault_keeps_the_edits_of_earlier_rules() {
+        let mut rewrite = rule(RuleKind::Rewrite);
+        rewrite.header_name = Some("x-a".into());
+        rewrite.header_value = Some("1".into());
+        let allow = vec!["x.com".to_string()];
+        let mut parts = parts_for("http://x.com/a");
+        let out = apply_request_with(
+            &[rewrite, fault_rule(FaultMode::PassCut)],
+            &ctx("http://x.com/a", "POST", None, &allow),
+            &mut parts,
+        );
+        assert!(matches!(out, Outcome::Fault { rewritten: true, .. }), "{out:?}");
+        assert_eq!(parts.headers.get("x-a").unwrap(), "1");
+    }
+
+    #[test]
+    fn connect_407_matches_host_patterns() {
+        let mut r = fault_rule(FaultMode::ProxyAuth407);
+        r.pattern = "https://auth.example.com/*".into();
+        let allow = vec!["auth.example.com".to_string()];
+        assert!(connect_fault(&[r.clone()], "auth.example.com", None, &allow).is_some());
+        assert!(connect_fault(&[r.clone()], "other.example.com", None, &allow).is_none());
+        assert!(connect_fault(&[r.clone()], "auth.example.com", None, &[]).is_none(), "not allowed");
+        let drop = fault_rule(FaultMode::DropBefore);
+        assert!(connect_fault(&[drop], "auth.example.com", None, &allow).is_none(), "only 407 acts on CONNECT");
+    }
+
+    #[test]
+    fn allowlist_globs() {
+        let allow = vec!["*.example.com".to_string(), " exact.test ".to_string()];
+        assert!(fault_host_allowed(&allow, "a.example.com"));
+        assert!(fault_host_allowed(&allow, "exact.test"));
+        assert!(!fault_host_allowed(&allow, "example.org"));
+        assert!(!fault_host_allowed(&allow, ""));
+        assert!(!fault_host_allowed(&["".to_string()], "x.com"), "a blank entry allows nothing");
     }
 
     #[test]

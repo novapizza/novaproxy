@@ -27,7 +27,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use nova_core::flow::Side;
-use nova_proto::{Flow, Rule, RuleKind};
+use nova_proto::{Fault, FaultMode, Flow, Rule, RuleKind, FAULT_MAX_DELAY_MS};
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -105,11 +105,11 @@ pub struct BodyParams {
     pub max_chars: Option<usize>,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct SetRuleParams {
     /// Rule id. Reusing an existing id replaces that rule.
     pub id: String,
-    /// One of: MapRemote, MapLocal, Block, Rewrite.
+    /// One of: MapRemote, MapLocal, Block, Rewrite, Fault.
     pub kind: String,
     /// Human-readable name.
     pub name: Option<String>,
@@ -123,6 +123,62 @@ pub struct SetRuleParams {
     pub header_value: Option<String>,
     /// Whether the rule is active (default true).
     pub enabled: Option<bool>,
+    /// Also match the HTTP method (GET, POST…); absent = any method.
+    pub method: Option<String>,
+    /// Scenario name; rules sharing it are switched and counted together.
+    pub group: Option<String>,
+    /// Act on at most this many matching requests (1 = first only).
+    pub times: Option<u32>,
+    /// Fault rules: the failure to inject.
+    pub fault: Option<FaultParams>,
+}
+
+/// The failure a Fault rule injects.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct FaultParams {
+    /// DropBefore (close, never forwarded), HoldClose (hold delay_ms, close),
+    /// HoldStatus (hold delay_ms, answer status, default 504), FakeResponse
+    /// (answer status/body/content_type), Waf403 (HTML 403), ProxyAuth407
+    /// (407; for HTTPS the CONNECT is refused), PassCut (forward, then drop the
+    /// response: the server acts, the client sees a network error), CutBody
+    /// (forward, pass the head and cut_after_bytes, then close), Delay (forward,
+    /// hold the response delay_ms).
+    pub mode: String,
+    /// Hold time in ms (HoldClose, HoldStatus, Delay). At most 600000.
+    pub delay_ms: Option<u32>,
+    /// Status to answer (HoldStatus, FakeResponse).
+    pub status: Option<u16>,
+    /// Body to answer (HoldStatus, FakeResponse).
+    pub body: Option<String>,
+    /// Content-Type of body.
+    pub content_type: Option<String>,
+    /// CutBody: body bytes passed before the connection closes.
+    pub cut_after_bytes: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ToggleGroupParams {
+    /// Scenario (group) name, exactly as on the rules.
+    pub group: String,
+    /// Switch every rule of the group on (true) or off (false).
+    pub enabled: bool,
+    /// When switching on: switch every rule of every other group off, so one
+    /// scenario runs at a time (default false).
+    pub exclusive: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct HitsParams {
+    /// Only this rule.
+    pub rule_id: Option<String>,
+    /// Only the rules of this group. Neither = every rule.
+    pub group: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ImportRulesParams {
+    /// Rules to add; a rule whose id exists replaces it.
+    pub rules: Vec<SetRuleParams>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -237,11 +293,26 @@ pub struct RuleOut {
     pub target: Option<String>,
     pub header_name: Option<String>,
     pub header_value: Option<String>,
+    pub method: Option<String>,
+    pub group: Option<String>,
+    pub times: Option<u32>,
+    pub fault: Option<FaultParams>,
 }
 
 impl From<&Rule> for RuleOut {
     fn from(r: &Rule) -> Self {
         Self {
+            method: r.method.clone(),
+            group: r.group.clone(),
+            times: r.times,
+            fault: r.fault.as_ref().map(|f| FaultParams {
+                mode: format!("{:?}", f.mode),
+                delay_ms: f.delay_ms,
+                status: f.status,
+                body: f.body.clone(),
+                content_type: f.content_type.clone(),
+                cut_after_bytes: f.cut_after_bytes,
+            }),
             id: r.id.clone(),
             enabled: r.enabled,
             kind: format!("{:?}", r.kind),
@@ -252,6 +323,25 @@ impl From<&Rule> for RuleOut {
             header_value: r.header_value.clone(),
         }
     }
+}
+
+/// One rule's action count.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct HitOut {
+    pub rule_id: String,
+    pub name: String,
+    pub group: Option<String>,
+    pub enabled: bool,
+    pub hits: u32,
+    /// The rule's `times` limit, if any; hits == times means it is used up.
+    pub times: Option<u32>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct FaultSettingsOut {
+    /// Host globs Fault rules may act on. Empty = Fault rules do nothing.
+    /// Only the user can change this, in NovaProxy's Rules page.
+    pub allow_hosts: Vec<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -379,6 +469,19 @@ impl NovaMcp {
         }
         row
     }
+
+    /// A warning for the agent when Fault rules it saved cannot act yet.
+    fn fault_note(&self, rules: &[Rule]) -> String {
+        if !rules.iter().any(|r| r.kind == RuleKind::Fault) {
+            return String::new();
+        }
+        if self.state.fault.read().unwrap().allow_hosts.iter().all(|h| h.trim().is_empty()) {
+            return "; note: no host is allowed for Fault rules yet, so they do nothing until the user adds \
+the test hosts in NovaProxy (Rules page, Fault hosts)"
+                .into();
+        }
+        String::new()
+    }
 }
 
 #[tool_router]
@@ -477,7 +580,8 @@ as a new flow, marked as NovaProxy's own traffic so it does not pollute unfilter
     }
 
     /// The current traffic-control rules.
-    #[tool(description = "List the traffic-control rules (Map Remote, Map Local, Block, Rewrite).")]
+    #[tool(description = "List the traffic-control rules (Map Remote, Map Local, Block, Rewrite, Fault), \
+with their method, group (scenario) and times limit.")]
     pub fn list_rules(&self) -> Json<Vec<RuleOut>> {
         Json(self.state.rules.read().unwrap().iter().map(RuleOut::from).collect())
     }
@@ -485,31 +589,127 @@ as a new flow, marked as NovaProxy's own traffic so it does not pollute unfilter
     /// Add or replace a traffic-control rule.
     #[tool(description = "Add or replace a traffic-control rule. kind is one of MapRemote \
 (redirect to target base URL), MapLocal (serve target file), Block (403), Rewrite (set a \
-request header). Reusing an id replaces that rule.")]
+request header), Fault (inject a failure described by `fault`, to test how an app handles \
+timeouts and network errors). Optional: method, group (scenario name), times (1 = first \
+matching request only). Fault rules act only on hosts the user allowed in NovaProxy \
+(see get_fault_settings). Reusing an id replaces that rule.")]
     pub fn set_rule(&self, Parameters(params): Parameters<SetRuleParams>) -> Result<Json<ActionOut>, ErrorData> {
-        let kind = parse_rule_kind(&params.kind)?;
-        let rule = Rule {
-            id: params.id.clone(),
-            enabled: params.enabled.unwrap_or(true),
-            kind,
-            name: params.name.unwrap_or_else(|| params.id.clone()),
-            pattern: params.pattern,
-            target: params.target,
-            header_name: params.header_name,
-            header_value: params.header_value,
-        };
-        validate_rule(&rule)?;
-
+        let rule = rule_from_params(params)?;
         let next = {
             let mut rules = self.state.rules.write().unwrap();
-            match rules.iter_mut().find(|r| r.id == rule.id) {
-                Some(existing) => *existing = rule.clone(),
-                None => rules.push(rule.clone()),
-            }
+            upsert(&mut rules, rule.clone());
             rules.clone()
         };
         self.state.persist_rules(&next).map_err(|e| ErrorData::internal_error(e, None))?;
-        Ok(Json(ActionOut { ok: true, detail: format!("rule {} saved ({} total)", rule.id, next.len()) }))
+        Ok(Json(ActionOut {
+            ok: true,
+            detail: format!(
+                "rule {} saved ({} total){}",
+                rule.id,
+                next.len(),
+                self.fault_note(std::slice::from_ref(&rule))
+            ),
+        }))
+    }
+
+    /// Add or replace several rules at once.
+    #[tool(description = "Add or replace several rules in one call (same fields as set_rule), \
+e.g. a whole test scenario sharing one group. All are validated first; nothing is saved if \
+one is invalid.")]
+    pub fn import_rules(
+        &self,
+        Parameters(params): Parameters<ImportRulesParams>,
+    ) -> Result<Json<ActionOut>, ErrorData> {
+        let incoming = params.rules.into_iter().map(rule_from_params).collect::<Result<Vec<_>, _>>()?;
+        let next = {
+            let mut rules = self.state.rules.write().unwrap();
+            incoming.iter().cloned().for_each(|r| upsert(&mut rules, r));
+            rules.clone()
+        };
+        self.state.persist_rules(&next).map_err(|e| ErrorData::internal_error(e, None))?;
+        Ok(Json(ActionOut {
+            ok: true,
+            detail: format!("{} rules saved ({} total){}", incoming.len(), next.len(), self.fault_note(&incoming)),
+        }))
+    }
+
+    /// Switch a whole scenario on or off.
+    #[tool(description = "Switch every rule of a group (scenario) on or off. With exclusive=true, \
+switching one group on switches every other group off, so one scenario runs at a time. \
+Rules without a group are left alone.")]
+    pub fn toggle_group(
+        &self,
+        Parameters(params): Parameters<ToggleGroupParams>,
+    ) -> Result<Json<ActionOut>, ErrorData> {
+        let exclusive = params.exclusive.unwrap_or(false) && params.enabled;
+        let (next, changed) = {
+            let mut rules = self.state.rules.write().unwrap();
+            let mut changed = 0;
+            for r in rules.iter_mut() {
+                let Some(g) = r.group.as_deref() else { continue };
+                let want = if g == params.group {
+                    params.enabled
+                } else if exclusive {
+                    false
+                } else {
+                    continue;
+                };
+                if r.enabled != want {
+                    r.enabled = want;
+                    changed += 1;
+                }
+            }
+            (rules.clone(), changed)
+        };
+        if !next.iter().any(|r| r.group.as_deref() == Some(params.group.as_str())) {
+            return Err(ErrorData::invalid_params(format!("no rule in group {:?}", params.group), None));
+        }
+        self.state.persist_rules(&next).map_err(|e| ErrorData::internal_error(e, None))?;
+        let state = if params.enabled { "on" } else { "off" };
+        Ok(Json(ActionOut { ok: true, detail: format!("group {:?} {state}; {changed} rules changed", params.group) }))
+    }
+
+    /// How often rules acted.
+    #[tool(description = "How many requests each rule acted on since the last reset_hits: the \
+way to check that a scenario's fault was actually injected, and how often (e.g. that an app \
+did not retry a write: a PassCut on the write should show hits 1). Filter by rule_id or group.")]
+    pub fn get_rule_hits(&self, Parameters(params): Parameters<HitsParams>) -> Json<Vec<HitOut>> {
+        let rules = self.state.rules.read().unwrap().clone();
+        Json(
+            rules
+                .iter()
+                .filter(|r| selected(r, &params))
+                .map(|r| HitOut {
+                    rule_id: r.id.clone(),
+                    name: r.name.clone(),
+                    group: r.group.clone(),
+                    enabled: r.enabled,
+                    hits: self.state.hits.get(&r.id),
+                    times: r.times,
+                })
+                .collect(),
+        )
+    }
+
+    /// Zero hit counts.
+    #[tool(description = "Zero the hit counts of a rule, a group, or every rule (no filter). \
+This also re-arms rules limited by times (e.g. first-only).")]
+    pub fn reset_hits(&self, Parameters(params): Parameters<HitsParams>) -> Json<ActionOut> {
+        if params.rule_id.is_none() && params.group.is_none() {
+            self.state.hits.reset(None);
+            return Json(ActionOut { ok: true, detail: "every rule's count reset".into() });
+        }
+        let ids: Vec<String> =
+            self.state.rules.read().unwrap().iter().filter(|r| selected(r, &params)).map(|r| r.id.clone()).collect();
+        self.state.hits.reset(Some(&ids));
+        Json(ActionOut { ok: true, detail: format!("{} rules reset", ids.len()) })
+    }
+
+    /// The hosts Fault rules may act on.
+    #[tool(description = "The hosts Fault rules may act on (globs). Read-only: only the user can \
+change it, in NovaProxy's Rules page. A Fault rule for a host outside it does nothing.")]
+    pub fn get_fault_settings(&self) -> Json<FaultSettingsOut> {
+        Json(FaultSettingsOut { allow_hosts: self.state.fault.read().unwrap().allow_hosts.clone() })
     }
 
     /// Remove a traffic-control rule.
@@ -634,6 +834,11 @@ To debug an MCP server, pass mcp_only=true: only JSON-RPC-over-HTTP/SSE exchange
 returned, labelled with their method and tool. MCP over stdio never reaches the network and \
 therefore cannot be captured.\n\n\
 For an overview of a capture, call summarize_session; to find what is wrong with an app's traffic without reading every flow, call get_insights: it lists detected anti-patterns with example flow ids. For one failing request, explain_failure says why and names a successful call to compare it with in diff_flows.
+
+To test how an app copes with timeouts and network errors, add Fault rules (set_rule or \
+import_rules, kind Fault) grouped by scenario, switch a scenario with toggle_group, run the \
+app, then read get_rule_hits and the flows (failed ones carry edits.fault). Fault rules act \
+only on hosts the user allowed (get_fault_settings).
 
 Your own calls to this endpoint are marked internal and excluded unless you pass \
 include_internal=true. Bodies are capped in every response; ask for more with get_body.\n\n\
@@ -813,11 +1018,80 @@ fn parse_rule_kind(kind: &str) -> Result<RuleKind, ErrorData> {
         "maplocal" => Ok(RuleKind::MapLocal),
         "block" => Ok(RuleKind::Block),
         "rewrite" => Ok(RuleKind::Rewrite),
+        "fault" => Ok(RuleKind::Fault),
         _ => Err(ErrorData::invalid_params(
-            format!("unknown rule kind {kind:?}; expected MapRemote, MapLocal, Block or Rewrite"),
+            format!("unknown rule kind {kind:?}; expected MapRemote, MapLocal, Block, Rewrite or Fault"),
             None,
         )),
     }
+}
+
+fn parse_fault_mode(mode: &str) -> Result<FaultMode, ErrorData> {
+    Ok(match mode.to_lowercase().replace(['_', '-', ' '], "").as_str() {
+        "dropbefore" | "drop" => FaultMode::DropBefore,
+        "holdclose" => FaultMode::HoldClose,
+        "holdstatus" | "hold504" => FaultMode::HoldStatus,
+        "fakeresponse" | "fakebody" | "fake" => FaultMode::FakeResponse,
+        "waf403" | "waf" => FaultMode::Waf403,
+        "proxyauth407" | "auth407" | "407" => FaultMode::ProxyAuth407,
+        "passcut" => FaultMode::PassCut,
+        "cutbody" => FaultMode::CutBody,
+        "delay" => FaultMode::Delay,
+        _ => {
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "unknown fault mode {mode:?}; expected DropBefore, HoldClose, HoldStatus, FakeResponse, \
+Waf403, ProxyAuth407, PassCut, CutBody or Delay"
+                ),
+                None,
+            ))
+        }
+    })
+}
+
+/// A validated rule from tool parameters.
+fn rule_from_params(params: SetRuleParams) -> Result<Rule, ErrorData> {
+    let kind = parse_rule_kind(&params.kind)?;
+    let fault = match params.fault {
+        Some(f) => Some(Fault {
+            mode: parse_fault_mode(&f.mode)?,
+            delay_ms: f.delay_ms,
+            status: f.status,
+            body: f.body,
+            content_type: f.content_type,
+            cut_after_bytes: f.cut_after_bytes,
+        }),
+        None => None,
+    };
+    let blank = |s: Option<String>| s.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let rule = Rule {
+        id: params.id.clone(),
+        enabled: params.enabled.unwrap_or(true),
+        kind,
+        name: params.name.unwrap_or_else(|| params.id.clone()),
+        pattern: params.pattern,
+        target: params.target,
+        header_name: params.header_name,
+        header_value: params.header_value,
+        method: blank(params.method).map(|m| m.to_uppercase()),
+        group: blank(params.group),
+        times: params.times,
+        fault,
+    };
+    validate_rule(&rule)?;
+    Ok(rule)
+}
+
+fn upsert(rules: &mut Vec<Rule>, rule: Rule) {
+    match rules.iter_mut().find(|r| r.id == rule.id) {
+        Some(existing) => *existing = rule,
+        None => rules.push(rule),
+    }
+}
+
+fn selected(rule: &Rule, params: &HitsParams) -> bool {
+    params.rule_id.as_deref().is_none_or(|id| rule.id == id)
+        && params.group.as_deref().is_none_or(|g| rule.group.as_deref() == Some(g))
 }
 
 /// Reject rules that would silently do nothing — a rule the agent believes it
@@ -829,6 +1103,11 @@ fn validate_rule(rule: &Rule) -> Result<(), ErrorData> {
             missing("a target")
         }
         RuleKind::Rewrite if rule.header_name.as_deref().unwrap_or("").is_empty() => missing("a header_name"),
+        RuleKind::Fault if rule.fault.is_none() => missing("a fault"),
+        RuleKind::Fault if rule.fault.as_ref().and_then(|f| f.delay_ms).is_some_and(|d| d > FAULT_MAX_DELAY_MS) => {
+            missing("a delay_ms of at most 600000")
+        }
+        _ if rule.times == Some(0) => missing("times of at least 1 (or none)"),
         _ if rule.pattern.is_empty() => missing("a pattern"),
         _ => Ok(()),
     }
@@ -1251,6 +1530,7 @@ mod tests {
             target: None,
             header_name: None,
             header_value: None,
+            ..Default::default()
         };
         assert!(validate_rule(&base).is_err(), "MapRemote without a target");
         assert!(validate_rule(&Rule { target: Some("https://staging".into()), ..base.clone() }).is_ok());
@@ -1262,6 +1542,50 @@ mod tests {
             validate_rule(&Rule { kind: RuleKind::Block, pattern: String::new(), ..base.clone() }).is_err(),
             "no pattern at all"
         );
-        assert!(validate_rule(&Rule { kind: RuleKind::Block, ..base }).is_ok());
+        assert!(validate_rule(&Rule { kind: RuleKind::Block, ..base.clone() }).is_ok());
+        assert!(validate_rule(&Rule { kind: RuleKind::Fault, ..base.clone() }).is_err(), "Fault without a fault");
+        let fault = Some(Fault { mode: FaultMode::HoldClose, delay_ms: Some(1_000), ..Default::default() });
+        assert!(validate_rule(&Rule { kind: RuleKind::Fault, fault: fault.clone(), ..base.clone() }).is_ok());
+        let too_long = Some(Fault { delay_ms: Some(FAULT_MAX_DELAY_MS + 1), ..fault.clone().unwrap() });
+        assert!(validate_rule(&Rule { kind: RuleKind::Fault, fault: too_long, ..base.clone() }).is_err());
+        assert!(validate_rule(&Rule { kind: RuleKind::Block, times: Some(0), ..base }).is_err(), "times 0");
+    }
+
+    #[test]
+    fn fault_modes_parse_forgivingly() {
+        assert_eq!(parse_fault_mode("pass-cut").unwrap(), FaultMode::PassCut);
+        assert_eq!(parse_fault_mode("Hold_Close").unwrap(), FaultMode::HoldClose);
+        assert_eq!(parse_fault_mode("waf-403").unwrap(), FaultMode::Waf403);
+        assert_eq!(parse_fault_mode("407").unwrap(), FaultMode::ProxyAuth407);
+        assert!(parse_fault_mode("explode").is_err());
+    }
+
+    #[test]
+    fn rule_params_normalise_method_and_group() {
+        let p = SetRuleParams {
+            id: "a".into(),
+            kind: "fault".into(),
+            name: None,
+            pattern: "https://x/*".into(),
+            target: None,
+            header_name: None,
+            header_value: None,
+            enabled: None,
+            method: Some(" post ".into()),
+            group: Some("  ".into()),
+            times: Some(1),
+            fault: Some(FaultParams {
+                mode: "drop-before".into(),
+                delay_ms: None,
+                status: None,
+                body: None,
+                content_type: None,
+                cut_after_bytes: None,
+            }),
+        };
+        let r = rule_from_params(p).unwrap();
+        assert_eq!(r.method.as_deref(), Some("POST"));
+        assert_eq!(r.group, None, "a blank group is no group");
+        assert_eq!(r.fault.unwrap().mode, FaultMode::DropBefore);
     }
 }

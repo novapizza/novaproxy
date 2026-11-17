@@ -427,6 +427,11 @@ pub struct AppState {
     /// Strip HTTP/3 advertisements so apps stay on TCP (see
     /// `nova_core::EngineHooks::keep_on_tcp`). The UI sets it from its prefs.
     pub keep_on_tcp: Arc<AtomicBool>,
+    /// How often each rule acted since the last reset (in memory only).
+    pub hits: Arc<nova_core::rules::RuleHits>,
+    /// Fault rule settings: the hosts Fault rules may act on. Changed only
+    /// from the UI, never over MCP, so an agent cannot widen it.
+    pub fault: Arc<RwLock<nova_proto::FaultSettings>>,
     /// Whether the MCP endpoint hides credentials (auth headers, cookies, secret
     /// query parameters and body fields) in what it returns. On by default.
     pub mcp_redact: AtomicBool,
@@ -469,6 +474,8 @@ impl AppState {
             insights: Mutex::new(None),
             mcp_redact: AtomicBool::new(true),
             keep_on_tcp: Arc::new(AtomicBool::new(true)),
+            hits: Arc::new(nova_core::rules::RuleHits::default()),
+            fault: Arc::new(RwLock::new(nova_proto::FaultSettings::default())),
             mcp_token: Mutex::new(None),
         }
     }
@@ -535,6 +542,8 @@ impl AppState {
             connects: self.connects.clone(),
             internal_port: self.mcp_port.clone(),
             keep_on_tcp: self.keep_on_tcp.clone(),
+            hits: self.hits.clone(),
+            fault: self.fault.clone(),
         }
     }
 
@@ -554,6 +563,10 @@ impl AppState {
 
     pub fn tls_scope_path(&self) -> PathBuf {
         self.data_dir.join("tls_scope.json")
+    }
+
+    pub fn fault_path(&self) -> PathBuf {
+        self.data_dir.join("fault.json")
     }
 
     pub fn rules_path(&self) -> PathBuf {

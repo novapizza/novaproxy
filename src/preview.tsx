@@ -19,6 +19,9 @@ import { BodyPanel, bodyToText } from "./inspector/BodyPanel";
 import { parseCookies, parseQuery, rawHttp, summaryOf } from "./inspector/parts";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 import { useStore } from "./store";
+import { RulesSection, FaultBar } from "./RulesSection";
+import { activeFaults, defaultFault, newRule } from "./rules";
+import type { Rule } from "./api";
 
 const now = Date.now();
 let n = 148;
@@ -57,11 +60,12 @@ const FLOWS: Flow[] = [
   mk({ method: "POST", path: "/v3/shoots/4821/tasks:assign", url: "https://api.creativeforce.io/v3/shoots/4821/tasks:assign", duration_ms: 264, response_size: 812n }),
   mk({ path: "/v3/assets/9f3c1/derivatives", url: "https://api.creativeforce.io/v3/assets/9f3c1/derivatives", status: 401, duration_ms: 92, response_size: 184n }),
   mk({ method: "POST", path: "/mcp/v1/tools/call", url: "https://api.creativeforce.io/mcp/v1/tools/call", duration_ms: 412, response_size: 6400n, mcp: { method: "tools/call", tool: "read_file", id: "7", transport: "Http" } as Flow["mcp"] }),
-  mk({ edits: { rule: true, script: false, breakpoint: false }, mapped_from: "api.creativeforce.io", method: "PUT", path: "/v3/reviews/1188/decision", url: "https://api.creativeforce.io/v3/reviews/1188/decision", status: 422, duration_ms: 205, response_size: 402n }),
+  mk({ edits: { rule: true, script: false, breakpoint: false, fault: null }, mapped_from: "api.creativeforce.io", method: "PUT", path: "/v3/reviews/1188/decision", url: "https://api.creativeforce.io/v3/reviews/1188/decision", status: 422, duration_ms: 205, response_size: 402n }),
   mk({ host: "github.com", process: "git", path: "/novapizza/novaproxy.git/info/refs", url: "https://github.com/novapizza/novaproxy.git/info/refs", status: 500, duration_ms: 512, response_size: 228n, content_type: "text/plain" }),
   mk({ host: "github.com", process: "git", method: "POST", path: "/novapizza/novaproxy.git/git-upload-pack", url: "https://github.com/novapizza/novaproxy.git/git-upload-pack", duration_ms: 325, response_size: 24800n, content_type: "application/x-git-upload-pack-result" }),
   mk({ host: "cdn.example.com", process: null, path: "/img/hero.png", url: "https://cdn.example.com/img/hero.png", content_type: "image/png", response_size: 184320n, duration_ms: 47 }),
-  mk({ edits: { rule: true, script: true, breakpoint: true }, host: "browser-intake.datadoghq.com", method: "POST", path: "/api/v2/rum?ddsource=browser", url: "https://browser-intake.datadoghq.com/api/v2/rum?ddsource=browser", status: 202, duration_ms: 528, response_size: 0n, content_type: null }),
+  mk({ edits: { rule: true, script: true, breakpoint: true, fault: null }, host: "browser-intake.datadoghq.com", method: "POST", path: "/api/v2/rum?ddsource=browser", url: "https://browser-intake.datadoghq.com/api/v2/rum?ddsource=browser", status: 202, duration_ms: 528, response_size: 0n, content_type: null }),
+  mk({ edits: { rule: true, script: false, breakpoint: false, fault: "PassCut" }, state: "Error", status: 200, error: "Fault (pass-cut): the server answered 200, the response was dropped", method: "POST", path: "/v3/outfits/upsert", url: "https://api.creativeforce.io/v3/outfits/upsert", duration_ms: 310, response_size: 0n }),
   mk({ host: "ws.productpad.io", scheme: "https", path: "/socket", url: "https://ws.productpad.io/socket", is_websocket: true, status: 101, duration_ms: 12, response_size: 0n }),
   mk({ host: "pinned.apple.com", path: "/", url: "https://pinned.apple.com/", tunneled: true, status: 200, content_type: null, response_size: 0n, response_body: null }),
   mk({ host: "api.creativeforce.io", path: "/v3/briefs?status=open", url: "https://api.creativeforce.io/v3/briefs?status=open", status: null, duration_ms: null, response_size: 0n, state: "Started", response_body: null }),
@@ -169,9 +173,26 @@ function Panels() {
   );
 }
 
+/** The Rules page with a few scenarios. The Tauri calls fail here, so hits and
+    Fault hosts stay empty: the "no host allowed" warnings show on purpose. */
+function RulesHarness() {
+  const [rules, setRules] = useState<Rule[]>([
+    { ...newRule("a"), name: "staging api" },
+    { ...newRule("b", "LH-54530 · A3 submit"), kind: "Fault", name: "submit: drop the answer", method: "POST", pattern: "https://api.dev.example.com/tasks/*/submit", times: 1, fault: defaultFault("PassCut") },
+    { ...newRule("c", "LH-54530 · A3 submit"), kind: "Fault", name: "verify: slow", method: "GET", pattern: "https://api.dev.example.com/tasks/*", fault: { ...defaultFault("HoldStatus"), delay_ms: 30000, status: 504 } },
+    { ...newRule("d", "LH-54530 · A6 WAF"), enabled: false, kind: "Fault", name: "WAF block", pattern: "https://api.dev.example.com/*", fault: defaultFault("Waf403") },
+  ]);
+  return (
+    <div className="nova" style={{ height: "auto", overflow: "auto" }}>
+      <FaultBar count={activeFaults(rules)} onOpen={() => {}} onAllOff={() => setRules(rules.map((r) => (r.kind === "Fault" ? { ...r, enabled: false } : r)))} />
+      <RulesSection rules={rules} saveRules={setRules} showToast={(t) => console.log("toast:", t)} />
+    </div>
+  );
+}
+
 const q = new URLSearchParams(location.search);
 createRoot(document.getElementById("root")!).render(
-  q.has("panels") ? <Panels /> : q.has("shortcuts") ? (
+  q.has("rules") ? <RulesHarness /> : q.has("panels") ? <Panels /> : q.has("shortcuts") ? (
     <div className="nova">
       <ShortcutsDialog onClose={() => {}} />
     </div>
