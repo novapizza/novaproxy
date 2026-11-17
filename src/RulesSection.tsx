@@ -186,31 +186,29 @@ export function RulesSection({
           sharing a group form a scenario you can switch, count and export together.
         </p>
 
-        {(hasFaults || allowHosts.length > 0) && (
-          <div className={`fault-hosts ${allowHosts.length === 0 ? "empty" : ""}`}>
-            <div className="fh-head">
-              <Icon name="shield-check" size={15} />
-              <span className="fh-title">Fault hosts</span>
-              {faultsOn > 0 && (
-                <span className="fh-on">
-                  {faultsOn} Fault rule{faultsOn === 1 ? "" : "s"} on
-                </span>
-              )}
-            </div>
-            <p className="fh-sub">
-              Fault rules act only on these hosts (globs such as <span className="mono">*.dev.example.com</span>),
-              however their pattern reads. Empty means Fault rules act nowhere: keep it to test environments.
-            </p>
-            <input
-              className="rule-input"
-              value={hostsDraft}
-              placeholder="*.dev.example.com, api.staging.example.com"
-              onChange={(e) => setHostsDraft(e.target.value)}
-              onBlur={saveHosts}
-              onKeyDown={(e) => e.key === "Enter" && saveHosts()}
-            />
+        <div className={`fault-hosts ${allowHosts.length === 0 && hasFaults ? "empty" : ""}`}>
+          <div className="fh-head">
+            <Icon name="shield-check" size={15} />
+            <span className="fh-title">Fault hosts</span>
+            {faultsOn > 0 && (
+              <span className="fh-on">
+                {faultsOn} Fault rule{faultsOn === 1 ? "" : "s"} on
+              </span>
+            )}
           </div>
-        )}
+          <p className="fh-sub">
+            Fault rules act only on these hosts (globs such as <span className="mono">*.dev.example.com</span>),
+            however their pattern reads. Empty means Fault rules act nowhere: keep it to test environments.
+          </p>
+          <input
+            className="rule-input"
+            value={hostsDraft}
+            placeholder="*.dev.example.com, api.staging.example.com"
+            onChange={(e) => setHostsDraft(e.target.value)}
+            onBlur={saveHosts}
+            onKeyDown={(e) => e.key === "Enter" && saveHosts()}
+          />
+        </div>
 
         {rules.length >= FILTER_FROM && (
           <input

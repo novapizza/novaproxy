@@ -120,6 +120,11 @@ export function onResponse(flow) {
 }
 `;
 
+/** How often the rule list is re-read, to pick up changes made over MCP. */
+const RULES_SYNC_MS = 2000;
+/** No re-read this soon after a local save. */
+const RULES_SYNC_GRACE_MS = 1500;
+
 /* -------------------------------- App -------------------------------- */
 
 export function App() {
@@ -289,10 +294,29 @@ export function App() {
   }
 
   // Persist rule edits to the backend (which updates the live engine set).
+  const rulesSavedAt = useRef(0);
   const saveRules = (next: Rule[]) => {
+    rulesSavedAt.current = Date.now();
     setRulesState(next);
     api.setRules(next).catch((e) => showToast(String(e), { kind: "error" }));
   };
+
+  // Rules also change over MCP (set_rule, import_rules, toggle_group). Pick
+  // those up, or the next edit here would save the stale list over them.
+  // Skipped right after a local save, whose write may not have landed yet.
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      if (Date.now() - rulesSavedAt.current < RULES_SYNC_GRACE_MS) return;
+      api
+        .getRules()
+        .then((remote) => {
+          if (Date.now() - rulesSavedAt.current < RULES_SYNC_GRACE_MS) return;
+          setRulesState((local) => (JSON.stringify(local) === JSON.stringify(remote) ? local : remote));
+        })
+        .catch(() => {});
+    }, RULES_SYNC_MS);
+    return () => window.clearInterval(t);
+  }, []);
 
   // Arm/disarm the breakpoint (backend is one-shot: it disarms after a hit).
   const armBreakpoint = (armed: boolean, pattern?: string) => {
