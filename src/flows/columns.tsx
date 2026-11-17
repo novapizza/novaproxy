@@ -156,7 +156,11 @@ export const COLUMNS: Record<ColumnId, Column> = {
     // three different answers, and which one it was is the whole point.
     cell: (f) => (
       <>
-        {f.edits.rule && <span className="etag rule" title="A rule rewrote this">R</span>}
+        {f.edits.fault ? (
+          <span className="etag fault" title={`A Fault rule injected this failure (${f.edits.fault})`}>F</span>
+        ) : (
+          f.edits.rule && <span className="etag rule" title="A rule rewrote this">R</span>
+        )}
         {f.edits.script && <span className="etag script" title="The script hook changed this">S</span>}
         {f.edits.breakpoint && (
           <span className="etag bp" title="Edited at a breakpoint">B</span>

@@ -3,4 +3,4 @@
 /**
  * What a matching [`Rule`] does.
  */
-export type RuleKind = "MapRemote" | "MapLocal" | "Block" | "Rewrite";
+export type RuleKind = "MapRemote" | "MapLocal" | "Block" | "Rewrite" | "Fault";

@@ -7,11 +7,14 @@ use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nova_proto::{BodyPreview, Edits, Flow, FlowState, Header, NetworkConditions, Rule, TlsScope, WsMessage};
+use nova_proto::{
+    BodyPreview, Edits, FaultSettings, Flow, FlowState, Header, NetworkConditions, Rule, TlsScope, WsMessage,
+};
 
 use crate::bodystore::BodyStore;
 use crate::breakpoint::Breakpoints;
 use crate::flowstore::FlowStore;
+use crate::rules::RuleHits;
 use crate::scripting::ScriptEngine;
 use crate::timing::ConnectLog;
 use crate::EngineHooks;
@@ -90,6 +93,10 @@ pub struct Shared {
     pub internal_port: Arc<std::sync::atomic::AtomicU16>,
     /// Strip HTTP/3 advertisements from `Alt-Svc` (see [`crate::EngineHooks`]).
     pub keep_on_tcp: Arc<std::sync::atomic::AtomicBool>,
+    /// Per-rule action counts (see [`crate::EngineHooks::hits`]).
+    pub hits: Arc<RuleHits>,
+    /// Fault rule settings (see [`crate::EngineHooks::fault`]).
+    pub fault: Arc<RwLock<FaultSettings>>,
 }
 
 impl Shared {
@@ -109,6 +116,8 @@ impl Shared {
             tls_scope: hooks.tls_scope,
             internal_port: hooks.internal_port,
             keep_on_tcp: hooks.keep_on_tcp,
+            hits: hooks.hits,
+            fault: hooks.fault,
         }
     }
 

@@ -307,6 +307,13 @@ pub fn run() {
                 }
             }
 
+            // Load persisted Fault settings (the host allowlist).
+            if let Ok(text) = std::fs::read_to_string(st.fault_path()) {
+                if let Ok(fault) = serde_json::from_str(&text) {
+                    *st.fault.write().unwrap() = fault;
+                }
+            }
+
             // Load persisted TLS scope.
             if let Ok(text) = std::fs::read_to_string(st.tls_scope_path()) {
                 if let Ok(scope) = serde_json::from_str(&text) {
@@ -378,6 +385,10 @@ pub fn run() {
             commands::stop_proxy,
             commands::get_rules,
             commands::set_rules,
+            commands::get_rule_hits,
+            commands::reset_rule_hits,
+            commands::get_fault_settings,
+            commands::set_fault_settings,
             commands::get_script,
             commands::set_script,
             commands::get_network_conditions,

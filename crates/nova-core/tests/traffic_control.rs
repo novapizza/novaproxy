@@ -65,6 +65,7 @@ fn rule(kind: RuleKind, pattern: &str) -> Rule {
         target: None,
         header_name: None,
         header_value: None,
+        ..Default::default()
     }
 }
 

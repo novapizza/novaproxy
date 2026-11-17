@@ -6,6 +6,8 @@ import type { ProxyStatus } from "./bindings/ProxyStatus";
 import type { CaStatus } from "./bindings/CaStatus";
 import type { Rule } from "./bindings/Rule";
 import type { RuleKind } from "./bindings/RuleKind";
+import type { RuleHit } from "./bindings/RuleHit";
+import type { FaultSettings } from "./bindings/FaultSettings";
 import type { Interception } from "./bindings/Interception";
 import type { Header } from "./bindings/Header";
 import type { NetworkConditions } from "./bindings/NetworkConditions";
@@ -34,6 +36,12 @@ export const api = {
 
   getRules: () => invoke<Rule[]>("get_rules"),
   setRules: (rules: Rule[]) => invoke<void>("set_rules", { rules }),
+  /** How many requests each rule acted on since the last reset. */
+  getRuleHits: () => invoke<RuleHit[]>("get_rule_hits"),
+  /** Zero the counts of `ids` (every rule when omitted); re-arms `times` limits. */
+  resetRuleHits: (ids?: string[]) => invoke<void>("reset_rule_hits", { ids: ids ?? null }),
+  getFaultSettings: () => invoke<FaultSettings>("get_fault_settings"),
+  setFaultSettings: (settings: FaultSettings) => invoke<void>("set_fault_settings", { settings }),
 
   getScript: () => invoke<string>("get_script"),
   setScript: (source: string, enabled: boolean) => invoke<void>("set_script", { source, enabled }),
@@ -353,6 +361,8 @@ export type {
   CaStatus,
   Rule,
   RuleKind,
+  RuleHit,
+  FaultSettings,
   Interception,
   Header,
   NetworkConditions,

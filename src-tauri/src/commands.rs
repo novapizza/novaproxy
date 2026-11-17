@@ -118,6 +118,32 @@ pub fn set_rules(state: State<'_, Arc<AppState>>, rules: Vec<Rule>) -> Result<()
     state.persist_rules(&rules)
 }
 
+/// How often each rule acted since the last reset.
+#[tauri::command]
+pub fn get_rule_hits(state: State<'_, Arc<AppState>>) -> Vec<nova_proto::RuleHit> {
+    state.hits.snapshot()
+}
+
+/// Zero the counts of `ids` (every rule when absent); re-arms `times` limits.
+#[tauri::command]
+pub fn reset_rule_hits(state: State<'_, Arc<AppState>>, ids: Option<Vec<String>>) {
+    state.hits.reset(ids.as_deref());
+}
+
+#[tauri::command]
+pub fn get_fault_settings(state: State<'_, Arc<AppState>>) -> nova_proto::FaultSettings {
+    state.fault.read().unwrap().clone()
+}
+
+#[tauri::command]
+pub fn set_fault_settings(state: State<'_, Arc<AppState>>, settings: nova_proto::FaultSettings) -> Result<(), String> {
+    // How many hosts, never which: they name the user's own environments.
+    tracing::info!(hosts = settings.allow_hosts.len(), "fault allowlist changed");
+    *state.fault.write().unwrap() = settings.clone();
+    let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    std::fs::write(state.fault_path(), json).map_err(|e| e.to_string())
+}
+
 /* --------------------------- session / export --------------------------- */
 
 /// Write text to an absolute path chosen by the user via the save dialog.

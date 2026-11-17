@@ -5,7 +5,6 @@ import {
   type Flow,
   type CaStatus,
   type Rule,
-  type RuleKind,
   type Interception,
   type Header,
   type NetworkConditions,
@@ -63,6 +62,8 @@ import { launchDecision } from "./onboarding";
 import { Coachmark, OnboardingWizard, type CoachTarget } from "./Walkthrough";
 import { loadPrefs, savePrefs, type Prefs } from "./prefs";
 import { InsightsSection } from "./InsightsSection";
+import { FaultBar, RulesSection } from "./RulesSection";
+import { activeFaults } from "./rules";
 import {
   badge as insightBadge,
   filterForInsights,
@@ -119,13 +120,10 @@ export function onResponse(flow) {
 }
 `;
 
-const RULE_KINDS: RuleKind[] = ["MapRemote", "MapLocal", "Block", "Rewrite"];
-const RULE_KIND_LABEL: Record<RuleKind, string> = {
-  MapRemote: "Map Remote",
-  MapLocal: "Map Local",
-  Block: "Block",
-  Rewrite: "Rewrite",
-};
+/** How often the rule list is re-read, to pick up changes made over MCP. */
+const RULES_SYNC_MS = 2000;
+/** No re-read this soon after a local save. */
+const RULES_SYNC_GRACE_MS = 1500;
 
 /* -------------------------------- App -------------------------------- */
 
@@ -296,10 +294,29 @@ export function App() {
   }
 
   // Persist rule edits to the backend (which updates the live engine set).
+  const rulesSavedAt = useRef(0);
   const saveRules = (next: Rule[]) => {
+    rulesSavedAt.current = Date.now();
     setRulesState(next);
     api.setRules(next).catch((e) => showToast(String(e), { kind: "error" }));
   };
+
+  // Rules also change over MCP (set_rule, import_rules, toggle_group). Pick
+  // those up, or the next edit here would save the stale list over them.
+  // Skipped right after a local save, whose write may not have landed yet.
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      if (Date.now() - rulesSavedAt.current < RULES_SYNC_GRACE_MS) return;
+      api
+        .getRules()
+        .then((remote) => {
+          if (Date.now() - rulesSavedAt.current < RULES_SYNC_GRACE_MS) return;
+          setRulesState((local) => (JSON.stringify(local) === JSON.stringify(remote) ? local : remote));
+        })
+        .catch(() => {});
+    }, RULES_SYNC_MS);
+    return () => window.clearInterval(t);
+  }, []);
 
   // Arm/disarm the breakpoint (backend is one-shot: it disarms after a hit).
   const armBreakpoint = (armed: boolean, pattern?: string) => {
@@ -994,6 +1011,12 @@ export function App() {
             </div>
           )}
 
+          <FaultBar
+            count={activeFaults(rules)}
+            onOpen={() => goSection("rules")}
+            onAllOff={() => saveRules(rules.map((r) => (r.kind === "Fault" ? { ...r, enabled: false } : r)))}
+          />
+
           {section === "flows" && (
             <FlowsSection
               ref={flowsRef}
@@ -1058,7 +1081,7 @@ export function App() {
               }}
             />
           )}
-          {section === "rules" && <RulesSection rules={rules} saveRules={saveRules} />}
+          {section === "rules" && <RulesSection rules={rules} saveRules={saveRules} showToast={showToast} />}
           {section === "break" && <BreakSection armed={bpArmed} onArm={armBreakpoint} />}
           {section === "scripts" && (
             <ScriptsSection
@@ -1245,92 +1268,6 @@ export function App() {
 /* ------------------------------ flows section ------------------------------ */
 
 /* ------------------------------ rules section ------------------------------ */
-
-function RulesSection({ rules, saveRules }: { rules: Rule[]; saveRules: (r: Rule[]) => void }) {
-  function addRule() {
-    const id = "r" + Date.now();
-    saveRules([
-      ...rules,
-      {
-        id, enabled: true, kind: "MapRemote", name: "new rule",
-        pattern: "https://api.example.com/*",
-        target: "https://staging.example.com",
-        header_name: null, header_value: null,
-      },
-    ]);
-  }
-  const update = (id: string, patch: Partial<Rule>) =>
-    saveRules(rules.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-  const del = (id: string) => saveRules(rules.filter((r) => r.id !== id));
-
-  return (
-    <div className="page">
-      <div className="page-inner w720">
-        <div className="page-head">
-          <h2 className="page-title">Rules</h2>
-          <div className="btn-primary" onClick={addRule}>
-            <Icon name="plus" />
-            New rule
-          </div>
-        </div>
-        <p className="page-sub">
-          Map Remote, Map Local, Block and header Rewrite are applied to matching live traffic.
-          Patterns match <span className="mono">scheme://host/path</span> with <span className="mono">*</span> wildcards.
-        </p>
-        {rules.length === 0 && <p className="page-sub">No rules yet — add one to reshape traffic.</p>}
-        {rules.map((r) => (
-          <div className="rule" key={r.id}>
-            <div className="rule-head">
-              <span className={`switch ${r.enabled ? "on" : ""}`} onClick={() => update(r.id, { enabled: !r.enabled })}><span className="knob" /></span>
-              <select className="rule-kind" value={r.kind} onChange={(e) => update(r.id, { kind: e.target.value as RuleKind })}>
-                {RULE_KINDS.map((k) => <option key={k} value={k}>{RULE_KIND_LABEL[k]}</option>)}
-              </select>
-              <input className="rule-name-input" value={r.name} onChange={(e) => update(r.id, { name: e.target.value })} placeholder="rule name" />
-              <span className="spacer" />
-              <span className="rule-del" title="Delete rule" onClick={() => del(r.id)}><Icon name="trash-2" size={15} /></span>
-            </div>
-            <div className="rule-body">
-              <div className="rule-field">
-                <div className="k">Match URL</div>
-                <input className="rule-input" value={r.pattern} onChange={(e) => update(r.id, { pattern: e.target.value })} placeholder="https://host/path/*" />
-              </div>
-              {r.kind === "MapRemote" && (
-                <div className="rule-field">
-                  <div className="k">Redirect to</div>
-                  <input className="rule-input" value={r.target ?? ""} onChange={(e) => update(r.id, { target: e.target.value })} placeholder="https://other-host" />
-                </div>
-              )}
-              {r.kind === "MapLocal" && (
-                <div className="rule-field">
-                  <div className="k">Serve file</div>
-                  <input className="rule-input" value={r.target ?? ""} onChange={(e) => update(r.id, { target: e.target.value })} placeholder="/absolute/path/response.json" />
-                </div>
-              )}
-              {r.kind === "Block" && (
-                <div className="rule-field">
-                  <div className="k">Action</div>
-                  <div className="v">Respond <span className="mono">403</span> to matching requests</div>
-                </div>
-              )}
-              {r.kind === "Rewrite" && (
-                <>
-                  <div className="rule-field">
-                    <div className="k">Header name</div>
-                    <input className="rule-input" value={r.header_name ?? ""} onChange={(e) => update(r.id, { header_name: e.target.value })} placeholder="x-debug" />
-                  </div>
-                  <div className="rule-field">
-                    <div className="k">Header value</div>
-                    <input className="rule-input" value={r.header_value ?? ""} onChange={(e) => update(r.id, { header_value: e.target.value })} placeholder="true" />
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 /* ------------------------------ breakpoints section ------------------------------ */
 
