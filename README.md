@@ -5,7 +5,7 @@ in a Tauri v2 desktop app with a React/TypeScript UI. It captures and decrypts
 traffic, lets you change it on the way through, finds anti-patterns in it, and
 hands it to AI agents over MCP.
 
-Platforms: **macOS (Apple Silicon)** and **Windows**, both signed and
+Platforms: **macOS (Apple Silicon and Intel)** and **Windows**, both signed and
 auto-updating. Linux builds in CI but is not shipped yet.
 
 The original design and roadmap are in [NovaProxy.md](./NovaProxy.md); review
