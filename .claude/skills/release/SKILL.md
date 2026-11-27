@@ -114,7 +114,7 @@ gh run view <run-id> --json status,conclusion,jobs
 Four jobs, in order:
 
 1. **Check tag matches version** — fails in under a minute if step 5 was wrong.
-2. **macOS (Apple silicon)** and **Windows (x64)** — build, sign, upload to a
+2. **macOS (Apple silicon)**, **macOS (Intel)** and **Windows (x64)** — build, sign, upload to a
    *draft* release.
 3. **Mirror to R2 and prune** — flattens the installers, writes `latest.yml` and
    `latest.json`, uploads to R2, attaches the manifests, then prunes R2 down to
@@ -138,10 +138,11 @@ gh release view v<version> --json isDraft,assets -q '.isDraft, .assets[].name'
 
 Expect all of:
 
-- `NovaProxy_<version>_aarch64.dmg`
+- `NovaProxy_<version>_aarch64.dmg` and `NovaProxy_<version>_x64.dmg`
 - `NovaProxy_<version>_x64-setup.exe` and `NovaProxy_<version>_x64_en-US.msi`
 - a `.sig` next to each updater artifact
-- `NovaProxy_<version>_aarch64.app.tar.gz` — the macOS updater bundle
+- `NovaProxy_<version>_aarch64.app.tar.gz` and `NovaProxy_<version>_x64.app.tar.gz`
+  — the macOS updater bundles
 - `latest.json` (updater manifest) and `latest.yml`
 - `isDraft: false`
 
