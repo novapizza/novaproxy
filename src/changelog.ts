@@ -19,6 +19,13 @@ export interface Release {
 
 export const CHANGELOG: Release[] = [
   {
+    version: "0.9.1",
+    date: "2026-11-27",
+    added: [
+      "Intel Macs: NovaProxy now ships a macOS build for Intel (x86_64) next to the Apple silicon one.",
+    ],
+  },
+  {
     version: "0.9.0",
     date: "2026-11-16",
     added: [
