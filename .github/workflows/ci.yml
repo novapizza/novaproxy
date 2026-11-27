@@ -20,6 +20,14 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # rust-toolchain.toml says `stable`, and a toolchain file beats the default
+  # dtolnay/rust-toolchain sets, so every job ran on the runner's preinstalled
+  # stable rather than the 1.99.1 pinned below (the logs say "overridden by
+  # rust-toolchain.toml"). RUSTUP_TOOLCHAIN outranks the file. Keep it in step
+  # with the `toolchain:` inputs; release.yml carries the same line.
+  RUSTUP_TOOLCHAIN: 1.99.1
+
 jobs:
   # Formatting and the frontend linter need no platform and no Rust build.
   lint:
