@@ -20,6 +20,13 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # rust-toolchain.toml says `stable`, and a toolchain file beats the default
+  # that dtolnay/rust-toolchain sets: cargo ran on the runner's preinstalled
+  # stable instead of the 1.99.1 pinned below. That stable is past 1.100, so
+  # tauri-build failed (see the pin's comment), and it had no x86_64 target, so
+  # the Intel leg failed too (v0.9.1, first attempt). RUSTUP_TOOLCHAIN outranks
+  # the toolchain file. Keep it in step with the `toolchain:` input.
+  RUSTUP_TOOLCHAIN: 1.99.1
 
 jobs:
   # A tag that disagrees with tauri.conf.json ships an installer whose in-app
