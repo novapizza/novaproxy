@@ -22,12 +22,13 @@ use hudsucker::hyper::http::request::Parts;
 use hudsucker::hyper::{Request, Response};
 use hudsucker::tokio_tungstenite::tungstenite::{Error as WsError, Message};
 use hudsucker::{Body, HttpContext, HttpHandler, RequestOrResponse, WebSocketContext, WebSocketHandler};
-use nova_proto::{FlowState, Interception, WsDirection, WsMessage, WsOpcode};
+use nova_proto::{Fault, FaultMode, FlowState, Interception, WsDirection, WsMessage, WsOpcode};
 
 use crate::bodystore::BodyCapture;
 use crate::breakpoint::Resume;
+use crate::fault;
 use crate::flow::{build_preview, collect_headers, header_value, new_flow, now_ms, Shared, Side, WsRoute};
-use crate::rules::{apply_request, guess_media_type, Outcome};
+use crate::rules::{apply_request_with, connect_fault, guess_media_type, MatchCtx, Outcome};
 use crate::scripting::{self, ScriptFlow};
 use crate::tlsscope::should_intercept_host;
 
@@ -62,13 +63,167 @@ pub struct NovaHandler {
     shared: Arc<Shared>,
     /// Per-connection queue of flow ids awaiting their response. Not wrapped in
     /// `Arc`: each connection gets its own clone, which is exactly the isolation
-    /// FIFO correlation needs.
-    pending: VecDeque<String>,
+    /// FIFO correlation needs. Each entry carries the response-phase fault
+    /// (PassCut / CutBody / Delay) a rule attached to that request, if any.
+    pending: VecDeque<(String, Option<Fault>)>,
 }
 
 impl NovaHandler {
     pub fn new(shared: Arc<Shared>) -> Self {
         Self { shared, pending: VecDeque::new() }
+    }
+}
+
+impl NovaHandler {
+    /// A CONNECT: answer it with 407 when a ProxyAuth407 Fault rule matches the
+    /// host, else let hudsucker open the tunnel. Only a refused CONNECT becomes
+    /// a flow; an accepted one is recorded through its inner requests.
+    fn connect(&mut self, ctx: &HttpContext, req: Request<Body>) -> RequestOrResponse {
+        let Some(host) = req.uri().host().map(str::to_string) else {
+            return RequestOrResponse::Request(req);
+        };
+        let rule_set = self.shared.rules.read().unwrap().clone();
+        let fault_hosts = self.shared.fault.read().unwrap().allow_hosts.clone();
+        let Some((rule_id, fault)) = connect_fault(&rule_set, &host, Some(&self.shared.hits), &fault_hosts) else {
+            return RequestOrResponse::Request(req);
+        };
+        tracing::info!(rule = %rule_id, %host, "fault injected: 407 to CONNECT");
+        let seq = self.shared.seq.fetch_add(1, Ordering::Relaxed);
+        let port = req.uri().port_u16().unwrap_or(443);
+        let mut flow = new_flow(
+            format!("f{seq}"),
+            seq,
+            "CONNECT".into(),
+            "https".into(),
+            host.clone(),
+            String::new(),
+            format!("{host}:{port}"),
+            ctx.client_addr.to_string(),
+            format!("{:?}", req.version()),
+            collect_headers(req.headers()),
+        );
+        if let Some(p) = crate::procinfo::global().resolve(&ctx.client_addr.to_string()) {
+            flow.pid = Some(p.pid);
+            flow.process = Some(p.name);
+        }
+        flow.edits.rule = true;
+        flow.edits.fault = Some(fault.mode);
+        RequestOrResponse::Response(self.canned(flow, &fault, false))
+    }
+
+    /// Answer a request-phase fault without forwarding. `flow` is not stored
+    /// yet; it is stored here, before any hold, so the table shows the
+    /// request waiting.
+    async fn answer_fault(&mut self, mut flow: nova_proto::Flow, fault: Fault) -> RequestOrResponse {
+        let id = flow.id.clone();
+        let hold = fault::delay(&fault);
+        let holds = matches!(fault.mode, FaultMode::HoldClose | FaultMode::HoldStatus) && !hold.is_zero();
+        if holds {
+            flow.state = FlowState::Started;
+            self.shared.insert(flow.clone());
+            let mut guard = HoldGuard { shared: self.shared.clone(), id: id.clone(), armed: true };
+            tokio::time::sleep(hold).await;
+            guard.armed = false;
+        }
+        let resp = match fault.mode {
+            FaultMode::DropBefore | FaultMode::HoldClose => {
+                let why = if fault.mode == FaultMode::DropBefore {
+                    "Fault (drop-before): connection closed, request not forwarded".to_string()
+                } else {
+                    format!("Fault (hold-close): held {} ms, then closed; request not forwarded", hold.as_millis())
+                };
+                if holds {
+                    self.fail_flow(&id, why);
+                } else {
+                    flow.state = FlowState::Error;
+                    flow.error = Some(why);
+                    flow.duration_ms = Some(now_ms() - flow.started_at);
+                    self.shared.insert(flow);
+                }
+                Response::builder().status(200).body(fault::abort_body()).expect("static response")
+            }
+            _ => {
+                if holds {
+                    // Re-read: the stored copy is the one the table shows.
+                    flow = self.shared.flow(&id).unwrap_or(flow);
+                }
+                self.canned(flow, &fault, holds)
+            }
+        };
+        RequestOrResponse::Response(resp)
+    }
+
+    /// Store `flow` as answered with the fault's canned response, and build it.
+    /// `stored`: the flow is already in the store (it was held), so update it.
+    fn canned(&self, mut flow: nova_proto::Flow, fault: &Fault, stored: bool) -> Response<Body> {
+        let (status, content_type, body) =
+            fault::canned_answer(fault).unwrap_or((502, "text/plain".into(), String::new()));
+        let len = body.len() as u64;
+        flow.status = Some(status);
+        flow.state = FlowState::Completed;
+        flow.response_size = len;
+        flow.content_type = Some(content_type.clone());
+        let mut headers = vec![nova_proto::Header { name: "content-type".into(), value: content_type.clone() }];
+        if fault.mode == FaultMode::ProxyAuth407 {
+            headers.push(nova_proto::Header {
+                name: "proxy-authenticate".into(),
+                value: "Basic realm=\"NovaProxy fault\"".into(),
+            });
+        }
+        flow.response_headers = headers.clone();
+        if fault.mode == FaultMode::ProxyAuth407 {
+            // A refused CONNECT opens no tunnel; close rather than leave the
+            // client a keep-alive it will not reuse.
+            headers.push(nova_proto::Header { name: "connection".into(), value: "close".into() });
+        }
+        flow.response_body = Some(build_preview(body.clone().into_bytes(), len, false, Some(content_type), None));
+        flow.duration_ms = Some(now_ms() - flow.started_at);
+        if stored {
+            let id = flow.id.clone();
+            self.shared.update(&id, move |f| *f = flow);
+        } else {
+            self.shared.insert(flow);
+        }
+        let mut builder = Response::builder().status(status);
+        for h in headers {
+            builder = builder.header(h.name, h.value);
+        }
+        builder.body(Body::from(body)).unwrap_or_else(|_| Response::new(Body::empty()))
+    }
+
+    /// Mark a stored flow failed by a fault.
+    fn fail_flow(&self, id: &str, why: String) {
+        let started = self.shared.flow(id).map(|f| f.started_at).unwrap_or_else(now_ms);
+        self.shared.update(id, |f| {
+            f.state = FlowState::Error;
+            f.error = Some(why.clone());
+            f.duration_ms = Some(now_ms() - started);
+        });
+    }
+}
+
+/// While a fault holds a request, the client may give up first (its own
+/// timeout) and hyper drops the handler mid-sleep. Then the flow still says
+/// so, rather than staying "started" forever.
+struct HoldGuard {
+    shared: Arc<Shared>,
+    id: String,
+    armed: bool,
+}
+
+impl Drop for HoldGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let started = self.shared.flow(&self.id).map(|f| f.started_at).unwrap_or_else(now_ms);
+        self.shared.update(&self.id, |f| {
+            if f.state == FlowState::Started {
+                f.state = FlowState::Error;
+                f.error = Some("Fault: the client gave up while the request was held".into());
+                f.duration_ms = Some(now_ms() - started);
+            }
+        });
     }
 }
 
@@ -78,7 +233,7 @@ impl HttpHandler for NovaHandler {
         // decrypted inner requests here. Don't record the tunnel itself — doing
         // so would desync the request↔response FIFO below.
         if req.method() == hudsucker::hyper::Method::CONNECT {
-            return RequestOrResponse::Request(req);
+            return self.connect(ctx, req);
         }
 
         let seq = self.shared.seq.fetch_add(1, Ordering::Relaxed);
@@ -95,7 +250,11 @@ impl HttpHandler for NovaHandler {
         // request (header rewrite / remap) before we describe what we forward.
         let (_, _, _, orig_url) = describe(&parts);
         let rule_set = self.shared.rules.read().unwrap().clone();
-        let outcome = apply_request(&rule_set, &orig_url, &mut parts);
+        let fault_hosts = self.shared.fault.read().unwrap().allow_hosts.clone();
+        let method = parts.method.to_string();
+        let match_ctx =
+            MatchCtx { url: &orig_url, method: &method, hits: Some(&self.shared.hits), fault_hosts: &fault_hosts };
+        let outcome = apply_request_with(&rule_set, &match_ctx, &mut parts);
 
         let (scheme, host, path, url) = describe(&parts);
         let request_headers = collect_headers(&parts.headers);
@@ -126,6 +285,24 @@ impl HttpHandler for NovaHandler {
             flow.process = Some(p.name);
         }
 
+        // A fault that acts on the response forwards like any request and is
+        // carried to `handle_response`; the others answer here.
+        let mut response_fault: Option<Fault> = None;
+        let outcome = match outcome {
+            Outcome::Fault { rule_id, fault, mapped_from, rewritten } => {
+                flow.edits.rule = true;
+                flow.edits.fault = Some(fault.mode);
+                tracing::info!(rule = %rule_id, mode = fault::label(fault.mode), url = %flow.url, "fault injected");
+                if !fault::acts_on_response(fault.mode) {
+                    flow.mapped_from = mapped_from;
+                    return self.answer_fault(flow, fault).await;
+                }
+                response_fault = Some(fault);
+                Outcome::Forward { mapped_from, rewritten }
+            }
+            other => other,
+        };
+
         match outcome {
             Outcome::Block => {
                 flow.edits.rule = true;
@@ -145,6 +322,7 @@ impl HttpHandler for NovaHandler {
                     .expect("static response");
                 RequestOrResponse::Response(resp)
             }
+            Outcome::Fault { .. } => unreachable!("faults are resolved above"),
             Outcome::MapLocal(file) => {
                 flow.edits.rule = true;
                 match std::fs::read(&file) {
@@ -182,7 +360,7 @@ impl HttpHandler for NovaHandler {
                 }
             }
             Outcome::Forward { mapped_from, rewritten } => {
-                flow.edits.rule = mapped_from.is_some() || rewritten;
+                flow.edits.rule = flow.edits.rule || mapped_from.is_some() || rewritten;
                 flow.mapped_from = mapped_from;
 
                 // WebSocket upgrade: record the flow and register a route so the
@@ -285,7 +463,7 @@ impl HttpHandler for NovaHandler {
                     }
                 }
 
-                self.pending.push_back(id.clone());
+                self.pending.push_back((id.clone(), response_fault));
                 let teed = tee(body, self.shared.clone(), id, Side::Request, media_type, content_encoding);
                 RequestOrResponse::Request(Request::from_parts(parts, teed))
             }
@@ -293,7 +471,7 @@ impl HttpHandler for NovaHandler {
     }
 
     async fn handle_response(&mut self, _ctx: &HttpContext, res: Response<Body>) -> Response<Body> {
-        let Some(id) = self.pending.pop_front() else {
+        let Some((id, response_fault)) = self.pending.pop_front() else {
             return res;
         };
 
@@ -361,6 +539,31 @@ impl HttpHandler for NovaHandler {
             }
         }
 
+        let body = match response_fault {
+            None => body,
+            Some(f) => match f.mode {
+                FaultMode::PassCut => {
+                    // The server did the work; the client never hears of it.
+                    drop(body);
+                    self.fail_flow(
+                        &id,
+                        format!("Fault (pass-cut): the server answered {status}, the response was dropped"),
+                    );
+                    return Response::from_parts(parts, fault::abort_body());
+                }
+                FaultMode::CutBody => {
+                    let n = f.cut_after_bytes.unwrap_or(0) as u64;
+                    self.fail_flow(&id, format!("Fault (cut-body): connection closed after {n} body bytes"));
+                    fault::cut_body(body, n)
+                }
+                FaultMode::Delay => {
+                    tokio::time::sleep(fault::delay(&f)).await;
+                    body
+                }
+                _ => body,
+            },
+        };
+
         let teed = tee(body, self.shared.clone(), id, Side::Response, content_type, content_encoding);
         Response::from_parts(parts, teed)
     }
@@ -416,7 +619,7 @@ impl HttpHandler for NovaHandler {
             reason = crate::fdlimit::exhausted_reason(&reason);
         }
         let mut host = None;
-        if let Some(id) = self.pending.pop_front() {
+        if let Some((id, _)) = self.pending.pop_front() {
             let flow = self.shared.flow(&id);
             let started = flow.as_ref().map(|f| f.started_at).unwrap_or_else(now_ms);
             host = flow.map(|f| f.host);

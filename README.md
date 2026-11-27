@@ -72,7 +72,8 @@ claude mcp add --transport http novaproxy http://127.0.0.1:9091/ \
 
 Tools: `list_flows`, `search_flows`, `get_flow`, `get_body`,
 `summarize_session`, `get_insights`, `explain_failure`, `diff_flows`,
-`replay_request`, `list_rules`, `set_rule`, `delete_rule`, `proxy_status`.
+`replay_request`, `list_rules`, `set_rule`, `delete_rule`, `import_rules`,
+`toggle_group`, `get_rule_hits`, `reset_hits`, `get_fault_settings`, `proxy_status`.
 Credentials are hidden in what the endpoint returns unless you turn that off;
 replays still send the real values. The token can be rotated in Settings.
 
